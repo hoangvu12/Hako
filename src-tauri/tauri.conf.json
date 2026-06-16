@@ -1,0 +1,54 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Hako",
+  "version": "0.1.0",
+  "identifier": "com.hako.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "bun run dev",
+    "beforeBuildCommand": "bun run build"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "title": "Hako",
+        "label": "main",
+        "width": 1100,
+        "height": 720,
+        "minWidth": 940,
+        "minHeight": 600,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$VIDEO/Hako/**"]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": [
+      "vendor/obs-hook/graphics-hook64.dll",
+      "vendor/obs-hook/graphics-hook32.dll",
+      "vendor/obs-hook/inject-helper64.exe",
+      "vendor/obs-hook/inject-helper32.exe",
+      "vendor/obs-hook/get-graphics-offsets64.exe",
+      "vendor/obs-hook/get-graphics-offsets32.exe",
+      "vendor/obs-hook/gplv2.txt"
+    ]
+  }
+}

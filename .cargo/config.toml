@@ -1,0 +1,7 @@
+# Link the bundled FFmpeg shared build (src-tauri/ffmpeg) without needing
+# libclang: FFMPEG_BINDING_PATH supplies a prebuilt binding so rusty_ffmpeg
+# skips bindgen. `relative = true` resolves against this repo root.
+[env]
+FFMPEG_LIBS_DIR = { value = "src-tauri/ffmpeg/lib", relative = true }
+FFMPEG_BINDING_PATH = { value = "src-tauri/ffmpeg/binding.rs", relative = true }
+FFMPEG_LINK_MODE = "dynamic"

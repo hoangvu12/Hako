@@ -1,0 +1,82 @@
+[package]
+name = "hako"
+version = "0.1.0"
+description = "Performance-first Valorant clip recorder"
+authors = ["Hako"]
+edition = "2021"
+rust-version = "1.77"
+
+# The binary that Tauri launches.
+[[bin]]
+name = "hako"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
+# FFmpeg hardware encode/mux. Links the bundled shared build at
+# src-tauri/ffmpeg (FFMPEG_DIR in .cargo/config.toml). Prebuilt bindings for
+# 8.1 avoid needing libclang/bindgen.
+rusty_ffmpeg = { version = "0.17", features = ["ffmpeg8_1"] }
+
+# Valorant integration: Riot local + remote HTTP (rustls, accept the
+# localhost self-signed cert), base64 presence blob, process detection.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+base64 = "0.22"
+sysinfo = "0.33"
+
+# Clip library: bundled SQLite so there's no system dependency on Windows.
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Windows GPU / capture stack. Version aligned with Tauri's windows-rs.
+[dependencies.windows]
+version = "0.61"
+features = [
+    "Foundation",
+    "Graphics",
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
+    "Win32_Foundation",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
+    "Win32_UI_WindowsAndMessaging",
+    # Audio: WASAPI loopback (desktop) + mic capture, COM, QPC clock.
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Performance",
+    # Graphics-hook (game-capture) host orchestration: open the DLL's events /
+    # mutexes / file mappings, hold the keepalive mutex, run the log pipe.
+    "Win32_System_Threading",
+    "Win32_System_Memory",
+    "Win32_System_Pipes",
+    "Win32_System_IO",
+    "Win32_Storage_FileSystem",
+    "Win32_Security",
+]
+
+[profile.dev]
+incremental = true
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

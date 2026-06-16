@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Bundled FFmpeg payload (fetched via scripts/fetch-ffmpeg.ps1).
+# binding.rs is kept — it's the version-pinned prebuilt binding.
+src-tauri/ffmpeg/bin/
+src-tauri/ffmpeg/lib/
+src-tauri/ffmpeg/include/
+src-tauri/ffmpeg/LICENSE.txt
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,39 @@
+{
+  "name": "hako",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Performance-first Valorant clip recorder",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@radix-ui/react-slot": "^1.1.1",
+    "@tanstack/react-query": "^5.62.0",
+    "@tanstack/react-router": "^1.95.0",
+    "@tauri-apps/api": "^2.2.0",
+    "@tauri-apps/plugin-global-shortcut": "^2.2.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.469.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwind-merge": "^2.6.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@tanstack/react-query-devtools": "^5.62.0",
+    "@tanstack/router-devtools": "^1.95.0",
+    "@tauri-apps/cli": "^2.2.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "tailwindcss": "^4.0.0",
+    "tw-animate-css": "^1.2.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  }
+}
