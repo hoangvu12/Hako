@@ -22,6 +22,7 @@ import {
   useRenameClip,
   useSaveClip,
 } from "@/hooks/use-library";
+import { useSettings } from "@/hooks/use-settings";
 import type { ClipRecord } from "@/lib/api";
 
 type SortKey = "newest" | "oldest" | "largest";
@@ -76,6 +77,8 @@ function sortClips(clips: ClipRecord[], key: SortKey): ClipRecord[] {
 
 export default function ClipsPage() {
   const { data: clips, isLoading } = useClips();
+  const { data: settings } = useSettings();
+  const clipSeconds = settings?.clip_seconds ?? 30;
   const save = useSaveClip();
   const del = useDeleteClip();
   const rename = useRenameClip();
@@ -122,11 +125,11 @@ export default function ClipsPage() {
       <div className="flex h-14 shrink-0 items-center justify-between border-b border-panel-border bg-panel px-6">
         <Button
           size="sm"
-          onClick={() => save.mutate(30)}
+          onClick={() => save.mutate(undefined)}
           disabled={save.isPending}
         >
           <Scissors weight="bold" />
-          {save.isPending ? "Saving…" : "Save last 30s"}
+          {save.isPending ? "Saving…" : `Save last ${clipSeconds}s`}
         </Button>
 
         <div className="flex items-center gap-4">

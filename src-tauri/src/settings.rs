@@ -50,8 +50,18 @@ pub struct Settings {
     /// synthesizes it from `capture_audio` + `mic_source` so old installs keep
     /// their exact behavior.
     pub audio: Option<AudioConfig>,
-    /// Global hotkey for "save last N seconds" (e.g. `F9`).
+    /// Global hotkey for "save last N seconds" (e.g. `F9`). Accelerator string in
+    /// the `global-hotkey` format (modifiers + key joined by `+`, e.g. `Alt+F7`).
+    /// Registered live: editing it re-registers the OS shortcut (see `main.rs`).
     pub save_hotkey: String,
+    /// How many seconds the save-clip hotkey captures (Medal's CLIPS duration
+    /// dropdown). Clamped to `buffer_seconds` at save time — you can't save more
+    /// gameplay than the buffer holds.
+    pub clip_seconds: u32,
+    /// Global hotkey for "long recording" start/stop, shown in the titlebar
+    /// RECORDING popover. Persisted (and editable) now; the manual long-recording
+    /// capture feature itself is not wired yet, so this is display-only.
+    pub long_recording_hotkey: String,
     /// Per-event auto-clip toggles.
     pub events: EventToggles,
     /// Per-event clip windows (before/after seconds) — Outplayed's "Events
@@ -103,6 +113,8 @@ impl Default for Settings {
             mic_source: "auto".into(),
             audio: None,
             save_hotkey: "F9".into(),
+            clip_seconds: 30,
+            long_recording_hotkey: "Alt+F7".into(),
             events: EventToggles::default(),
             event_timings: EventTimings::default(),
             auto_capture_mode: "highlights".into(),
@@ -271,6 +283,13 @@ impl Settings {
     /// `highlights` (the historical behavior).
     pub fn auto_mode(&self) -> AutoCaptureMode {
         AutoCaptureMode::parse(&self.auto_capture_mode)
+    }
+
+    /// Seconds the save-clip hotkey should capture: the configured `clip_seconds`
+    /// clamped to what the buffer actually holds (`buffer_seconds`), and never
+    /// zero. You can't save more gameplay than is buffered.
+    pub fn clip_capture_seconds(&self) -> u32 {
+        self.clip_seconds.clamp(1, self.buffer_seconds.max(1))
     }
 
     /// The output-resolution target box for [`Settings::resolution`], or `None`

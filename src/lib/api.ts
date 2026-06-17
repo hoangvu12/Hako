@@ -462,7 +462,23 @@ export interface Settings {
    * + `mic_source`.
    */
   audio: AudioConfig | null;
+  /**
+   * Global save-clip hotkey, as a `global-hotkey` accelerator string (modifiers
+   * + key joined by "+", e.g. "F9", "Alt+F7"). Registered live — changing it
+   * re-registers the OS shortcut.
+   */
   save_hotkey: string;
+  /**
+   * Seconds the save-clip hotkey captures (the CLIPS duration dropdown). Clamped
+   * to `buffer_seconds` by the backend at save time.
+   */
+  clip_seconds: number;
+  /**
+   * Long-recording start/stop hotkey shown in the titlebar RECORDING popover.
+   * Persisted and editable, but the manual long-recording feature is not wired
+   * yet — display-only for now.
+   */
+  long_recording_hotkey: string;
   events: EventToggles;
   /** Per-event clip windows (Outplayed "Events timing"). */
   event_timings: EventTimings;

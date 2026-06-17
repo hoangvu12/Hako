@@ -371,10 +371,18 @@ pub fn save_clip_full(
     Ok(record)
 }
 
-/// Save the last `seconds` (default 30) of buffered gameplay. Returns the record.
+/// Save the last `seconds` of buffered gameplay (defaults to the configured clip
+/// length, clamped to the buffer depth). Returns the record.
 #[tauri::command]
 pub fn save_clip(app: AppHandle, seconds: Option<u32>) -> Result<ClipRecord, String> {
-    save_clip_full(&app, seconds.unwrap_or(30), None)
+    let seconds = seconds.unwrap_or_else(|| {
+        app.state::<SettingsState>()
+            .0
+            .lock()
+            .map(|s| s.clip_capture_seconds())
+            .unwrap_or(30)
+    });
+    save_clip_full(&app, seconds, None)
 }
 
 /// A fresh `<Videos>/Hako/hako_clip_<ms>.mp4` path (for the auto-clipper to cut
@@ -673,7 +681,8 @@ pub fn get_settings(settings: State<SettingsState>) -> Result<Settings, String> 
     Ok(settings.0.lock().map_err(|_| "settings poisoned")?.clone())
 }
 
-/// Replace + persist user settings.
+/// Replace + persist user settings. When the save-clip hotkey changed, the global
+/// shortcut is re-registered on the new accelerator (the old binding is dropped).
 #[tauri::command]
 pub fn update_settings(
     app: AppHandle,
@@ -682,7 +691,16 @@ pub fn update_settings(
 ) -> Result<(), String> {
     let path = settings_path(&app)?;
     next.save(&path)?;
-    *settings.0.lock().map_err(|_| "settings poisoned")? = next;
+    let new_hotkey = next.save_hotkey.clone();
+    let old_hotkey = {
+        let mut guard = settings.0.lock().map_err(|_| "settings poisoned")?;
+        let prev = guard.save_hotkey.clone();
+        *guard = next;
+        prev
+    };
+    if old_hotkey != new_hotkey {
+        crate::set_clip_hotkey(&app, Some(&old_hotkey), &new_hotkey);
+    }
     Ok(())
 }
 

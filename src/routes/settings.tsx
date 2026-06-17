@@ -36,6 +36,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { HotkeyRecorder } from "@/components/ui/hotkey-recorder";
 import { RecordingStatus } from "@/components/settings/recording-status";
 import { RecordingAudio } from "@/components/settings/recording-audio";
 import { useSettings, useUpdateSettings } from "@/hooks/use-settings";
@@ -184,6 +185,8 @@ const RESOLUTIONS: { value: string; label: string }[] = [
 
 const FPS_OPTIONS = [24, 30, 60, 120, 144, 240];
 const BITRATE_OPTIONS = [3, 5, 8, 10, 15, 20, 30, 50];
+// Candidate save-clip lengths; the UI filters these to the buffer depth.
+const CLIP_LENGTHS = [10, 15, 30, 60, 90, 120, 180];
 
 /** One selectable quality-preset card (Low / Standard / High / Custom). */
 function PresetCard({
@@ -553,13 +556,48 @@ function SettingsPage() {
               <Panel title="Clipping">
                 <Row
                   label="Save-clip hotkey"
-                  hint="Saves the last buffered seconds to a clip."
+                  hint="Click and press the keys. Saves the last buffered seconds."
                 >
-                  <Input
-                    className="h-9 w-36 bg-secondary text-center font-medium"
+                  <HotkeyRecorder
+                    aria-label="Save-clip hotkey"
                     value={draft.save_hotkey}
-                    onChange={(e) => setLocal("save_hotkey", e.target.value)}
-                    onBlur={commit}
+                    onChange={(accel) => accel && set("save_hotkey", accel)}
+                    allowClear={false}
+                  />
+                </Row>
+                <Row
+                  label="Clip length"
+                  hint="Seconds the hotkey captures (capped at the buffer length)."
+                >
+                  <Select
+                    value={String(draft.clip_seconds)}
+                    onValueChange={(v) => set("clip_seconds", Number(v))}
+                  >
+                    <SelectTrigger size="sm" className="w-24">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {CLIP_LENGTHS.filter((s) => s <= draft.buffer_seconds).map(
+                        (s) => (
+                          <SelectItem key={s} value={String(s)}>
+                            {s}s
+                          </SelectItem>
+                        )
+                      )}
+                    </SelectContent>
+                  </Select>
+                </Row>
+                <Row
+                  label="Long-recording hotkey"
+                  hint="Start/stop a manual recording of any length (coming soon)."
+                >
+                  <HotkeyRecorder
+                    aria-label="Long-recording hotkey"
+                    value={draft.long_recording_hotkey}
+                    onChange={(accel) =>
+                      accel && set("long_recording_hotkey", accel)
+                    }
+                    allowClear={false}
                   />
                 </Row>
                 <Row

@@ -76,7 +76,16 @@ fn main() {
                 }
             }
             build_tray(app.handle())?;
-            register_clip_hotkey(app.handle());
+            // Register the save-clip global shortcut from the saved hotkey (not a
+            // hardcoded key). Editing it in Settings / the titlebar re-registers
+            // live via `update_settings` → `set_clip_hotkey`.
+            let accel = app
+                .state::<commands::SettingsState>()
+                .0
+                .lock()
+                .map(|s| s.save_hotkey.clone())
+                .unwrap_or_else(|_| "F9".into());
+            set_clip_hotkey(app.handle(), None, &accel);
             // Live Valorant detection: poll presence, record full matches, and
             // auto-cut highlight clips on match end (Mode B). Degrades to manual
             // clips if Riot/capture aren't available.
@@ -242,31 +251,45 @@ fn init_settings(app: &tauri::AppHandle) -> commands::SettingsState {
     commands::SettingsState(std::sync::Mutex::new(settings))
 }
 
-/// Register the global "save last 30s" hotkey (**F9**). Registration failure is
-/// logged, not fatal (e.g. another app already owns the key). The save runs on
-/// its own thread so the shortcut dispatcher is never blocked by mux IO.
-fn register_clip_hotkey(app: &tauri::AppHandle) {
+/// (Re-)register the global save-clip shortcut on the accelerator `accel`,
+/// unregistering `old` first when replacing an existing binding. `accel` is a
+/// `global-hotkey` accelerator string (e.g. `F9`, `Alt+F7`). Registration failure
+/// is logged, not fatal (e.g. another app already owns the key, or the string is
+/// invalid). The save runs on its own thread so the shortcut dispatcher is never
+/// blocked by mux IO, and the clip length is read live from settings each press
+/// (so the CLIPS duration dropdown takes effect without re-registering).
+pub(crate) fn set_clip_hotkey(app: &tauri::AppHandle, old: Option<&str>, accel: &str) {
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
+    let gs = app.global_shortcut();
+    if let Some(old) = old {
+        let _ = gs.unregister(old); // silent if it wasn't registered
+    }
+
     let handle = app.clone();
-    let res = app
-        .global_shortcut()
-        .on_shortcut("F9", move |_app, _shortcut, event| {
-            if event.state != ShortcutState::Pressed {
-                return; // fire once on press, ignore the release
+    let res = gs.on_shortcut(accel, move |_app, _shortcut, event| {
+        if event.state != ShortcutState::Pressed {
+            return; // fire once on press, ignore the release
+        }
+        let handle = handle.clone();
+        // Clip length from settings (clamped to the buffer depth), read live.
+        let seconds = handle
+            .state::<commands::SettingsState>()
+            .0
+            .lock()
+            .map(|s| s.clip_capture_seconds())
+            .unwrap_or(30);
+        // save_clip_full emits `clip-created` itself; we just log/surface errors.
+        std::thread::spawn(move || match commands::save_clip_full(&handle, seconds, None) {
+            Ok(rec) => tracing::info!("hotkey saved clip → {}", rec.path),
+            Err(e) => {
+                tracing::warn!("clip save failed: {e}");
+                let _ = handle.emit(events::RECORDER_ERROR, e);
             }
-            let handle = handle.clone();
-            // save_clip_full emits `clip-created` itself; we just log/surface errors.
-            std::thread::spawn(move || match commands::save_clip_full(&handle, 30, None) {
-                Ok(rec) => tracing::info!("hotkey saved clip → {}", rec.path),
-                Err(e) => {
-                    tracing::warn!("clip save failed: {e}");
-                    let _ = handle.emit(events::RECORDER_ERROR, e);
-                }
-            });
         });
+    });
     if let Err(e) = res {
-        tracing::error!("could not register clip hotkey (F9): {e}");
+        tracing::error!("could not register clip hotkey ({accel}): {e}");
     }
 }
 

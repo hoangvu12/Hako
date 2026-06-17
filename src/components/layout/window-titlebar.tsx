@@ -5,28 +5,50 @@ import { ArrowLeft, ArrowRight, Minus, Square, X } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
 import { Separator } from "@/components/ui/separator";
-import { useSettings } from "@/hooks/use-settings";
+import { useSettings, useUpdateSettings } from "@/hooks/use-settings";
 import { RecorderStatusPopover } from "@/components/layout/recorder-status-popover";
+import {
+  ClipHotkeyPopover,
+  RecordingHotkeyPopover,
+} from "@/components/layout/hotkey-popovers";
 
 /** Shared style for the min/maximize/close caption buttons. */
 const CONTROL_CLS =
   "flex h-8 w-10 items-center justify-center rounded-md text-foreground/70 transition-colors hover:bg-secondary hover:text-foreground";
 
-/** A keycap-style chip used for the hotkey hints. */
-function Kbd({ children }: { children: React.ReactNode }) {
+/**
+ * "Auto Clip" toggle pill. Reflects whether the Valorant orchestrator
+ * auto-captures (`auto_capture_mode !== "manual"`); clicking flips between the
+ * default `highlights` mode and `manual`. Persists through the settings mutation.
+ */
+function AutoClipToggle() {
+  const { data: settings } = useSettings();
+  const update = useUpdateSettings();
+  const on = (settings?.auto_capture_mode ?? "highlights") !== "manual";
+  const toggle = () => {
+    if (!settings) return;
+    update.mutate({
+      ...settings,
+      auto_capture_mode: on ? "manual" : "highlights",
+    });
+  };
   return (
-    <span className="rounded bg-background/60 px-1.5 py-0.5 text-[10px] font-semibold text-foreground">
-      {children}
-    </span>
-  );
-}
-
-/** A visible, button-like pill used for the static hotkey hints. */
-function HotkeyPill({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="pointer-events-none flex h-8 items-center gap-1.5 rounded-lg border border-border bg-secondary/50 px-3 text-xs font-medium text-foreground">
-      {children}
-    </span>
+    <button
+      type="button"
+      onClick={toggle}
+      aria-pressed={on}
+      className="flex h-8 items-center gap-2 rounded-lg border border-border bg-secondary/50 px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary"
+    >
+      <span>Auto Clip</span>
+      <span
+        className={cn(
+          "font-semibold",
+          on ? "text-success" : "text-muted-foreground"
+        )}
+      >
+        {on ? "ON" : "OFF"}
+      </span>
+    </button>
   );
 }
 
@@ -63,8 +85,6 @@ async function windowAction(action: "minimize" | "toggleMaximize" | "close") {
 
 export function WindowTitlebar() {
   const router = useRouter();
-  const { data: settings } = useSettings();
-  const saveHotkey = settings?.save_hotkey ?? "F9";
 
   // Mirror the OS window's maximized state so the control swaps maximize/restore.
   const [maximized, setMaximized] = useState(false);
@@ -120,19 +140,9 @@ export function WindowTitlebar() {
 
         <div className="flex items-center gap-2">
           <RecorderStatusPopover />
-          <HotkeyPill>
-            <Kbd>{saveHotkey}</Kbd>
-            <span>Clip 30s</span>
-          </HotkeyPill>
-          <HotkeyPill>
-            <Kbd>ALT</Kbd>
-            <Kbd>F7</Kbd>
-            <span>Long Recording</span>
-          </HotkeyPill>
-          <HotkeyPill>
-            <span>Auto Clip</span>
-            <span className="font-semibold text-success">ON</span>
-          </HotkeyPill>
+          <ClipHotkeyPopover />
+          <RecordingHotkeyPopover />
+          <AutoClipToggle />
         </div>
       </div>
 

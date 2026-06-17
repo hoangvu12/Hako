@@ -11,6 +11,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   Popover,
+  PopoverClose,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
@@ -48,14 +49,16 @@ function LinkButton({
   onClick: () => void;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex h-8 w-full items-center justify-between gap-2 rounded-md border border-white/10 bg-secondary px-2.5 text-sm text-foreground shadow-xs transition-colors hover:bg-[#323236]"
-    >
-      <span className="truncate whitespace-nowrap">{children}</span>
-      <GearSix className="size-4 shrink-0 text-muted-foreground" />
-    </button>
+    <PopoverClose asChild>
+      <button
+        type="button"
+        onClick={onClick}
+        className="flex h-8 w-full items-center justify-between gap-2 rounded-md border border-white/10 bg-secondary px-2.5 text-sm text-foreground shadow-xs transition-colors hover:bg-[#323236]"
+      >
+        <span className="truncate whitespace-nowrap">{children}</span>
+        <GearSix className="size-4 shrink-0 text-muted-foreground" />
+      </button>
+    </PopoverClose>
   );
 }
 
@@ -174,14 +177,16 @@ export function RecorderStatusPopover() {
           </Row>
         </div>
 
-        <button
-          type="button"
-          onClick={() => goToSettings("audio")}
-          className="flex w-full items-center justify-between border-t border-panel-border px-4 py-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary/60"
-        >
-          Recording settings
-          <ArrowRight className="size-4 text-muted-foreground" />
-        </button>
+        <PopoverClose asChild>
+          <button
+            type="button"
+            onClick={() => goToSettings("audio")}
+            className="flex w-full items-center justify-between border-t border-panel-border px-4 py-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary/60"
+          >
+            Recording settings
+            <ArrowRight className="size-4 text-muted-foreground" />
+          </button>
+        </PopoverClose>
       </PopoverContent>
     </Popover>
   );
