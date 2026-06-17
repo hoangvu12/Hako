@@ -1319,6 +1319,7 @@ name = "hako"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "libmimalloc-sys",
  "mimalloc",
  "png 0.17.16",
  "reqwest 0.12.28",
@@ -1993,9 +1994,9 @@ dependencies = [
 
 [[package]]
 name = "mimalloc"
-version = "0.1.52"
+version = "0.1.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d4139bb28d14ad1facf21d5eb8825051b326e172d216b39f6d31df53cc97862"
+checksum = "b1791cbe101e95af5764f06f20f6760521f7158f69dbf9d6baf941ee1bf6bc40"
 dependencies = [
  "libmimalloc-sys",
 ]

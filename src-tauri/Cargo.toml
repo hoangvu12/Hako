@@ -44,7 +44,17 @@ png = "0.17"
 # Fast multithreaded allocator. The default Windows process heap is a bottleneck
 # under the pipeline's allocation churn (per-packet Vecs, mux WriteOps, audio
 # scratch, thumbnail decode); mimalloc as the global allocator cuts that latency.
+#
+# Force the Microsoft mimalloc **v2** C source via the libmimalloc-sys `v2`
+# feature. Since libmimalloc-sys 0.1.45+, the default is mimalloc **v3**, which has
+# a cluster of Windows heap-corruption / crash regressions (STATUS_HEAP_CORRUPTION
+# 0xc0000374, access violations) — see purpleprotocol/mimalloc_rust #153 / #159 and
+# the microsoft/mimalloc atomics bug behind them. The direct libmimalloc-sys dep is
+# only here to pin that feature on (Cargo features are additive, so it applies to
+# the instance the `mimalloc` wrapper uses). Drop the `v2` feature only once v3 is
+# confirmed stable on x64 Windows under the capture pipeline.
 mimalloc = "0.1"
+libmimalloc-sys = { version = "0.1", features = ["v2"] }
 
 # WebView2 COM interfaces, used to drop the UI's renderer to a low memory target
 # while the window is hidden to tray during gameplay (`ICoreWebView2_19::
