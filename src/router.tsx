@@ -6,10 +6,10 @@ import {
 } from "@tanstack/react-router";
 
 import { AppLayout } from "@/components/app-layout";
+// `clips` is the landing route, so it stays eager (in the boot bundle). The
+// heavier routes below are lazy — their component code is split into separate
+// chunks fetched on navigation, and preloaded on link intent (see router opts).
 import ClipsPage from "@/routes/clips";
-import ClipDetailPage from "@/routes/clip-detail";
-import SettingsPage from "@/routes/settings";
-import ValorantPage from "@/routes/valorant";
 
 const rootRoute = createRootRoute({ component: AppLayout });
 
@@ -31,24 +31,22 @@ const clipsRoute = createRoute({
 const clipDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/clips/$clipId",
-  component: ClipDetailPage,
-});
+}).lazy(() => import("@/routes/clip-detail").then((d) => d.Route));
 
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/settings",
-  component: SettingsPage,
   // `?section=` deep-links a settings nav section (e.g. the recorder popover's
-  // "Audio" summary jumps straight to Recording Audio).
+  // "Audio" summary jumps straight to Recording Audio). `validateSearch` is a
+  // critical (non-lazy) option, so it stays here; only the component is split.
   validateSearch: (search: Record<string, unknown>): { section?: string } =>
     typeof search.section === "string" ? { section: search.section } : {},
-});
+}).lazy(() => import("@/routes/settings").then((d) => d.Route));
 
 const valorantRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/valorant",
-  component: ValorantPage,
-});
+}).lazy(() => import("@/routes/valorant").then((d) => d.Route));
 
 const routeTree = rootRoute.addChildren([
   indexRoute,

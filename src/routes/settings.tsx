@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useSearch } from "@tanstack/react-router";
+import { createLazyRoute, useSearch } from "@tanstack/react-router";
 import {
   Scissors,
   SlidersHorizontal,
@@ -137,7 +137,13 @@ function Row({
   );
 }
 
-export default function SettingsPage() {
+// Lazy-loaded: only the component splits out — `validateSearch` stays eager in
+// the route tree (router.tsx), which is required for type-safe search params.
+export const Route = createLazyRoute("/settings")({
+  component: SettingsPage,
+});
+
+function SettingsPage() {
   const { data } = useSettings();
   const update = useUpdateSettings();
   const search = useSearch({ from: "/settings" });
@@ -179,10 +185,13 @@ export default function SettingsPage() {
     persist({ ...draft, events: { ...draft.events, [key]: !draft.events[key] } });
 
   const q = navQuery.trim().toLowerCase();
-  const groups = NAV.map((g) => ({
-    ...g,
-    items: g.items.filter((i) => i.label.toLowerCase().includes(q)),
-  })).filter((g) => g.items.length);
+  // Single pass: filter each group's items and keep only non-empty groups in one
+  // reduce, instead of mapping then filtering over the group list twice.
+  const groups = NAV.reduce<typeof NAV>((acc, g) => {
+    const items = g.items.filter((i) => i.label.toLowerCase().includes(q));
+    if (items.length) acc.push({ ...g, items });
+    return acc;
+  }, []);
 
   return (
     <div className="flex h-full">

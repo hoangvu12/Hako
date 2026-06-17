@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Microphone,
@@ -71,22 +71,30 @@ function VolumeSlider({
   onCommit: (v: number) => void;
   disabled?: boolean;
 }) {
-  const [local, setLocal] = useState(value);
-  useEffect(() => setLocal(value), [value]);
+  // `local` is a transient drag override (null = not dragging): we read `value`
+  // directly during render and only diverge while the user drags, releasing back
+  // to the prop on commit. Nothing copies the prop into state and there's no
+  // re-sync effect, so the readout never shows a stale value when the parent's
+  // `value` changes.
+  const [local, setLocal] = useState<number | null>(null);
+  const shown = local ?? value;
   return (
     <div className="flex w-44 items-center gap-3">
       <Slider
-        value={[local]}
+        value={[shown]}
         min={0}
         max={100}
         step={1}
         disabled={disabled}
         onValueChange={([v]) => setLocal(v)}
-        onValueCommit={([v]) => onCommit(v)}
+        onValueCommit={([v]) => {
+          setLocal(null);
+          onCommit(v);
+        }}
         aria-label="Volume"
       />
       <span className="w-9 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
-        {local}%
+        {shown}%
       </span>
     </div>
   );
@@ -259,18 +267,22 @@ export function RecordingAudio({
   const appRows = useMemo(() => {
     const saved = audio.apps.filter((a) => a.id !== GAME_SOURCE_ID);
     const seen = new Set(saved.map((a) => a.id));
-    const live = (sessions ?? [])
-      .filter(
-        (s) =>
-          !SESSION_BLACKLIST.has(s.process_name.toLowerCase()) &&
-          !seen.has(s.process_name)
-      )
-      .map<AudioAppSel>((s) => ({
-        id: s.process_name,
-        name: s.display_name || s.process_name,
-        enabled: false,
-        volume: 100,
-      }));
+    // Single pass: filter + shape the live sessions in one reduce so we don't
+    // walk the session list twice.
+    const live = (sessions ?? []).reduce<AudioAppSel[]>((acc, s) => {
+      if (
+        !SESSION_BLACKLIST.has(s.process_name.toLowerCase()) &&
+        !seen.has(s.process_name)
+      ) {
+        acc.push({
+          id: s.process_name,
+          name: s.display_name || s.process_name,
+          enabled: false,
+          volume: 100,
+        });
+      }
+      return acc;
+    }, []);
     return [...saved, ...live];
   }, [audio.apps, sessions]);
 

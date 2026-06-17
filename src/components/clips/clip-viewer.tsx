@@ -250,7 +250,11 @@ function ViewerStage({
   const [muted, setMuted] = React.useState(false);
   const [volume, setVolume] = React.useState(1);
   const [current, setCurrent] = React.useState(0);
-  const [duration, setDuration] = React.useState(clip.duration_secs);
+  // Stored duration is the render-time fallback; the <video>'s reported duration
+  // (genuinely new data) wins once loaded. Reading the prop directly avoids the
+  // stale copy a `useState(clip.duration_secs)` would hold if `clip` changed.
+  const [videoDuration, setVideoDuration] = React.useState<number | null>(null);
+  const duration = videoDuration ?? clip.duration_secs;
   const [fullscreen, setFullscreen] = React.useState(false);
   const [speedIdx, setSpeedIdx] = React.useState(0);
 
@@ -310,19 +314,6 @@ function ViewerStage({
     if (videoRef.current) videoRef.current.playbackRate = SPEEDS[speedIdx];
   }, [speedIdx]);
 
-  // Adjusting the selection past the playhead snaps it back inside the range.
-  React.useEffect(() => {
-    const v = videoRef.current;
-    if (!v) return;
-    if (v.currentTime < trimStart) {
-      v.currentTime = trimStart;
-      setCurrent(trimStart);
-    } else if (v.currentTime > trimEnd) {
-      v.currentTime = trimEnd;
-      setCurrent(trimEnd);
-    }
-  }, [trimStart, trimEnd]);
-
   const togglePlay = React.useCallback(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -370,14 +361,33 @@ function ViewerStage({
   // --- playhead / trim-handle pointer handling ---
   // The bar isn't click-to-seek; you grab the playhead or a trim handle. Capture
   // is set on the bar so its move/up handlers receive the whole drag.
+  // Keep the playhead inside the selection. This used to live in a useEffect
+  // watching [trimStart, trimEnd], which runs a frame late (the playhead lagged
+  // between the trim commit and the clamp). Doing it inline in the one handler
+  // that tightens the range clamps in the same render.
+  function clampPlayheadInto(start: number, end: number) {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.currentTime < start) {
+      v.currentTime = start;
+      setCurrent(start);
+    } else if (v.currentTime > end) {
+      v.currentTime = end;
+      setCurrent(end);
+    }
+  }
   function onBarPointerMove(e: React.PointerEvent) {
     if (!drag) return;
     if (drag === "seek") {
       seekTo(e.clientX);
     } else if (drag === "start") {
-      setTrimStart(Math.min(Math.max(timeFromX(e.clientX), 0), trimEnd - MIN_TRIM));
+      const next = Math.min(Math.max(timeFromX(e.clientX), 0), trimEnd - MIN_TRIM);
+      setTrimStart(next);
+      clampPlayheadInto(next, trimEnd);
     } else {
-      setTrimEnd(Math.max(Math.min(timeFromX(e.clientX), duration), trimStart + MIN_TRIM));
+      const next = Math.max(Math.min(timeFromX(e.clientX), duration), trimStart + MIN_TRIM);
+      setTrimEnd(next);
+      clampPlayheadInto(trimStart, next);
     }
   }
   function endDrag(e: React.PointerEvent) {
@@ -508,7 +518,7 @@ function ViewerStage({
             onLoadedMetadata={(e) => {
               const d = e.currentTarget.duration;
               if (Number.isFinite(d) && d > 0) {
-                setDuration(d);
+                setVideoDuration(d);
                 if (!touched) setTrimEnd(d);
               }
             }}
@@ -674,6 +684,10 @@ function ViewerStage({
                     onPointerDown={startSeek}
                     role="slider"
                     aria-label="Playhead"
+                    aria-valuemin={0}
+                    aria-valuemax={Math.round(duration)}
+                    aria-valuenow={Math.round(current)}
+                    aria-valuetext={fmtTime(current)}
                     className="pointer-events-auto absolute -top-2 -bottom-2 z-40 flex w-5 -translate-x-1/2 cursor-ew-resize justify-center touch-none"
                     style={{ left: `${progress}%` }}
                   >
@@ -951,6 +965,9 @@ function TrimHandle({
       onPointerDown={onPointerDown}
       role="slider"
       aria-label={isStart ? "Trim start" : "Trim end"}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(pct)}
       // The handle straddles the frame edge so it reads as the frame's thickened
       // side (Medal-style). White to match the frame; a grey grip line inside.
       className={cn(
@@ -1200,35 +1217,34 @@ function EditableTitle({
   title: string;
   onCommit: (title: string) => void;
 }) {
-  const [editing, setEditing] = React.useState(false);
-  const [draft, setDraft] = React.useState(title);
+  // `draft` doubles as the editing flag: null = not editing (render `title`
+  // straight from the prop), a string = the working copy being edited. It's
+  // seeded from `title` in the click handler, so no prop is copied into state on
+  // mount and there's no re-sync effect that would flash a stale title.
+  const [draft, setDraft] = React.useState<string | null>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
+  const editing = draft !== null;
 
-  React.useEffect(() => setDraft(title), [title]);
   React.useEffect(() => {
     if (editing) inputRef.current?.select();
   }, [editing]);
 
   function commit() {
-    setEditing(false);
-    const v = draft.trim();
-    if (v) onCommit(v);
-    else setDraft(title);
+    const v = (draft ?? "").trim();
+    setDraft(null);
+    if (v && v !== title) onCommit(v);
   }
 
   if (editing) {
     return (
       <input
         ref={inputRef}
-        value={draft}
+        value={draft ?? ""}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {
           if (e.key === "Enter") commit();
-          if (e.key === "Escape") {
-            setDraft(title);
-            setEditing(false);
-          }
+          if (e.key === "Escape") setDraft(null);
         }}
         className="w-full rounded-md border border-border bg-field px-2.5 py-1.5 text-lg font-semibold outline-none focus:border-ring"
       />
@@ -1238,7 +1254,7 @@ function EditableTitle({
   return (
     <button
       type="button"
-      onClick={() => setEditing(true)}
+      onClick={() => setDraft(title)}
       className="group/title flex items-start gap-2 text-left"
     >
       <span className="text-lg font-semibold leading-tight">{title || "Untitled"}</span>

@@ -1,4 +1,5 @@
 import * as React from "react";
+import { createLazyRoute } from "@tanstack/react-router";
 import { Crosshair } from "@phosphor-icons/react";
 
 import {
@@ -43,7 +44,12 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-export default function ValorantPage() {
+// Lazy-loaded: deferred out of the boot bundle, fetched on navigation.
+export const Route = createLazyRoute("/valorant")({
+  component: ValorantPage,
+});
+
+function ValorantPage() {
   const { data: status } = useValorantStatus();
   const match = useMatchState();
   const summary = useMatchSummary();

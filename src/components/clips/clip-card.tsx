@@ -83,7 +83,11 @@ function ClipPreview({ clip }: { clip: ClipRecord }) {
   const [playing, setPlaying] = React.useState(false);
   const [fullscreen, setFullscreen] = React.useState(false);
   const [current, setCurrent] = React.useState(0);
-  const [duration, setDuration] = React.useState(clip.duration_secs);
+  // The clip's stored duration is the render-time fallback; once the <video>
+  // reports its real duration we keep that (genuinely new data), rather than
+  // copying the prop into state where it would go stale if `clip` changed.
+  const [videoDuration, setVideoDuration] = React.useState<number | null>(null);
+  const duration = videoDuration ?? clip.duration_secs;
   const [scrubbing, setScrubbing] = React.useState(false);
 
   // Keep the actual element's `muted` in sync with state (React doesn't reflect it as an attribute reliably).
@@ -201,7 +205,7 @@ function ClipPreview({ clip }: { clip: ClipRecord }) {
           )}
           onLoadedMetadata={(e) => {
             const d = e.currentTarget.duration;
-            if (Number.isFinite(d) && d > 0) setDuration(d);
+            if (Number.isFinite(d) && d > 0) setVideoDuration(d);
           }}
           onTimeUpdate={(e) => {
             if (!scrubbing) setCurrent(e.currentTarget.currentTime);

@@ -83,7 +83,7 @@ function StorageGauge({ usedMb }: { usedMb: number }) {
                 stroke="currentColor"
                 strokeWidth={3}
                 fill="none"
-                d="M18 2.0845a15.9155 15.9155 0 0 1 0 31.831a15.9155 15.9155 0 0 1 0 -31.831"
+                d="M18 2.08a15.92 15.92 0 0 1 0 31.83a15.92 15.92 0 0 1 0 -31.83"
               />
               <path
                 className="text-muted-foreground"
@@ -92,7 +92,7 @@ function StorageGauge({ usedMb }: { usedMb: number }) {
                 strokeLinecap="round"
                 strokeDasharray={`${pct}, 100`}
                 fill="none"
-                d="M18 2.0845a15.9155 15.9155 0 0 1 0 31.831a15.9155 15.9155 0 0 1 0 -31.831"
+                d="M18 2.08a15.92 15.92 0 0 1 0 31.83a15.92 15.92 0 0 1 0 -31.83"
               />
             </svg>
           </span>

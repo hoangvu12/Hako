@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   Scissors,
   CaretDown,
@@ -30,6 +31,37 @@ const SORTS: { key: SortKey; label: string }[] = [
   { key: "largest", label: "Largest first" },
 ];
 
+// Grid metrics (kept in sync with the row layout below). `GAP` mirrors the old
+// `gap-5`; `MIN_CARD` is the smallest comfortable card width before we drop a
+// column. `EST_ROW` is the first-paint row-height guess — the real heights are
+// measured per row, this only seeds scroll math before measurement lands.
+const GAP = 20;
+const MIN_CARD = 240;
+const EST_ROW = 280;
+
+/**
+ * Responsive column count derived from the scroll container's *content* width
+ * (so it tracks the panel, not the window). Recomputes on resize via a single
+ * ResizeObserver — the virtualizer keys its row layout off this.
+ */
+function useGridColumns(ref: React.RefObject<HTMLElement | null>): number {
+  const [cols, setCols] = React.useState(1);
+  React.useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const compute = (w: number) =>
+      Math.max(1, Math.floor((w + GAP) / (MIN_CARD + GAP)));
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? 0;
+      const next = compute(w);
+      setCols((c) => (c === next ? c : next));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+  return cols;
+}
+
 function sortClips(clips: ClipRecord[], key: SortKey): ClipRecord[] {
   const copy = [...clips];
   switch (key) {
@@ -57,6 +89,27 @@ export default function ClipsPage() {
     );
     return sortClips(list, sort);
   }, [clips, query, sort]);
+
+  // Virtualized grid: render the clips as rows of `columns` cards and only mount
+  // the rows near the viewport. With hover-autoplay <video> previews per card,
+  // mounting an unbounded grid was the real cost as libraries grow — this caps
+  // the live DOM (and video elements) to a handful of rows.
+  const scrollRef = React.useRef<HTMLDivElement>(null);
+  const columns = useGridColumns(scrollRef);
+  const rowCount = Math.ceil(visible.length / columns);
+
+  const rowVirtualizer = useVirtualizer({
+    count: rowCount,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => EST_ROW,
+    overscan: 3,
+  });
+
+  // A column-count change reflows every row to a new height; drop the cached
+  // measurements so the virtualizer re-measures instead of trusting stale sizes.
+  React.useEffect(() => {
+    rowVirtualizer.measure();
+  }, [columns, rowVirtualizer]);
 
   function handleRename(clip: ClipRecord) {
     const next = window.prompt("Rename clip", clip.title);
@@ -119,8 +172,11 @@ export default function ClipsPage() {
         </p>
       ) : null}
 
-      {/* Grid */}
-      <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto p-6">
+      {/* Grid (virtualized) */}
+      <div
+        ref={scrollRef}
+        className="scrollbar-thin min-h-0 flex-1 overflow-y-auto p-6"
+      >
         {isLoading ? (
           <p className="text-sm text-muted-foreground">Loading…</p>
         ) : (clips?.length ?? 0) === 0 ? (
@@ -129,15 +185,42 @@ export default function ClipsPage() {
             capture a highlight.
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
-            {visible.map((clip) => (
-              <ClipCard
-                key={clip.id}
-                clip={clip}
-                onDelete={() => del.mutate(clip.id)}
-                onRename={() => handleRename(clip)}
-              />
-            ))}
+          <div
+            style={{
+              height: rowVirtualizer.getTotalSize(),
+              width: "100%",
+              position: "relative",
+            }}
+          >
+            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+              const start = virtualRow.index * columns;
+              const rowClips = visible.slice(start, start + columns);
+              return (
+                <div
+                  key={virtualRow.key}
+                  data-index={virtualRow.index}
+                  ref={rowVirtualizer.measureElement}
+                  // Static layout lives in the class (gap-5 / pb-5 == GAP); only
+                  // the genuinely per-row values (vertical offset + column track
+                  // count) stay inline. The trailing pb-5 keeps absolutely-
+                  // positioned rows from butting together with no spacing.
+                  className="absolute top-0 left-0 grid w-full gap-5 pb-5"
+                  style={{
+                    transform: `translateY(${virtualRow.start}px)`,
+                    gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+                  }}
+                >
+                  {rowClips.map((clip) => (
+                    <ClipCard
+                      key={clip.id}
+                      clip={clip}
+                      onDelete={() => del.mutate(clip.id)}
+                      onRename={() => handleRename(clip)}
+                    />
+                  ))}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

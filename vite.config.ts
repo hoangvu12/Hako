@@ -24,4 +24,13 @@ export default defineConfig({
   },
   // Expose TAURI_* env vars to the client.
   envPrefix: ["VITE_", "TAURI_ENV_*"],
+  build: {
+    // The app only ever runs inside WebView2 (evergreen Chromium), so target a
+    // modern baseline instead of Vite's broad browser matrix — no legacy
+    // transpilation or polyfills shipped, smaller bundle + faster parse/startup.
+    target: "chrome110",
+    minify: "esbuild",
+    // No sourcemaps in the shipped bundle (they're dead weight inside WebView2).
+    sourcemap: false,
+  },
 });
