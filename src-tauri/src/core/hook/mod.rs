@@ -1,12 +1,11 @@
-//! Graphics-hook ("Game Capture") path — capture *above* the DWM composition
-//! cap by hooking the game's own `Present`, the way OBS and Medal do it.
+//! Graphics-hook ("Game Capture") path — Hako's capture backend. Captures at the
+//! game's real render rate (above the desktop-composition cap) by hooking the
+//! game's own `Present`, the way OBS and Medal do it.
 //!
-//! Hako's default capture is WGC (`core::capture`), which is Vanguard-safe but
-//! bound by the desktop composition rate (~60 on mixed-refresh / multi-GPU
-//! setups). This module is the opt-in high-FPS path that injects an
-//! OBS-derived `graphics-hook` DLL into the game, grabs the real backbuffer at
-//! the game's render rate, and shares it back as a D3D11 texture — which we then
-//! run through the same `Converter` → `Encoder` pipeline as WGC.
+//! This module injects an OBS-derived `graphics-hook` DLL into the game, grabs
+//! the real backbuffer at the game's render rate, and shares it back as a D3D11
+//! texture — which the capture pipeline (`core::capture`) runs through its
+//! `Converter` → `Encoder` stages.
 //!
 //! ## Why this mirrors OBS exactly
 //! Medal's `medal-hook64.dll` is OBS's `graphics-hook` recompiled (same exports,
@@ -15,11 +14,12 @@
 //! and implement only the host orchestration here. See [`contract`] for the
 //! byte-level IPC contract.
 //!
-//! ## ⚠️ Anti-cheat risk
-//! Injecting into the Valorant process is tolerated for OBS/Medal because Riot
-//! trusts those specific signed binaries. A new injector is **not** automatically
-//! trusted and can be blocked or put users' accounts at risk. This path must ship
-//! **opt-in, defaulted off, behind a clear warning**, and WGC stays the default.
+//! ## Anti-cheat note
+//! Injecting into the Valorant process is the same technique OBS/Medal/Overwolf
+//! use, and Riot's Vanguard tolerates legitimate capture/overlay software in
+//! practice. The injection can still fail or be blocked (e.g. the game minimized
+//! and not presenting, or a hardened anti-cheat build) — those cases surface as a
+//! start error rather than a crash.
 //!
 //! ## Host lifecycle (implemented step-by-step against [`contract`])
 //! 1. Resolve target: window → `GetWindowThreadProcessId` → (thread_id,

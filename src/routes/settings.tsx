@@ -734,19 +734,6 @@ function SettingsPage() {
                   </Select>
                 </Row>
               </Panel>
-
-              {/* Medal-style nudge: above the desktop-composition rate, WGC capture
-                  can't actually deliver the frames, so clips look choppy. */}
-              {draft.target_fps > 60 && draft.capture_mode !== "hook" && (
-                <div className="flex gap-2 rounded-lg border border-warning/40 bg-warning/10 p-3 text-xs text-warning">
-                  <Warning className="size-4 shrink-0" weight="fill" />
-                  <span>
-                    {draft.target_fps} FPS is above the ~60&nbsp;FPS desktop-composition
-                    cap. Unless you enable game-hook capture (in Capture settings), WGC
-                    can't deliver that many frames and clips may look choppy.
-                  </span>
-                </div>
-              )}
             </>
           )}
 
@@ -757,38 +744,6 @@ function SettingsPage() {
                 title="Capture"
                 subtitle="How frames are grabbed and how much gameplay is held ready to clip."
               />
-
-              <Panel title="Capture method">
-                <Row
-                  label="Backend"
-                  hint="WGC is Vanguard-safe; game-hook beats the FPS cap but carries anti-cheat risk."
-                >
-                  <Select
-                    value={draft.capture_mode === "hook" ? "hook" : "wgc"}
-                    onValueChange={(v) => set("capture_mode", v)}
-                  >
-                    <SelectTrigger size="sm" className="w-36">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="wgc">WGC (safe)</SelectItem>
-                      <SelectItem value="hook">Game hook</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </Row>
-              </Panel>
-
-              {draft.capture_mode === "hook" && (
-                <div className="flex gap-2 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
-                  <Warning className="size-4 shrink-0" weight="fill" />
-                  <span>
-                    Game-hook injects into the game to capture above the ~60&nbsp;FPS
-                    desktop-composition cap. Anti-cheats (e.g. Valorant's Vanguard)
-                    may flag the injector and put your account at risk. WGC stays
-                    the safe default.
-                  </span>
-                </div>
-              )}
 
               <Panel title="Replay buffer">
                 <Row

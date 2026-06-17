@@ -64,16 +64,9 @@ pub struct Settings {
     /// - `highlights` (default) — record the match, cut per-event highlights,
     /// - `full_match` — keep the whole match as a single clip (no cutting),
     /// - `session` — record continuously while the game is open as one clip.
-    ///
-    /// Distinct from [`Settings::capture_mode`] (the WGC-vs-hook *backend*).
     pub auto_capture_mode: String,
     /// Where clips are written (null → `<Videos>/Hako`).
     pub storage_dir: Option<String>,
-    /// Capture backend: `wgc` (default, Vanguard-safe, capped at the DWM
-    /// composition rate) or `hook` (opt-in graphics-hook injection that beats the
-    /// cap at the cost of anti-cheat risk — see `core::hook`). Anything other than
-    /// `hook` is treated as `wgc`.
-    pub capture_mode: String,
     /// Which Medal-style quality preset the UI shows as selected: `low` |
     /// `standard` | `high` | `custom`. Purely cosmetic — the concrete knobs
     /// (`resolution`, `target_fps`, `bitrate_mbps`, `codec`) are the source of
@@ -114,7 +107,6 @@ impl Default for Settings {
             event_timings: EventTimings::default(),
             auto_capture_mode: "highlights".into(),
             storage_dir: None,
-            capture_mode: "wgc".into(),
             quality_preset: "custom".into(),
             resolution: "native".into(),
             gpu_adapter: -1,
@@ -268,11 +260,6 @@ impl Default for AudioAppSel {
 }
 
 impl Settings {
-    /// True when the user opted into the graphics-hook injection capture path.
-    pub fn uses_hook_capture(&self) -> bool {
-        self.capture_mode.eq_ignore_ascii_case("hook")
-    }
-
     /// True when the instant-replay buffer should be spooled to disk rather than
     /// held in RAM (Medal's "Recording buffer: Disk"). Anything other than `disk`
     /// means RAM.

@@ -394,8 +394,7 @@ const CAPTURE_RETRY_BACKOFF: Duration = Duration::from_secs(20);
 /// auto-stop it when the game exits — Medal's "detect the game, start recording"
 /// behavior. Only ever touches a capture *we* started (`auto_capturing`), so a
 /// user's manual capture is never auto-stopped, and we never fight a capture the
-/// user started manually. Uses the configured backend (WGC or hook) via
-/// [`commands::start_capture_with`].
+/// user started manually. Starts the capture via [`commands::start_capture_with`].
 fn auto_manage_capture(app: &AppHandle, auto_capturing: &mut bool, next_attempt: &mut Instant) {
     let game = capture::find_valorant_window();
     let capturing = commands::is_capturing(app);

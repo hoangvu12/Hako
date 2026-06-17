@@ -68,7 +68,7 @@ export interface GpuReport {
   device_ok: boolean;
   feature_level: string | null;
   error: string | null;
-  /** Resolved WGC capture adapter (display owner) for the current setting. */
+  /** Resolved capture adapter for the current setting. */
   capture_adapter: number | null;
   /** Resolved encode adapter (== capture on the zero-copy fast path). */
   encode_adapter: number | null;
@@ -180,7 +180,7 @@ export async function processLoopbackSupported(): Promise<boolean> {
   return invoke<boolean>("process_loopback_supported");
 }
 
-/** Start WGC capture of a window (HWND) at an optional target FPS / adapter. */
+/** Start capture of a window (HWND) at an optional target FPS / adapter. */
 export async function startCapture(
   hwnd: number,
   targetFps?: number,
@@ -473,12 +473,6 @@ export interface Settings {
    */
   auto_capture_mode: AutoCaptureMode;
   storage_dir: string | null;
-  /**
-   * Capture backend: "wgc" (default, Vanguard-safe, capped at the desktop
-   * composition rate) or "hook" (opt-in graphics-hook injection that beats the
-   * cap but carries anti-cheat / ban risk).
-   */
-  capture_mode: string;
   /**
    * Which quality preset card is highlighted: "low" | "standard" | "high" |
    * "custom". Cosmetic — selecting a preset writes the concrete knobs

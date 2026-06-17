@@ -71,8 +71,8 @@ pub struct GpuReport {
     pub device_ok: bool,
     pub feature_level: Option<String>,
     pub error: Option<String>,
-    /// Resolved WGC capture adapter for the current "Selected GPU" setting
-    /// (display owner). `None` if no usable adapter was found.
+    /// Resolved capture adapter for the current "Selected GPU" setting.
+    /// `None` if no usable adapter was found.
     pub capture_adapter: Option<u32>,
     /// Resolved encode adapter for the current setting (== `capture_adapter` on
     /// the zero-copy fast path; a different discrete GPU when cross-adapter).
@@ -197,7 +197,7 @@ pub fn process_loopback_supported() -> bool {
     crate::core::audio::is_process_loopback_supported()
 }
 
-/// Start WGC capture of the given window (HWND as integer) at `target_fps`.
+/// Start capture of the given window (HWND as integer) at `target_fps`.
 #[tauri::command]
 pub fn start_capture(
     app: AppHandle,
@@ -223,14 +223,13 @@ pub fn start_capture_with(
     // Defaults (fps, buffer length, audio config, backend) come from saved
     // settings. `effective_audio()` yields the Medal-style per-source config,
     // synthesizing one from the legacy fields for pre-feature configs.
-    let (cfg_fps, buffer_secs, to_disk, audio_cfg, use_hook, enc_cfg, cfg_adapter) = {
+    let (cfg_fps, buffer_secs, to_disk, audio_cfg, enc_cfg, cfg_adapter) = {
         let s = settings.0.lock().map_err(|_| "settings poisoned")?;
         (
             s.target_fps,
             s.buffer_seconds,
             s.buffers_to_disk(),
             s.effective_audio(),
-            s.uses_hook_capture(),
             encode::EncodeSettings {
                 codec: encode::VideoCodec::from_setting(&s.codec),
                 bitrate_mbps: s.bitrate_mbps,
@@ -261,17 +260,11 @@ pub fn start_capture_with(
     // Explicit adapter from the caller wins; otherwise use the saved "Selected GPU"
     // (Auto → None, i.e. the display-owning adapter).
     let adapter_index = adapter_index.or(cfg_adapter);
-    // `hook` = opt-in graphics-hook injection (beats the DWM cap, anti-cheat
-    // risk); anything else = WGC (default, Vanguard-safe). See `core::hook`.
-    let running = if use_hook {
-        capture::start_hook(
-            app.clone(), hwnd, fps, adapter_index, buffer_secs, disk_buffer_dir, audio_cfg, enc_cfg,
-        )?
-    } else {
-        capture::start(
-            app.clone(), hwnd, fps, adapter_index, buffer_secs, disk_buffer_dir, audio_cfg, enc_cfg,
-        )?
-    };
+    // Capture via the injected graphics hook (the app's only backend). See
+    // `core::hook`.
+    let running = capture::start_hook(
+        app.clone(), hwnd, fps, adapter_index, buffer_secs, disk_buffer_dir, audio_cfg, enc_cfg,
+    )?;
     *guard = Some(running);
     Ok(())
 }

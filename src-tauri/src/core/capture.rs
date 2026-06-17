@@ -1,16 +1,14 @@
-//! Windows Graphics Capture: GraphicsCaptureItem from a window HWND,
-//! free-threaded frame pool, FrameArrived → bounded hand-off → encode thread.
+//! Game capture via an injected graphics hook: pull the game's shared backbuffer
+//! at its real render rate → bounded hand-off → encode thread.
 //!
-//! WGC only (no injection) — Vanguard-safe. Caps to target FPS and drops on
-//! backpressure; never blocks the FrameArrived thread.
-//!
-//! Pipeline: the WGC `FrameArrived` callback copies the captured
-//! BGRA texture into a pooled staging texture (a GPU→GPU copy — no CPU readback,
-//! and it must happen before WGC recycles the frame's buffer), then hands that
-//! staging texture to a dedicated **encode thread** over a bounded channel. The
-//! encode thread owns the `Converter` (BGRA→NV12), the `Encoder` (`h264_qsv`),
-//! and a small NV12 texture ring. The callback only copies + sends; if no
-//! staging texture is free it drops the frame (encoder backpressure).
+//! Pipeline: the hook source loop ([`hook_source_loop`]) samples the latest
+//! shared backbuffer and copies it into a pooled staging texture (a GPU→GPU copy
+//! — no CPU readback), then hands that staging texture to a dedicated **encode
+//! thread** over a bounded channel. The encode thread owns the `Converter`
+//! (BGRA→NV12), the `Encoder` (`h264_qsv`), and a small NV12 texture ring. The
+//! source loop only copies + sends; if no staging texture is free it drops the
+//! frame (encoder backpressure). See [`crate::core::hook`] for the injection
+//! details.
 
 #![allow(dead_code)]
 
@@ -24,11 +22,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
-use windows::core::{BOOL, IInspectable, Interface, Result as WinResult};
-use windows::Foundation::TypedEventHandler;
-use windows::Graphics::Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem};
-use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
-use windows::Graphics::DirectX::DirectXPixelFormat;
+use windows::core::{BOOL, Interface, Result as WinResult};
 use windows::Win32::Foundation::{HWND, LPARAM};
 use windows::Win32::Graphics::Direct3D11::{
     ID3D11Device, ID3D11DeviceContext, ID3D11Resource, ID3D11Texture2D, D3D11_BIND_RENDER_TARGET,
@@ -40,12 +34,6 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_R8G8B8A8_TYPELESS, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
     DXGI_SAMPLE_DESC,
 };
-use windows::Win32::Graphics::Dxgi::IDXGIDevice;
-use windows::Win32::System::WinRT::Direct3D11::{
-    CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
-};
-use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
-use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
     IsWindowVisible,
@@ -64,18 +52,15 @@ use crate::core::mux::{self, AudioClip, ClipMeta};
 use crate::core::session::SessionWriter;
 use crate::events;
 
-/// Number of BGRA staging textures shared between the capture callback and the
-/// encode thread. Also bounds in-flight frames (backpressure: callback drops
-/// when none are free). Small — we only need to cover channel + encoder latency.
+/// Number of BGRA staging textures shared between the hook source loop and the
+/// encode thread. Also bounds in-flight frames (backpressure: the source loop
+/// drops when none are free). Small — we only need to cover channel + encoder
+/// latency.
 const STAGING_POOL: usize = 4;
 /// NV12 textures the encode thread cycles through. Must exceed how many surfaces
 /// the encoder holds asynchronously (`async_depth` ≈ 1–2) so a reused texture is
 /// never still in flight.
 const NV12_RING: usize = 6;
-/// WGC frame-pool depth — frames WGC keeps in flight before recycling. 2 is the
-/// practical minimum; 3–4 gives headroom so a brief encode-thread stall doesn't
-/// make WGC drop *real* frames (it only costs a few capture-sized BGRA textures).
-const WGC_POOL_FRAMES: i32 = 4;
 
 /// A capturable top-level window (for the UI picker).
 #[derive(Debug, Clone, Serialize)]
@@ -88,11 +73,11 @@ pub struct WindowTarget {
 /// Live capture + encode throughput, emitted as the `capture-stats` event.
 #[derive(Debug, Clone, Serialize)]
 pub struct CaptureStats {
-    /// Handed-off (captured + copied) frames per second, after the FPS cap.
+    /// Handed-off (captured + copied) frames per second, after FPS pacing.
     pub fps: f64,
     /// Total frames handed off to the encode thread since start.
     pub frames: u64,
-    /// Total frames WGC delivered (before the cap) since start.
+    /// Total frames the hook delivered (before pacing) since start.
     pub arrived: u64,
     pub width: u32,
     pub height: u32,
@@ -356,8 +341,8 @@ impl ClipBuffer {
             return Err("buffer is empty — nothing to save".into());
         }
         // Duration tracks wall-clock via the PTS span, NOT frame_count/fps:
-        // capture runs below target fps under the DWM composition cap, so PTS
-        // (1/fps units, derived from SystemRelativeTime) is the real
+        // capture can run below target fps when the game renders slowly, so PTS
+        // (1/fps units, derived from the capture clock) is the real
         // timeline — frame_count/fps would report e.g. 12s for 30s of footage.
         let (lo, hi) = packets
             .iter()
@@ -543,292 +528,9 @@ unsafe extern "system" fn find_valorant_proc(hwnd: HWND, lparam: LPARAM) -> BOOL
     BOOL(1)
 }
 
-/// Cross-thread hand-off plumbing given to the FrameArrived callback.
-///
-/// The callback pops a free staging texture, copies the captured BGRA frame into
-/// it (GPU→GPU), and sends it to the encode thread. `context` is the shared
-/// immediate context (multithread-protected by the encoder), so using it from
-/// the callback thread alongside the encode thread is safe.
-struct Handoff {
-    context: ID3D11DeviceContext,
-    free_pool: Arc<Mutex<Vec<ID3D11Texture2D>>>,
-    filled_tx: SyncSender<(ID3D11Texture2D, i64)>,
-    /// Even, NV12-compatible capture dimensions; frames must match (or exceed,
-    /// then crop to) these. Mismatches are dropped (resize handling is a TODO).
-    width: u32,
-    height: u32,
-}
-
-/// Start capturing the given window, encoding it via QSV on the shared device.
-///
-/// Sets up the encode thread + WGC on a dedicated MTA thread and reports
-/// setup success/failure synchronously; on success the thread emits
-/// `capture-stats` until stopped.
-pub fn start(
-    app: AppHandle,
-    hwnd_raw: i64,
-    target_fps: u32,
-    adapter_index: Option<u32>,
-    buffer_secs: u32,
-    disk_buffer_dir: Option<PathBuf>,
-    audio: AudioConfig,
-    enc_cfg: EncodeSettings,
-) -> std::result::Result<RunningCapture, String> {
-    let stop = Arc::new(AtomicBool::new(false));
-    let shared = Arc::new(Shared::default());
-    let target_fps = target_fps.clamp(1, 480);
-    // The capture target's PID feeds the `specific_apps` "Game Audio" source; the
-    // planned track names fix the clip buffer's audio-track layout up front.
-    let game_pid = pid_for_hwnd(hwnd_raw);
-    let track_names = audio::planned_track_names(&audio, game_pid);
-    // Created here (fps is known) so the handle survives on RunningCapture; the
-    // encode thread fills its ring + publishes `meta` (dimensions known later).
-    // `disk_buffer_dir` selects RAM vs disk for the instant-replay buffer.
-    let clip = ClipBuffer::new(target_fps, buffer_secs.clamp(5, 600), track_names, disk_buffer_dir);
-
-    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<std::result::Result<(), String>>();
-    let thread = {
-        let stop = stop.clone();
-        let shared = shared.clone();
-        let clip = clip.clone();
-        std::thread::Builder::new()
-            .name("hako-capture".into())
-            .spawn(move || {
-                capture_thread(
-                    app, hwnd_raw, target_fps, adapter_index, audio, game_pid, stop, shared, clip,
-                    enc_cfg, ready_tx,
-                )
-            })
-            .map_err(|e| format!("failed to spawn capture thread: {e}"))?
-    };
-
-    match ready_rx.recv() {
-        Ok(Ok(())) => Ok(RunningCapture {
-            stop,
-            thread: Some(thread),
-            clip,
-        }),
-        Ok(Err(e)) => {
-            let _ = thread.join();
-            Err(e)
-        }
-        Err(_) => Err("capture thread exited before signalling readiness".into()),
-    }
-}
-
-fn capture_thread(
-    app: AppHandle,
-    hwnd_raw: i64,
-    target_fps: u32,
-    adapter_index: Option<u32>,
-    audio: AudioConfig,
-    game_pid: Option<u32>,
-    stop: Arc<AtomicBool>,
-    shared: Arc<Shared>,
-    clip: Arc<ClipBuffer>,
-    enc_cfg: EncodeSettings,
-    ready_tx: std::sync::mpsc::Sender<std::result::Result<(), String>>,
-) {
-    // WGC objects are agile, but the thread still needs COM initialized (MTA).
-    unsafe {
-        let _ = RoInitialize(RO_INIT_MULTITHREADED);
-    }
-
-    match run_pipeline(
-        &app,
-        hwnd_raw,
-        target_fps,
-        adapter_index,
-        audio,
-        game_pid,
-        &stop,
-        &shared,
-        clip,
-        enc_cfg,
-    ) {
-        Err(e) => {
-            let _ = ready_tx.send(Err(e));
-        }
-        Ok(mut running) => {
-            let _ = ready_tx.send(Ok(()));
-            emit_loop(&app, target_fps, &stop, &shared);
-            running.teardown();
-        }
-    }
-
-    unsafe {
-        RoUninitialize();
-    }
-}
-
-/// Owns the live capture + encode resources for one session; `teardown` stops
-/// the encode thread and releases the WGC objects on the capture thread.
-struct RunningPipeline {
-    pool: Direct3D11CaptureFramePool,
-    session: windows::Graphics::Capture::GraphicsCaptureSession,
-    token: i64,
-    encode_thread: Option<JoinHandle<()>>,
-    /// Desktop+mic audio capture, when enabled. Dropped/stopped on teardown.
-    audio: Option<AudioCapture>,
-}
-
-impl RunningPipeline {
-    fn teardown(&mut self) {
-        // Stop audio first (its own thread + WASAPI clients) so it isn't pushing
-        // into the clip buffer while we tear the rest down.
-        if let Some(mut a) = self.audio.take() {
-            a.stop();
-        }
-        // Removing the handler + closing drops the FrameArrived closure, which
-        // owns the only `filled_tx`; the encode thread's `recv` then ends.
-        let _ = self.pool.RemoveFrameArrived(self.token);
-        let _ = self.session.Close();
-        let _ = self.pool.Close();
-        if let Some(t) = self.encode_thread.take() {
-            let _ = t.join();
-        }
-    }
-}
-
-/// Build the whole pipeline: shared device → encode thread → WGC capture.
-fn run_pipeline(
-    _app: &AppHandle,
-    hwnd_raw: i64,
-    target_fps: u32,
-    adapter_index: Option<u32>,
-    audio: AudioConfig,
-    game_pid: Option<u32>,
-    _stop: &Arc<AtomicBool>,
-    shared: &Arc<Shared>,
-    clip: Arc<ClipBuffer>,
-    enc_cfg: EncodeSettings,
-) -> std::result::Result<RunningPipeline, String> {
-    // Capture on the chosen adapter, else the display-owning one.
-    let gpus = device::enumerate_gpus().map_err(|e| format!("enumerate gpus: {e:?}"))?;
-    let index = match adapter_index {
-        Some(i) => Some(i),
-        None => device::default_capture_index(&gpus),
-    };
-    // Encode adapter == capture adapter on the single-device fast path (Phase 1:
-    // dual-device plumbing without cross-adapter yet). The encoder takes the
-    // ENCODE adapter's vendor; here they coincide. Logged so a cross-adapter setup
-    // is visible once later phases let `encode_idx` diverge from `capture_idx`.
-    let vendor = index
-        .map(|i| device::vendor_at(&gpus, i))
-        .unwrap_or(device::Vendor::Other);
-    let adapter = match index {
-        Some(i) => Some(device::adapter_at(i).map_err(|e| format!("adapter_at({i}): {e:?}"))?),
-        None => None,
-    };
-    let (d3d_device, context, _fl) =
-        device::create_device(adapter.as_ref()).map_err(|e| format!("create device: {e:?}"))?;
-    tracing::info!(
-        capture_adapter = ?index,
-        encode_adapter = ?index,
-        cross_adapter = false,
-        encode_vendor = vendor.label(),
-        "wgc capture: resolved adapters (single-device fast path)"
-    );
-
-    let hwnd = HWND(hwnd_raw as *mut c_void);
-    let item = create_item_for_window(hwnd).map_err(|e| format!("capture item: {e:?}"))?;
-    let size = item.Size().map_err(|e| format!("item size: {e:?}"))?;
-    let width = (size.Width.max(0) as u32) & !1;
-    let height = (size.Height.max(0) as u32) & !1;
-    if width < 2 || height < 2 {
-        return Err(format!("window has no capturable size ({width}x{height})"));
-    }
-
-    // Staging pool (BGRA) shared with the callback.
-    let mut pool_vec = Vec::with_capacity(STAGING_POOL);
-    for _ in 0..STAGING_POOL {
-        pool_vec.push(
-            create_bgra_staging(&d3d_device, width, height)
-                .map_err(|e| format!("staging texture: {e:?}"))?,
-        );
-    }
-    let free_pool = Arc::new(Mutex::new(pool_vec));
-    let (filled_tx, filled_rx) = sync_channel::<(ID3D11Texture2D, i64)>(STAGING_POOL);
-
-    // Encode thread: build Converter + Encoder on it (raw FFmpeg ptrs aren't
-    // Send), report readiness, then convert→encode each handed frame into the
-    // shared clip buffer (Mode A).
-    let (enc_ready_tx, enc_ready_rx) = std::sync::mpsc::channel::<std::result::Result<(), String>>();
-    let encode_thread = {
-        let capture_device = d3d_device.clone();
-        let capture_context = context.clone();
-        // Single-device fast path: the encode device IS the capture device, so the
-        // converter's NV12 textures feed the encoder with no cross-adapter copy.
-        let encode_device = d3d_device.clone();
-        let encode_context = context.clone();
-        let shared = shared.clone();
-        let free_pool = free_pool.clone();
-        let clip = clip.clone();
-        std::thread::Builder::new()
-            .name("hako-encode".into())
-            .spawn(move || {
-                encode_thread(
-                    capture_device, capture_context, encode_device, encode_context, vendor, width,
-                    height, target_fps, enc_cfg, filled_rx, free_pool, shared, clip, enc_ready_tx,
-                )
-            })
-            .map_err(|e| format!("spawn encode thread: {e}"))?
-    };
-    match enc_ready_rx.recv() {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            let _ = encode_thread.join();
-            return Err(e);
-        }
-        Err(_) => {
-            let _ = encode_thread.join();
-            return Err("encode thread exited before signalling readiness".into());
-        }
-    }
-
-    let handoff = Handoff {
-        context: context.clone(),
-        free_pool,
-        filled_tx,
-        width,
-        height,
-    };
-
-    // Start audio capture (best-effort) once the clip buffer exists; it pushes
-    // each output track's AAC into the same ClipBuffer the save path reads. A
-    // None means no usable device — the clip is simply video-only. Skip entirely
-    // when the config has no enabled source (no audio tracks planned).
-    let audio = if clip.audio_track_count() > 0 {
-        match AudioCapture::start(clip.clone(), audio, game_pid) {
-            Some(a) => Some(a),
-            None => {
-                tracing::warn!("audio capture requested but could not start; recording video only");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    match setup_wgc(&d3d_device, item, target_fps, shared, Some(handoff)) {
-        Ok((pool, session, token)) => Ok(RunningPipeline {
-            pool,
-            session,
-            token,
-            encode_thread: Some(encode_thread),
-            audio,
-        }),
-        Err(e) => {
-            // Dropping the handoff (held by the Err path) drops filled_tx → the
-            // encode thread ends; join it before returning.
-            let _ = encode_thread.join();
-            Err(format!("WGC setup: {e:?}"))
-        }
-    }
-}
-
 // ===========================================================================
-// Game-capture (graphics-hook injection) path — opt-in, beats the DWM cap.
+// Game-capture (graphics-hook injection) path — captures at the game's real
+// render rate, above the desktop-composition cap.
 // ===========================================================================
 
 /// How long to wait for the injected hook to deliver its first frame before
@@ -836,14 +538,12 @@ fn run_pipeline(
 /// anti-cheat, we fail here rather than hang the start command.
 const HOOK_FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(12);
 
-/// Start the **injection** capture path for a window: inject the OBS-derived
-/// `graphics-hook` into the game, pull the shared backbuffer at the game's real
-/// render rate, and run it through the same `Converter` → `Encoder` → clip-buffer
-/// pipeline as WGC. Returns the same [`RunningCapture`] handle as [`start`] so the
-/// save path and capture state are identical.
+/// Start capture for a window: inject the OBS-derived `graphics-hook` into the
+/// game, pull the shared backbuffer at the game's real render rate, and run it
+/// through the `Converter` → `Encoder` → clip-buffer pipeline. Returns a
+/// [`RunningCapture`] handle that the save path and capture state use.
 ///
-/// ⚠️ Injects into the target process. Only call this for users who opted into the
-/// game-capture mode behind the ban-risk warning (Settings `capture_mode = hook`).
+/// This is the app's only capture backend; it injects into the target process.
 pub fn start_hook(
     app: AppHandle,
     hwnd_raw: i64,
@@ -963,13 +663,13 @@ fn run_hook_pipeline(
     clip: Arc<ClipBuffer>,
     enc_cfg: EncodeSettings,
 ) -> std::result::Result<RunningHookPipeline, String> {
-    // Adapter selection DIFFERS from WGC. The hook copies the game's backbuffer
-    // into a *legacy* shared texture on the GPU the game RENDERS on (the dGPU on
-    // a hybrid/Optimus laptop), and a legacy shared handle can only be reopened
-    // via `OpenSharedResource` on that same adapter. So default to the preferred
-    // (highest-VRAM = discrete) GPU, NOT the display-owning one WGC uses — on an
-    // Optimus laptop the internal panel is driven by the iGPU, which would make
-    // the shared-texture open fail. An explicit `adapter_index` still wins.
+    // The hook copies the game's backbuffer into a *legacy* shared texture on the
+    // GPU the game RENDERS on (the dGPU on a hybrid/Optimus laptop), and a legacy
+    // shared handle can only be reopened via `OpenSharedResource` on that same
+    // adapter. So default to the preferred (highest-VRAM = discrete) GPU, NOT the
+    // display-owning one — on an Optimus laptop the internal panel is driven by
+    // the iGPU, which would make the shared-texture open fail. An explicit
+    // `adapter_index` still wins.
     let gpus = device::enumerate_gpus().map_err(|e| format!("enumerate gpus: {e:?}"))?;
     let index = adapter_index
         .or_else(|| gpus.iter().find(|g| g.preferred).map(|g| g.index))
@@ -1045,7 +745,7 @@ fn run_hook_pipeline(
     let free_pool = Arc::new(Mutex::new(pool_vec));
     let (filled_tx, filled_rx) = sync_channel::<(ID3D11Texture2D, i64)>(STAGING_POOL);
 
-    // Reuse the exact same encode thread as the WGC path.
+    // The shared encode thread: convert → encode → clip buffer.
     let (enc_ready_tx, enc_ready_rx) = std::sync::mpsc::channel::<std::result::Result<(), String>>();
     let encode_thread = {
         let capture_device = d3d_device.clone();
@@ -1078,8 +778,8 @@ fn run_hook_pipeline(
     }
 
     // Frame-source loop: poll the hook, copy each shared backbuffer into a free
-    // staging texture, and hand it to the encode thread — the same
-    // `(ID3D11Texture2D, ts)` shape the WGC callback produces.
+    // staging texture, and hand it to the encode thread as an
+    // `(ID3D11Texture2D, ts)` pair.
     let source_stop = stop.clone();
     let source_thread = {
         let shared = shared.clone();
@@ -1117,9 +817,9 @@ fn run_hook_pipeline(
     })
 }
 
-/// The hook frame-source loop (analog of the WGC `FrameArrived` callback): pull a
-/// shared backbuffer, copy its even sub-rect into a free staging texture, and send
-/// it on. Owns the `RunningHook` so dropping at loop-end tears the hook down.
+/// The hook frame-source loop: pull a shared backbuffer, copy its even sub-rect
+/// into a free staging texture, and send it on. Owns the `RunningHook` so
+/// dropping at loop-end tears the hook down.
 fn hook_source_loop(
     mut hook: RunningHook,
     _device: ID3D11Device,
@@ -1293,137 +993,6 @@ fn create_staging_like(
     Ok(tex.expect("CreateTexture2D returned null staging texture"))
 }
 
-type CaptureObjects = (
-    Direct3D11CaptureFramePool,
-    windows::Graphics::Capture::GraphicsCaptureSession,
-    i64,
-);
-
-/// Create the WGC frame pool + session for `item` on `device`, wiring the
-/// FrameArrived callback. With `handoff = Some`, the callback copies + hands off
-/// each frame to the encode thread; with `None` it only counts (used by tests).
-fn setup_wgc(
-    device: &ID3D11Device,
-    item: GraphicsCaptureItem,
-    target_fps: u32,
-    shared: &Arc<Shared>,
-    handoff: Option<Handoff>,
-) -> WinResult<CaptureObjects> {
-    let winrt_device = create_winrt_device(device)?;
-    let size = item.Size()?;
-
-    let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
-        &winrt_device,
-        DirectXPixelFormat::B8G8R8A8UIntNormalized,
-        WGC_POOL_FRAMES,
-        size,
-    )?;
-    let session = pool.CreateCaptureSession(&item)?;
-    // Win11 niceties; ignore on older builds / unpackaged restrictions.
-    let _ = session.SetIsCursorCaptureEnabled(false);
-    let _ = session.SetIsBorderRequired(false);
-
-    // Drop frames that arrive faster than the target interval (frame pacing).
-    let interval_100ns: i64 = (10_000_000 / target_fps as i64) * 95 / 100;
-    let shared = shared.clone();
-
-    let handler = TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(
-        move |frame_pool, _| -> WinResult<()> {
-            let frame_pool = frame_pool.as_ref().expect("frame pool present");
-            let frame = frame_pool.TryGetNextFrame()?;
-            shared.arrived.fetch_add(1, Ordering::Relaxed);
-
-            let time = frame.SystemRelativeTime()?.Duration;
-            let content = frame.ContentSize()?;
-            shared.width.store(content.Width.max(0) as u32, Ordering::Relaxed);
-            shared.height.store(content.Height.max(0) as u32, Ordering::Relaxed);
-
-            let last = shared.last_handed_time.load(Ordering::Relaxed);
-            if last != 0 && time - last < interval_100ns {
-                return Ok(()); // early frame — dropping recycles the texture
-            }
-
-            // Extract the captured BGRA texture (stays on the GPU).
-            let surface = frame.Surface()?;
-            let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
-            let bgra: ID3D11Texture2D = unsafe { access.GetInterface()? };
-
-            match &handoff {
-                // No encode pipeline (tests): just count throughput.
-                None => {
-                    shared.last_handed_time.store(time, Ordering::Relaxed);
-                    shared.handed.fetch_add(1, Ordering::Relaxed);
-                }
-                Some(h) => {
-                    // Source must be at least our (even) capture size; otherwise
-                    // the window resized smaller — drop until resize is handled.
-                    let mut desc = D3D11_TEXTURE2D_DESC::default();
-                    unsafe { bgra.GetDesc(&mut desc) };
-                    if desc.Width < h.width || desc.Height < h.height {
-                        return Ok(());
-                    }
-
-                    // Grab a free staging texture; none → encoder backpressure, drop.
-                    let staging = match h.free_pool.lock() {
-                        Ok(mut p) => p.pop(),
-                        Err(_) => None,
-                    };
-                    let Some(staging) = staging else {
-                        return Ok(());
-                    };
-
-                    // GPU→GPU copy of the even sub-rect (no CPU readback). Must
-                    // happen now — WGC recycles the frame's buffer after this.
-                    let copy = (|| -> WinResult<()> {
-                        let dst: ID3D11Resource = staging.cast()?;
-                        let src: ID3D11Resource = bgra.cast()?;
-                        let box_ = D3D11_BOX {
-                            left: 0,
-                            top: 0,
-                            front: 0,
-                            right: h.width,
-                            bottom: h.height,
-                            back: 1,
-                        };
-                        unsafe {
-                            h.context.CopySubresourceRegion(
-                                &dst, 0, 0, 0, 0, &src, 0, Some(&box_),
-                            );
-                        }
-                        Ok(())
-                    })();
-                    if copy.is_err() {
-                        if let Ok(mut p) = h.free_pool.lock() {
-                            p.push(staging);
-                        }
-                        return Ok(());
-                    }
-
-                    shared.last_handed_time.store(time, Ordering::Relaxed);
-                    match h.filled_tx.try_send((staging, time)) {
-                        Ok(()) => {
-                            shared.handed.fetch_add(1, Ordering::Relaxed);
-                        }
-                        // Channel full (shouldn't happen: pool bounds it) or the
-                        // encode thread is gone — return the texture and drop.
-                        Err(TrySendError::Full((tex, _)))
-                        | Err(TrySendError::Disconnected((tex, _))) => {
-                            if let Ok(mut p) = h.free_pool.lock() {
-                                p.push(tex);
-                            }
-                        }
-                    }
-                }
-            }
-            Ok(())
-        },
-    );
-
-    let token = pool.FrameArrived(&handler)?;
-    session.StartCapture()?;
-    Ok((pool, session, token))
-}
-
 /// Output (encode) dimensions for a captured `src_w`x`src_h` frame given an
 /// optional resolution target box. Fits the source into the box **by height and
 /// never upscales** (Medal's `MatchHeight`), preserving aspect ratio; both
@@ -1470,7 +1039,8 @@ fn encode_thread(
     ready_tx: std::sync::mpsc::Sender<std::result::Result<(), String>>,
 ) {
     // The encode thread must keep draining captured frames even while the game
-    // pins the CPU, or the bounded hand-off channel backs up and WGC drops frames.
+    // pins the CPU, or the bounded hand-off channel backs up and the source loop
+    // drops frames.
     crate::core::boost_current_thread_priority("encode");
 
     // Output (encode) size: native capture size, or downscaled to the configured
@@ -1551,9 +1121,10 @@ fn encode_thread(
     let mut idx = 0usize;
     let mut clock = MasterClock::new(fps);
 
-    // Constant-frame-rate padding. WGC only delivers a frame when the desktop
-    // composition updates, so capture runs *below* the target under the DWM cap
-    // — e.g. ~50 of 60. We fill the PTS gaps between real frames by
+    // Constant-frame-rate padding. The hook source loop samples the latest
+    // backbuffer at the target interval, so when the game renders *below* the
+    // target (e.g. a menu, or a static screen) some ticks repeat the same frame.
+    // We fill the PTS gaps between real frames by
     // re-encoding the previous NV12 surface (what was on screen during the gap),
     // which the encoder turns into a tiny P-frame. The clip then plays as a clean
     // constant `fps` — matching Medal's duplicate-frame pacing — while PTS still
@@ -1677,45 +1248,6 @@ fn emit_loop(app: &AppHandle, target_fps: u32, stop: &Arc<AtomicBool>, shared: &
     }
 }
 
-/// Allocate a BGRA staging texture: VideoProcessor input (RENDER_TARGET) + copy
-/// destination. Same format WGC delivers (`B8G8R8A8_UNORM`).
-fn create_bgra_staging(device: &ID3D11Device, width: u32, height: u32) -> WinResult<ID3D11Texture2D> {
-    let desc = D3D11_TEXTURE2D_DESC {
-        Width: width,
-        Height: height,
-        MipLevels: 1,
-        ArraySize: 1,
-        Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-        SampleDesc: DXGI_SAMPLE_DESC {
-            Count: 1,
-            Quality: 0,
-        },
-        Usage: D3D11_USAGE_DEFAULT,
-        BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
-        CPUAccessFlags: 0,
-        MiscFlags: 0,
-    };
-    let mut tex: Option<ID3D11Texture2D> = None;
-    unsafe {
-        device.CreateTexture2D(&desc, None, Some(&mut tex))?;
-    }
-    Ok(tex.expect("CreateTexture2D returned null staging texture"))
-}
-
-/// Wrap our D3D11 device as a WinRT `IDirect3DDevice` for the frame pool.
-fn create_winrt_device(device: &ID3D11Device) -> WinResult<IDirect3DDevice> {
-    let dxgi: IDXGIDevice = device.cast()?;
-    let inspectable = unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi)? };
-    inspectable.cast()
-}
-
-/// Create a `GraphicsCaptureItem` for a window via the interop factory.
-fn create_item_for_window(hwnd: HWND) -> WinResult<GraphicsCaptureItem> {
-    let interop: IGraphicsCaptureItemInterop =
-        windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
-    unsafe { interop.CreateForWindow(hwnd) }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1737,208 +1269,4 @@ mod tests {
         assert_eq!(scaled_output(1280, 720, Some((1280, 720))), (1280, 720));
     }
 
-    /// Exercises the WGC path (interop → device → frame pool → FrameArrived →
-    /// D3D11 texture extraction) against real on-screen windows. No encode
-    /// pipeline here (`handoff = None`) — that's covered by the encode tests.
-    #[test]
-    fn lists_and_captures_a_window() {
-        let windows = list_windows();
-        println!("enumerated {} windows", windows.len());
-        assert!(!windows.is_empty(), "expected some visible windows");
-
-        unsafe {
-            let _ = RoInitialize(RO_INIT_MULTITHREADED);
-        }
-
-        let gpus = device::enumerate_gpus().expect("enumerate gpus");
-        let adapter =
-            device::default_capture_index(&gpus).map(|i| device::adapter_at(i).expect("adapter"));
-        let (d3d_device, _ctx, _fl) =
-            device::create_device(adapter.as_ref()).expect("create device");
-
-        // Some windows are minimized/occluded and yield no size — try several.
-        let mut captured_any = false;
-        for w in windows.iter().take(10) {
-            let item = match create_item_for_window(HWND(w.hwnd as *mut c_void)) {
-                Ok(i) => i,
-                Err(_) => continue,
-            };
-            let shared = Arc::new(Shared::default());
-            let (pool, session, token) = match setup_wgc(&d3d_device, item, 60, &shared, None) {
-                Ok(objs) => objs,
-                Err(_) => continue,
-            };
-            std::thread::sleep(Duration::from_millis(700));
-            let arrived = shared.arrived.load(Ordering::Relaxed);
-            let width = shared.width.load(Ordering::Relaxed);
-            let height = shared.height.load(Ordering::Relaxed);
-            let _ = pool.RemoveFrameArrived(token);
-            let _ = session.Close();
-            let _ = pool.Close();
-
-            if arrived >= 1 && width > 0 && height > 0 {
-                println!(
-                    "captured '{}' {}x{} ({} frames in 0.7s)",
-                    w.title, width, height, arrived
-                );
-                captured_any = true;
-                break;
-            }
-        }
-
-        unsafe {
-            RoUninitialize();
-        }
-        assert!(captured_any, "no window produced a frame with a valid size");
-    }
-
-    /// Full live pipeline end-to-end: capture a real window → GPU copy → NV12
-    /// convert → `h264_qsv` → compressed packets. Exercises the cross-thread
-    /// hand-off, staging pool, NV12 ring, and PTS path that the unit tests don't.
-    #[test]
-    fn encodes_a_captured_window() {
-        let windows = list_windows();
-        assert!(!windows.is_empty(), "expected some visible windows");
-
-        unsafe {
-            let _ = RoInitialize(RO_INIT_MULTITHREADED);
-        }
-
-        let gpus = device::enumerate_gpus().expect("enumerate gpus");
-        let cap_index = device::default_capture_index(&gpus);
-        let vendor = cap_index
-            .and_then(|i| gpus.iter().find(|g| g.index == i))
-            .map(|g| g.vendor)
-            .unwrap_or(device::Vendor::Other);
-        let adapter = cap_index.map(|i| device::adapter_at(i).expect("adapter"));
-        let (d3d_device, context, _fl) =
-            device::create_device(adapter.as_ref()).expect("create device");
-
-        let mut proved = false;
-        for w in windows.iter().take(12) {
-            let item = match create_item_for_window(HWND(w.hwnd as *mut c_void)) {
-                Ok(i) => i,
-                Err(_) => continue,
-            };
-            let size = match item.Size() {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            let width = (size.Width.max(0) as u32) & !1;
-            let height = (size.Height.max(0) as u32) & !1;
-            if width < 64 || height < 64 {
-                continue;
-            }
-
-            // Wire the pipeline exactly like run_pipeline (minus AppHandle).
-            let shared = Arc::new(Shared::default());
-            let mut pool_vec = Vec::new();
-            for _ in 0..STAGING_POOL {
-                pool_vec.push(create_bgra_staging(&d3d_device, width, height).expect("staging"));
-            }
-            let free_pool = Arc::new(Mutex::new(pool_vec));
-            let (filled_tx, filled_rx) = sync_channel::<(ID3D11Texture2D, i64)>(STAGING_POOL);
-            let (rdy_tx, rdy_rx) = std::sync::mpsc::channel();
-            let clip = ClipBuffer::new(60, 30, Vec::new(), None);
-            let enc = {
-                let device = d3d_device.clone();
-                let context = context.clone();
-                let shared = shared.clone();
-                let free_pool = free_pool.clone();
-                let clip = clip.clone();
-                let enc_cfg = EncodeSettings {
-                    codec: crate::core::encode::VideoCodec::H264,
-                    bitrate_mbps: 20,
-                    target_res: None,
-                };
-                std::thread::spawn(move || {
-                    encode_thread(
-                        device.clone(), context.clone(), device, context, vendor, width, height,
-                        60, enc_cfg, filled_rx, free_pool, shared, clip, rdy_tx,
-                    )
-                })
-            };
-            if !matches!(rdy_rx.recv(), Ok(Ok(()))) {
-                let _ = enc.join();
-                continue;
-            }
-
-            let handoff = Handoff {
-                context: context.clone(),
-                free_pool,
-                filled_tx,
-                width,
-                height,
-            };
-            let (pool, session, token) =
-                match setup_wgc(&d3d_device, item, 60, &shared, Some(handoff)) {
-                    Ok(o) => o,
-                    Err(_) => {
-                        let _ = enc.join();
-                        continue;
-                    }
-                };
-
-            std::thread::sleep(Duration::from_millis(1500));
-
-            let handed = shared.handed.load(Ordering::Relaxed);
-            // Teardown: drop the closure (its filled_tx) so the encode thread
-            // flushes and exits, then join it.
-            let _ = pool.RemoveFrameArrived(token);
-            let _ = session.Close();
-            let _ = pool.Close();
-            let _ = enc.join();
-            let packets = shared.enc_packets.load(Ordering::Relaxed);
-            let stats = clip.stats().expect("ring stats");
-
-            if handed > 0 {
-                println!(
-                    "pipeline '{}' {}x{}: handed {} frames → {} encoded packets → ring {} pkts / {} kf / {:.2}s",
-                    w.title,
-                    width,
-                    height,
-                    handed,
-                    packets,
-                    stats.packets,
-                    stats.keyframes,
-                    stats.duration_secs
-                );
-                assert!(
-                    packets > 0,
-                    "captured {handed} frames but encoder produced no packets"
-                );
-                // The ring must hold the encoded packets, starting on an IDR.
-                assert!(stats.packets > 0, "ring is empty after encoding {packets} packets");
-                assert!(
-                    stats.keyframes > 0,
-                    "ring holds no keyframe — clips would have no IDR start"
-                );
-
-                // Prove the full save path: slice the ring and stream-copy to MP4.
-                let out = std::env::temp_dir().join("hako_capture_clip.mp4");
-                let _ = std::fs::remove_file(&out);
-                let saved = clip.save_last(2, &out).expect("save_last");
-                let size = std::fs::metadata(&saved.path).expect("clip file").len();
-                println!(
-                    "saved clip → {} ({} bytes, {:.2}s)",
-                    saved.path.display(),
-                    size,
-                    saved.duration_secs
-                );
-                assert!(size > 0, "saved clip is empty");
-                let _ = std::fs::remove_file(&out);
-
-                proved = true;
-                break;
-            }
-        }
-
-        unsafe {
-            RoUninitialize();
-        }
-        assert!(
-            proved,
-            "no window produced frames to encode (need a window with changing content)"
-        );
-    }
 }
