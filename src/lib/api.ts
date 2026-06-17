@@ -410,6 +410,12 @@ export function effectiveAudioConfig(settings: Settings): AudioConfig {
 export interface Settings {
   target_fps: number;
   buffer_seconds: number;
+  /**
+   * Where the instant-replay buffer lives: "ram" (default — fast saves, costs
+   * memory) or "disk" (spool compressed video to rolling segment files, freeing
+   * RAM at the cost of continuous disk writes). Medal's "Recording buffer" toggle.
+   */
+  buffer_storage: string;
   pad_before_secs: number;
   pad_after_secs: number;
   codec: string;

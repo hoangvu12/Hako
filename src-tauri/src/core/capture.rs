@@ -54,6 +54,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::core::audio::{self, AudioCapture, AudioMeta};
 use crate::settings::AudioConfig;
 use crate::core::buffer::{AudioRing, BufferStats, PacketRing};
+use crate::core::disk_buffer::DiskPacketRing;
 use crate::core::clock::{MasterClock, TICKS_PER_SECOND};
 use crate::core::convert::Converter;
 use crate::core::device;
@@ -144,8 +145,48 @@ pub struct AudioTrack {
     meta: OnceLock<AudioMeta>,
 }
 
+/// The instant-replay video store: either a RAM ring or a disk-backed segment
+/// ring, chosen per the `buffer_storage` setting. Both hold compressed packets
+/// and expose the same push/slice/stats surface, so the rest of [`ClipBuffer`]
+/// (and the save path) is identical regardless of backend.
+enum VideoStore {
+    Ram(Mutex<PacketRing>),
+    Disk(Mutex<DiskPacketRing>),
+}
+
+impl VideoStore {
+    fn push(&self, pkt: EncodedPacket) {
+        match self {
+            VideoStore::Ram(m) => {
+                if let Ok(mut r) = m.lock() {
+                    r.push(pkt);
+                }
+            }
+            VideoStore::Disk(m) => {
+                if let Ok(mut r) = m.lock() {
+                    r.push(pkt);
+                }
+            }
+        }
+    }
+
+    fn slice_last(&self, secs: u32) -> Vec<EncodedPacket> {
+        match self {
+            VideoStore::Ram(m) => m.lock().map(|r| r.slice_last(secs)).unwrap_or_default(),
+            VideoStore::Disk(m) => m.lock().map(|mut r| r.slice_last(secs)).unwrap_or_default(),
+        }
+    }
+
+    fn stats(&self) -> Option<BufferStats> {
+        match self {
+            VideoStore::Ram(m) => m.lock().ok().map(|r| r.stats()),
+            VideoStore::Disk(m) => m.lock().ok().map(|r| r.stats()),
+        }
+    }
+}
+
 pub struct ClipBuffer {
-    ring: Mutex<PacketRing>,
+    video: VideoStore,
     meta: OnceLock<ClipMeta>,
     /// Per-track compressed AAC rings (filled by the audio thread). Empty when
     /// audio is disabled; track 0 is the master mix. Layout (count + names) is
@@ -163,7 +204,18 @@ pub struct ClipBuffer {
 impl ClipBuffer {
     /// New clip buffer. `audio_track_names` fixes the audio-track layout (one
     /// AAC ring per name, track 0 = master); empty ⇒ video-only.
-    fn new(fps: u32, retention_secs: u32, audio_track_names: Vec<String>) -> Arc<Self> {
+    ///
+    /// `disk_buffer_dir` selects the video backend: `None` keeps the instant-replay
+    /// buffer in a RAM ring (the default); `Some(dir)` spools it to rolling segment
+    /// files under `dir` (Medal's "Recording buffer: Disk"). If the disk ring can't
+    /// be initialized, it falls back to RAM so capture still records. Audio always
+    /// stays in RAM (the AAC rings are a few MB even for a long buffer).
+    fn new(
+        fps: u32,
+        retention_secs: u32,
+        audio_track_names: Vec<String>,
+        disk_buffer_dir: Option<PathBuf>,
+    ) -> Arc<Self> {
         let audio_tracks = audio_track_names
             .into_iter()
             .map(|name| AudioTrack {
@@ -172,8 +224,21 @@ impl ClipBuffer {
                 meta: OnceLock::new(),
             })
             .collect();
+        let video = match disk_buffer_dir {
+            Some(dir) => match DiskPacketRing::new(dir, fps, retention_secs) {
+                Ok(d) => {
+                    tracing::info!("recording buffer: disk ({retention_secs}s)");
+                    VideoStore::Disk(Mutex::new(d))
+                }
+                Err(e) => {
+                    tracing::warn!("disk buffer init failed ({e}); using RAM buffer");
+                    VideoStore::Ram(Mutex::new(PacketRing::new(fps, retention_secs)))
+                }
+            },
+            None => VideoStore::Ram(Mutex::new(PacketRing::new(fps, retention_secs))),
+        };
         Arc::new(ClipBuffer {
-            ring: Mutex::new(PacketRing::new(fps, retention_secs)),
+            video,
             meta: OnceLock::new(),
             audio_tracks,
             video_base: OnceLock::new(),
@@ -199,9 +264,7 @@ impl ClipBuffer {
                 session.push(&pkt, wall);
             }
         }
-        if let Ok(mut r) = self.ring.lock() {
-            r.push(pkt);
-        }
+        self.video.push(pkt);
     }
 
     /// Append a freshly encoded AAC packet for output track `track_idx` (called
@@ -288,11 +351,7 @@ impl ClipBuffer {
             .meta
             .get()
             .ok_or("encoder not initialized yet — try again in a moment")?;
-        let packets = self
-            .ring
-            .lock()
-            .map_err(|_| "clip buffer poisoned")?
-            .slice_last(secs);
+        let packets = self.video.slice_last(secs);
         if packets.is_empty() {
             return Err("buffer is empty — nothing to save".into());
         }
@@ -359,7 +418,7 @@ impl ClipBuffer {
 
     /// Current ring health (for `buffer-stats` / dashboard).
     pub fn stats(&self) -> Option<BufferStats> {
-        self.ring.lock().ok().map(|r| r.stats())
+        self.video.stats()
     }
 }
 
@@ -511,6 +570,7 @@ pub fn start(
     target_fps: u32,
     adapter_index: Option<u32>,
     buffer_secs: u32,
+    disk_buffer_dir: Option<PathBuf>,
     audio: AudioConfig,
     enc_cfg: EncodeSettings,
 ) -> std::result::Result<RunningCapture, String> {
@@ -523,7 +583,8 @@ pub fn start(
     let track_names = audio::planned_track_names(&audio, game_pid);
     // Created here (fps is known) so the handle survives on RunningCapture; the
     // encode thread fills its ring + publishes `meta` (dimensions known later).
-    let clip = ClipBuffer::new(target_fps, buffer_secs.clamp(5, 600), track_names);
+    // `disk_buffer_dir` selects RAM vs disk for the instant-replay buffer.
+    let clip = ClipBuffer::new(target_fps, buffer_secs.clamp(5, 600), track_names, disk_buffer_dir);
 
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<std::result::Result<(), String>>();
     let thread = {
@@ -789,6 +850,7 @@ pub fn start_hook(
     target_fps: u32,
     adapter_index: Option<u32>,
     buffer_secs: u32,
+    disk_buffer_dir: Option<PathBuf>,
     audio: AudioConfig,
     enc_cfg: EncodeSettings,
 ) -> std::result::Result<RunningCapture, String> {
@@ -797,7 +859,7 @@ pub fn start_hook(
     let target_fps = target_fps.clamp(1, 480);
     let game_pid = pid_for_hwnd(hwnd_raw);
     let track_names = audio::planned_track_names(&audio, game_pid);
-    let clip = ClipBuffer::new(target_fps, buffer_secs.clamp(5, 600), track_names);
+    let clip = ClipBuffer::new(target_fps, buffer_secs.clamp(5, 600), track_names, disk_buffer_dir);
 
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<std::result::Result<(), String>>();
     let thread = {
@@ -1777,7 +1839,7 @@ mod tests {
             let free_pool = Arc::new(Mutex::new(pool_vec));
             let (filled_tx, filled_rx) = sync_channel::<(ID3D11Texture2D, i64)>(STAGING_POOL);
             let (rdy_tx, rdy_rx) = std::sync::mpsc::channel();
-            let clip = ClipBuffer::new(60, 30, Vec::new());
+            let clip = ClipBuffer::new(60, 30, Vec::new(), None);
             let enc = {
                 let device = d3d_device.clone();
                 let context = context.clone();

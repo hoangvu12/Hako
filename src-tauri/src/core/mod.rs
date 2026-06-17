@@ -27,6 +27,7 @@ pub mod convert; // ID3D11VideoProcessor BGRA → NV12/P010
 pub mod encode; // FFmpeg hw device/frames ctx, encoder, packet out
 pub mod audio; // WASAPI loopback + mic, resample, AAC
 pub mod buffer; // RAM ring + IDR index
+pub mod disk_buffer; // disk-backed rolling segment ring (RAM-vs-disk buffer toggle)
 pub mod session; // Mode B full-match writer + timeline index
 pub mod mux; // MP4 stream-copy clip writer, padding/merge
 pub mod clock; // master clock (QPC), PTS mapping

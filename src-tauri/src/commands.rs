@@ -223,11 +223,12 @@ pub fn start_capture_with(
     // Defaults (fps, buffer length, audio config, backend) come from saved
     // settings. `effective_audio()` yields the Medal-style per-source config,
     // synthesizing one from the legacy fields for pre-feature configs.
-    let (cfg_fps, buffer_secs, audio_cfg, use_hook, enc_cfg, cfg_adapter) = {
+    let (cfg_fps, buffer_secs, to_disk, audio_cfg, use_hook, enc_cfg, cfg_adapter) = {
         let s = settings.0.lock().map_err(|_| "settings poisoned")?;
         (
             s.target_fps,
             s.buffer_seconds,
+            s.buffers_to_disk(),
             s.effective_audio(),
             s.uses_hook_capture(),
             encode::EncodeSettings {
@@ -237,6 +238,20 @@ pub fn start_capture_with(
             },
             s.gpu_adapter_index(),
         )
+    };
+    // Disk buffer (Medal's "Recording buffer: Disk"): spool the instant-replay
+    // window to rolling segment files under `<clips>/.hako-buffer` instead of RAM.
+    // `None` ⇒ RAM. If the dir can't be prepared we log and fall back to RAM.
+    let disk_buffer_dir = if to_disk {
+        match buffer_dir(app) {
+            Ok(d) => Some(d),
+            Err(e) => {
+                tracing::warn!("disk buffer dir unavailable ({e}); using RAM buffer");
+                None
+            }
+        }
+    } else {
+        None
     };
     let mut guard = state.0.lock().map_err(|_| "capture state poisoned")?;
     if guard.is_some() {
@@ -249,9 +264,13 @@ pub fn start_capture_with(
     // `hook` = opt-in graphics-hook injection (beats the DWM cap, anti-cheat
     // risk); anything else = WGC (default, Vanguard-safe). See `core::hook`.
     let running = if use_hook {
-        capture::start_hook(app.clone(), hwnd, fps, adapter_index, buffer_secs, audio_cfg, enc_cfg)?
+        capture::start_hook(
+            app.clone(), hwnd, fps, adapter_index, buffer_secs, disk_buffer_dir, audio_cfg, enc_cfg,
+        )?
     } else {
-        capture::start(app.clone(), hwnd, fps, adapter_index, buffer_secs, audio_cfg, enc_cfg)?
+        capture::start(
+            app.clone(), hwnd, fps, adapter_index, buffer_secs, disk_buffer_dir, audio_cfg, enc_cfg,
+        )?
     };
     *guard = Some(running);
     Ok(())
@@ -689,6 +708,13 @@ fn clip_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .join("Hako");
     std::fs::create_dir_all(&dir).map_err(|e| format!("create clip dir: {e}"))?;
     Ok(dir)
+}
+
+/// `<Videos>/Hako/.hako-buffer` — the private spool dir for the disk recording
+/// buffer (created/emptied by [`crate::core::disk_buffer::DiskPacketRing`]). Kept
+/// on the same drive as clips so it inherits the user's storage choice.
+fn buffer_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(clip_dir(app)?.join(".hako-buffer"))
 }
 
 /// `<Videos>/Hako/hako_clip_<unix_ms>.mp4` (ms so rapid presses don't collide).

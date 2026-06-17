@@ -17,8 +17,13 @@ use crate::valorant::reconcile::EventToggles;
 pub struct Settings {
     /// Target capture FPS (30 / 60 / 120).
     pub target_fps: u32,
-    /// RAM ring buffer length in seconds (instant-replay depth).
+    /// Instant-replay buffer depth in seconds.
     pub buffer_seconds: u32,
+    /// Where the instant-replay buffer is held: `ram` (default — fast saves, but
+    /// the window costs RAM) or `disk` (spool compressed video to rolling segment
+    /// files, freeing RAM at the cost of continuous disk writes). Medal's
+    /// "Recording buffer" toggle. Anything other than `disk` is treated as `ram`.
+    pub buffer_storage: String,
     /// Clip padding before the event, in seconds (auto-clips).
     pub pad_before_secs: u32,
     /// Clip padding after the event, in seconds.
@@ -83,6 +88,7 @@ impl Default for Settings {
         Self {
             target_fps: 60,
             buffer_seconds: 120,
+            buffer_storage: "ram".into(),
             pad_before_secs: 8,
             pad_after_secs: 4,
             codec: "h264".into(),
@@ -219,6 +225,13 @@ impl Settings {
     /// True when the user opted into the graphics-hook injection capture path.
     pub fn uses_hook_capture(&self) -> bool {
         self.capture_mode.eq_ignore_ascii_case("hook")
+    }
+
+    /// True when the instant-replay buffer should be spooled to disk rather than
+    /// held in RAM (Medal's "Recording buffer: Disk"). Anything other than `disk`
+    /// means RAM.
+    pub fn buffers_to_disk(&self) -> bool {
+        self.buffer_storage.eq_ignore_ascii_case("disk")
     }
 
     /// The output-resolution target box for [`Settings::resolution`], or `None`

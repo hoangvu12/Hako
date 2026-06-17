@@ -622,6 +622,23 @@ function SettingsPage() {
                     </SelectContent>
                   </Select>
                 </Row>
+                <Row
+                  label="Recording buffer"
+                  hint="RAM is fastest but uses memory; Disk spools the replay buffer to your drive to free RAM."
+                >
+                  <Select
+                    value={draft.buffer_storage === "disk" ? "disk" : "ram"}
+                    onValueChange={(v) => set("buffer_storage", v)}
+                  >
+                    <SelectTrigger size="sm" className="w-28">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="ram">RAM</SelectItem>
+                      <SelectItem value="disk">Disk</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Row>
               </Panel>
 
               {/* Medal-style nudge: above the desktop-composition rate, WGC capture
@@ -638,11 +655,14 @@ function SettingsPage() {
               )}
 
               {/* The bitrate ceiling drives the replay-buffer RAM (bitrate × the
-                  buffer length set in Clip Settings); surface it here. */}
-              <BufferRamHint
-                bitrateMbps={draft.bitrate_mbps}
-                bufferSeconds={draft.buffer_seconds}
-              />
+                  buffer length set in Clip Settings); surface it here. Only the RAM
+                  backend spends memory — the disk backend spools to drive instead. */}
+              {draft.buffer_storage !== "disk" && (
+                <BufferRamHint
+                  bitrateMbps={draft.bitrate_mbps}
+                  bufferSeconds={draft.buffer_seconds}
+                />
+              )}
 
               <Panel title="Capture mode">
                 <Row
