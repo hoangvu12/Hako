@@ -211,6 +211,34 @@ pub fn event_wallclock(
     game_start_ticks.map(|g| g + event.time_since_game_start_millis * TICKS_PER_MS)
 }
 
+/// Medal-faithful single match-start calibration. For the first event whose
+/// round has a known start anchor (from the `ShooterGame.log` round-end + buy
+/// phase), derive the match's wall-clock origin:
+///
+/// `matchStart = roundStart(r) + kill.roundTime − kill.gameTime`
+///
+/// (since `gameTime − roundTime = roundStart − matchStart` for any kill in r).
+/// `None` if no event's round has an anchor — caller falls back to the
+/// game-start anchor. Events are assumed sorted by `time_since_game_start_millis`.
+pub fn calibrate_match_start(events: &[GameEvent], anchors: &[RoundAnchor]) -> Option<i64> {
+    for e in events {
+        if let Some(a) = anchors.iter().find(|a| a.round == e.round) {
+            return Some(
+                a.start_wallclock_ticks
+                    + e.time_since_round_start_millis * TICKS_PER_MS
+                    - e.time_since_game_start_millis * TICKS_PER_MS,
+            );
+        }
+    }
+    None
+}
+
+/// Position an event on the wall-clock from a calibrated match start, the way
+/// Medal does for every event: `eventWall = matchStart + gameTime`.
+pub fn event_wallclock_from_match_start(event: &GameEvent, match_start_ticks: i64) -> i64 {
+    match_start_ticks + event.time_since_game_start_millis * TICKS_PER_MS
+}
+
 /// Reconcile an event to a session-file PTS via the timeline index.
 pub fn reconcile_to_pts(
     event: &GameEvent,
@@ -232,7 +260,16 @@ pub fn clip_window(center_pts: i64, pad_before_secs: u32, pad_after_secs: u32, f
 
 /// Merge overlapping/adjacent clip windows into one (multi-kills clustered in
 /// time become a single clip). Input order-independent; output sorted.
-pub fn merge_windows(mut windows: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
+pub fn merge_windows(windows: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
+    merge_windows_tol(windows, 0)
+}
+
+/// Like [`merge_windows`] but also fuses windows separated by a gap of up to
+/// `tol_pts` (in PTS units). Medal's `OverlapMergeGrouper` merges events whose
+/// windows are within `EventWindow` (10 s for Valorant) of each other, so two
+/// near-but-not-touching highlights become one clip rather than two with
+/// overlapping padding.
+pub fn merge_windows_tol(mut windows: Vec<(i64, i64)>, tol_pts: i64) -> Vec<(i64, i64)> {
     if windows.is_empty() {
         return windows;
     }
@@ -240,7 +277,7 @@ pub fn merge_windows(mut windows: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
     let mut merged = vec![windows[0]];
     for &(s, e) in &windows[1..] {
         let last = merged.last_mut().unwrap();
-        if s <= last.1 {
+        if s <= last.1 + tol_pts {
             last.1 = last.1.max(e);
         } else {
             merged.push((s, e));
@@ -273,6 +310,7 @@ mod tests {
             player_stats: vec![PlayerRoundStats {
                 puuid: our.into(),
                 kills,
+                damage: Vec::new(),
             }],
         }
     }
@@ -290,6 +328,7 @@ mod tests {
         let details = MatchDetails {
             match_info: MatchInfo::default(),
             players: vec![],
+            teams: vec![],
             round_results: vec![r],
         };
         let ev = derive_events(&details, me, &EventToggles::default());
@@ -306,6 +345,7 @@ mod tests {
         let details = MatchDetails {
             match_info: MatchInfo::default(),
             players: vec![],
+            teams: vec![],
             round_results: vec![r],
         };
         // Default: single Kill is OFF → no events.
@@ -329,6 +369,7 @@ mod tests {
         let details = MatchDetails {
             match_info: MatchInfo::default(),
             players: vec![],
+            teams: vec![],
             round_results: vec![round(0, me, vec![knife, death, assist])],
         };
         let mut t = EventToggles::default();
@@ -373,10 +414,68 @@ mod tests {
     }
 
     #[test]
+    fn calibrates_match_start_medal_formula() {
+        // Round 3 starts at wall 50 s. A kill 2 s into round 3 is 120 s into the
+        // game ⇒ matchStart = 50s + 2s − 120s = −68s (game began 68 s before the
+        // round-3 start anchor). Then any event maps via matchStart + gameTime.
+        let ev = vec![GameEvent {
+            kind: EventKind::Ace,
+            round: 3,
+            time_since_game_start_millis: 120_000,
+            time_since_round_start_millis: 2_000,
+        }];
+        let anchors = [RoundAnchor {
+            round: 3,
+            start_wallclock_ticks: 50 * 10_000_000,
+        }];
+        let ms = calibrate_match_start(&ev, &anchors).unwrap();
+        assert_eq!(ms, (50 + 2 - 120) * 10_000_000);
+        // The event is 2 s into round 3 ⇒ its wall-clock = roundStart + roundTime
+        // = 50 s + 2 s = 52 s (matchStart −68 s + gameTime 120 s).
+        assert_eq!(
+            event_wallclock_from_match_start(&ev[0], ms),
+            52 * 10_000_000
+        );
+    }
+
+    #[test]
+    fn calibration_none_without_matching_anchor() {
+        let ev = vec![GameEvent {
+            kind: EventKind::Ace,
+            round: 5,
+            time_since_game_start_millis: 1_000,
+            time_since_round_start_millis: 100,
+        }];
+        let anchors = [RoundAnchor {
+            round: 2,
+            start_wallclock_ticks: 0,
+        }];
+        assert!(calibrate_match_start(&ev, &anchors).is_none());
+    }
+
+    #[test]
     fn windows_clamp_and_merge() {
         let (s, e) = clip_window(60, 8, 4, 60); // center 1 s, −8/+4
         assert_eq!((s, e), (0, 60 + 240)); // start clamped to 0
         let merged = merge_windows(vec![(0, 300), (250, 500), (1000, 1200)]);
         assert_eq!(merged, vec![(0, 500), (1000, 1200)]);
+    }
+
+    #[test]
+    fn tolerance_merge_fuses_near_windows() {
+        // Two windows with a 100-unit gap: strict merge keeps them separate, but
+        // a tolerance ≥ 100 (Medal's EventWindow) fuses them into one clip.
+        let w = vec![(0, 300), (400, 700)];
+        assert_eq!(merge_windows_tol(w.clone(), 0), vec![(0, 300), (400, 700)]);
+        assert_eq!(merge_windows_tol(w.clone(), 100), vec![(0, 700)]);
+        // A gap wider than the tolerance stays split.
+        assert_eq!(merge_windows_tol(w, 50), vec![(0, 300), (400, 700)]);
+    }
+
+    #[test]
+    fn event_kind_labels() {
+        assert_eq!(EventKind::Ace.label(), "Ace");
+        assert_eq!(EventKind::TripleKill.label(), "Triple Kill");
+        assert_eq!(EventKind::Knife.label(), "Knife");
     }
 }

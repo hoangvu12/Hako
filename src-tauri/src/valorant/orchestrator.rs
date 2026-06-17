@@ -1,0 +1,367 @@
+//! Live Valorant match orchestration — the Mode-B auto-clip driver.
+//!
+//! A single background task (spawned from `main`) polls our Riot presence every
+//! ~2 s, feeds the [`StateMachine`], and reacts to its [`Action`]s:
+//!
+//! - **MatchStarted** — if a capture is running, open a [`SessionWriter`] and
+//!   install it into the live [`ClipBuffer`] so every encoded packet is teed to
+//!   a full-match MP4; mark the [`RoundTracker`] match-found; open a [`LogTail`]
+//!   at EOF for round-start anchors; and kick off the remote-API bootstrap
+//!   ([`cut::bootstrap_remote`]) so the match id + tokens are ready by match end.
+//! - **RoundBoundary** — anchors come from the log tail now, so this is just a
+//!   UI signal.
+//! - **MatchEnded** — detach + finish the session writer and hand the file +
+//!   timeline + anchors to the post-match cut pipeline ([`cut::post_match`]).
+//!
+//! Each tick also drains the log tail (round-ended lines → [`RoundTracker`]) and
+//! emits a [`events::MATCH_STATE_CHANGED`] snapshot for the `/valorant` panel.
+//!
+//! Capture is **auto-started** when the VALORANT window appears (Medal-style
+//! game detection, [`auto_manage_capture`]) and auto-stopped when the game
+//! exits, so the encoder is already warm before a match begins. A capture the
+//! user started manually is left untouched (we only auto-stop our own). The
+//! session tees off this *existing* encode stream.
+
+#![allow(dead_code)]
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager};
+use tokio::task::JoinHandle;
+
+use crate::commands::{self, CaptureState};
+use crate::core::capture::{self, ClipBuffer};
+use crate::core::session::SessionWriter;
+use crate::events;
+use crate::valorant::cut::{self, RemoteReady};
+use crate::valorant::local_api::LocalClient;
+use crate::valorant::log_watch::{self, LogTail, RoundTracker};
+use crate::valorant::model::PrivatePresence;
+use crate::valorant::service::{Action, StateMachine};
+
+/// Presence poll cadence (Medal polls the local API on a similar interval). The
+/// log tail is drained on the same tick; ±10 s clip padding absorbs the latency.
+const POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Snapshot pushed to the webview as [`events::MATCH_STATE_CHANGED`].
+#[derive(Debug, Clone, Serialize)]
+pub struct MatchStatePayload {
+    /// `MENUS` / `PREGAME` / `INGAME` / etc.
+    pub loop_state: String,
+    /// True while a match is in progress (state machine INGAME).
+    pub in_match: bool,
+    /// True while a full-match session is actually being recorded.
+    pub recording: bool,
+    pub score_ally: i32,
+    pub score_enemy: i32,
+    pub map: String,
+}
+
+/// State for the in-progress match recording.
+struct ActiveMatch {
+    /// The capture's clip buffer (we installed our session into it).
+    clip: Arc<ClipBuffer>,
+    /// The full-match session writer (also installed in `clip`).
+    session: Arc<SessionWriter>,
+    /// Round-start anchors gathered from the log.
+    tracker: RoundTracker,
+    /// Incremental `ShooterGame.log` tailer (None if the log wasn't found).
+    log_tail: Option<LogTail>,
+    /// Wall-clock tick at match start (fallback reconciliation anchor).
+    started_ticks: i64,
+    /// Session temp MP4 path (deleted after clips are cut).
+    session_path: PathBuf,
+    /// Capture fps (session video time base).
+    fps: u32,
+    /// Remote bootstrap (tokens + match id), resolved by match end.
+    bootstrap: JoinHandle<Option<RemoteReady>>,
+}
+
+impl ActiveMatch {
+    /// Tear down without cutting (stale/aborted match): stop teeing, finish the
+    /// writer, drop the temp file, cancel the bootstrap.
+    fn discard(self) {
+        self.clip.take_session();
+        let _ = self.session.finish();
+        let _ = std::fs::remove_file(&self.session_path);
+        self.bootstrap.abort();
+    }
+}
+
+/// Spawn the orchestrator on the Tauri async runtime. Idempotent per app.
+pub fn spawn(app: AppHandle) {
+    tauri::async_runtime::spawn(async move { run(app).await });
+}
+
+async fn run(app: AppHandle) {
+    let mut sm = StateMachine::new();
+    let mut active: Option<ActiveMatch> = None;
+    // True while *we* auto-started the capture (so we only auto-stop our own,
+    // never the user's manual capture).
+    let mut auto_capturing = false;
+    // Earliest time to (re)try an auto-start after a failure — backs off so a
+    // failing hook (e.g. game minimized / not rendering) isn't re-injected every
+    // tick into the anti-cheat-protected process.
+    let mut next_capture_attempt = Instant::now();
+    tracing::info!("valorant orchestrator started");
+
+    loop {
+        tokio::time::sleep(POLL_INTERVAL).await;
+
+        // Medal-style game detection: auto-start capture when the VALORANT window
+        // appears (encoder is warm before any match) and auto-stop when it exits.
+        // Independent of presence so it works even if the local API is flaky.
+        auto_manage_capture(&app, &mut auto_capturing, &mut next_capture_attempt);
+
+        // Push the live recorder snapshot (game-detected / capturing) so the
+        // titlebar's "Now Clipping" indicator updates without the game's presence.
+        let _ = app.emit(events::RECORDER_STATUS, &commands::recorder_status_snapshot(&app));
+
+        // Resolve the local API + our presence; transient failures just skip the
+        // tick (Riot not up yet, account switching, etc.).
+        let Some((presence, puuid)) = poll_presence().await else {
+            continue;
+        };
+        let loop_state = presence.loop_state();
+        let rounds_played = presence.score_ally + presence.score_enemy;
+
+        for action in sm.update(loop_state, rounds_played) {
+            match action {
+                Action::MatchStarted => {
+                    if let Some(stale) = active.take() {
+                        tracing::warn!("auto-clip: new match started over an unfinished one");
+                        stale.discard();
+                    }
+                    match start_match(&app, &puuid, &presence) {
+                        Some(am) => {
+                            tracing::info!("auto-clip: recording match → {}", am.session_path.display());
+                            active = Some(am);
+                        }
+                        None => tracing::warn!(
+                            "auto-clip: match started but recording could not begin \
+                             (capture not running or encoder not ready)"
+                        ),
+                    }
+                }
+                Action::RoundBoundary { rounds_played } => {
+                    tracing::debug!("auto-clip: round boundary ({rounds_played} played)");
+                }
+                Action::MatchEnded => {
+                    if let Some(am) = active.take() {
+                        end_match(&app, am);
+                    }
+                }
+            }
+        }
+
+        // Drain the log tail for round-ended markers (anchors) while recording.
+        if let Some(am) = active.as_mut() {
+            drain_log(am);
+        }
+
+        emit_state(&app, &presence, active.is_some());
+    }
+}
+
+/// Connect to the local API and read our decoded presence + puuid. `None` on any
+/// transient failure (no lockfile, not connected, no Valorant presence yet).
+async fn poll_presence() -> Option<(PrivatePresence, String)> {
+    let client = LocalClient::connect().ok()?;
+    let puuid = client.chat_session().await.ok()?.puuid;
+    if puuid.is_empty() {
+        return None;
+    }
+    let presence = client.our_presence(&puuid).await.ok()??;
+    Some((presence, puuid))
+}
+
+/// Begin recording a match: open the session writer over the live capture's
+/// clip buffer, set up round tracking + the log tail, and start the remote
+/// bootstrap. `None` if no capture is running / the encoder isn't ready yet.
+fn start_match(app: &AppHandle, puuid: &str, presence: &PrivatePresence) -> Option<ActiveMatch> {
+    let clip = capture_clip(app)?;
+    let meta = clip.clip_meta()?; // encoder not open yet ⇒ can't record
+    let audio_meta = clip.audio_meta();
+
+    let session_path = std::env::temp_dir().join(format!("hako_session_{}.mp4", unix_millis()));
+    let writer = match SessionWriter::start(&session_path, &meta, audio_meta.as_ref()) {
+        Ok(w) => Arc::new(w),
+        Err(e) => {
+            tracing::warn!("auto-clip: could not open session writer: {e}");
+            return None;
+        }
+    };
+    clip.install_session(writer.clone());
+
+    let started_ticks = log_watch::now_ticks();
+    let mut tracker = RoundTracker::new(log_watch::buy_phase_ticks(buy_phase_mode(presence)));
+    tracker.set_match_found(started_ticks);
+
+    let log_tail = log_watch::log_path().and_then(|p| match LogTail::open_at_end(p) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            tracing::warn!("auto-clip: could not open ShooterGame.log tail: {e}");
+            None
+        }
+    });
+
+    let bootstrap = tokio::spawn(cut::bootstrap_remote(puuid.to_string()));
+
+    Some(ActiveMatch {
+        clip,
+        session: writer,
+        tracker,
+        log_tail,
+        started_ticks,
+        session_path,
+        fps: meta.fps,
+        bootstrap,
+    })
+}
+
+/// Finish the session and hand it to the post-match cut pipeline on its own task
+/// (the match-details retry can take tens of seconds — never block the loop).
+fn end_match(app: &AppHandle, am: ActiveMatch) {
+    am.clip.take_session(); // stop teeing into the (now finishing) writer
+    let (path, timeline) = match am.session.finish() {
+        Ok(x) => x,
+        Err(e) => {
+            tracing::warn!("auto-clip: finishing session failed: {e}");
+            let _ = std::fs::remove_file(&am.session_path);
+            am.bootstrap.abort();
+            return;
+        }
+    };
+    let anchors = am.tracker.anchors();
+    let app = app.clone();
+    let bootstrap = am.bootstrap;
+    let (fps, started_ticks) = (am.fps, am.started_ticks);
+    tracing::info!("auto-clip: match ended, reconciling {} round anchor(s)", anchors.len());
+
+    tokio::spawn(async move {
+        let remote = bootstrap.await.ok().flatten();
+        cut::post_match(cut::CutInput {
+            app,
+            session_path: path,
+            timeline,
+            anchors,
+            fps,
+            game_start_ticks: started_ticks,
+            remote,
+        })
+        .await;
+    });
+}
+
+/// Drain new log lines, feeding round-ended markers into the tracker. Each
+/// round-end is stamped at read time (we tail within a couple seconds; the ±10 s
+/// padding absorbs it), matching Medal's `ValorantRoundHandler`.
+fn drain_log(am: &mut ActiveMatch) {
+    let Some(tail) = am.log_tail.as_mut() else {
+        return;
+    };
+    match tail.poll_new_lines() {
+        Ok(lines) => {
+            for line in lines {
+                if let Some(round) = log_watch::parse_round_ended(&line) {
+                    am.tracker.on_round_ended(round, log_watch::now_ticks());
+                }
+            }
+        }
+        Err(e) => tracing::debug!("auto-clip: log tail read: {e}"),
+    }
+}
+
+/// The running capture's clip buffer, or `None` if nothing is capturing.
+fn capture_clip(app: &AppHandle) -> Option<Arc<ClipBuffer>> {
+    let state = app.state::<CaptureState>();
+    let guard = state.0.lock().ok()?;
+    guard.as_ref().map(|rc| rc.clip())
+}
+
+/// Backoff after a failed auto-start before retrying (don't re-inject the hook
+/// into the game every tick when it isn't capturable yet).
+const CAPTURE_RETRY_BACKOFF: Duration = Duration::from_secs(20);
+
+/// Auto-start capture of the VALORANT window when the game is running, and
+/// auto-stop it when the game exits — Medal's "detect the game, start recording"
+/// behavior. Only ever touches a capture *we* started (`auto_capturing`), so a
+/// user's manual capture is never auto-stopped, and we never fight a capture the
+/// user started manually. Uses the configured backend (WGC or hook) via
+/// [`commands::start_capture_with`].
+fn auto_manage_capture(app: &AppHandle, auto_capturing: &mut bool, next_attempt: &mut Instant) {
+    let game = capture::find_valorant_window();
+    let capturing = commands::is_capturing(app);
+
+    match game {
+        // Game is up but nothing is recording → start (record that it's ours).
+        Some(hwnd) if !capturing => {
+            // A minimized game (exclusive fullscreen alt-tabbed) stops rendering,
+            // so the hook gets no frames — wait until it's back on screen instead
+            // of repeatedly injecting into a non-rendering, anti-cheat-watched app.
+            if capture::is_window_minimized(hwnd) {
+                return;
+            }
+            if Instant::now() < *next_attempt {
+                return; // still backing off from a recent failure
+            }
+            match commands::start_capture_with(app, hwnd, None, None) {
+                Ok(()) => {
+                    *auto_capturing = true;
+                    tracing::info!("auto-capture: VALORANT detected → capture started");
+                }
+                Err(e) => {
+                    *next_attempt = Instant::now() + CAPTURE_RETRY_BACKOFF;
+                    tracing::warn!(
+                        "auto-capture: could not start capture (retrying in {}s): {e}",
+                        CAPTURE_RETRY_BACKOFF.as_secs()
+                    );
+                }
+            }
+        }
+        // Game gone → stop only the capture we started ourselves.
+        None => {
+            if *auto_capturing && capturing {
+                commands::stop_capture_with(app);
+                tracing::info!("auto-capture: VALORANT closed → capture stopped");
+            }
+            *auto_capturing = false;
+            *next_attempt = Instant::now();
+        }
+        // Game up and already capturing (ours or the user's) → leave it be.
+        Some(_) => {}
+    }
+}
+
+/// Emit the current match-state snapshot for the UI.
+fn emit_state(app: &AppHandle, presence: &PrivatePresence, recording: bool) {
+    let ls = presence.session_loop_state();
+    let payload = MatchStatePayload {
+        loop_state: ls.to_string(),
+        in_match: presence.loop_state() == crate::valorant::model::LoopState::InGame,
+        recording,
+        score_ally: presence.score_ally,
+        score_enemy: presence.score_enemy,
+        map: presence.match_map().to_string(),
+    };
+    let _ = app.emit(events::MATCH_STATE_CHANGED, &payload);
+}
+
+/// Medal uses a 20 s buy phase for Spike Rush, 30 s otherwise.
+fn buy_phase_mode(presence: &PrivatePresence) -> &'static str {
+    if presence.queue_id().eq_ignore_ascii_case("spikerush") {
+        "Spike Rush"
+    } else {
+        ""
+    }
+}
+
+fn unix_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}

@@ -5,6 +5,12 @@ node_modules/
 dist/
 dist-ssr/
 
+# Decompiled Medal reference (browse-only; must never be committed)
+.medal-decomp/
+
+# Internal working docs / handoff notes (keep local, don't commit)
+docs/
+
 # Rust / Tauri
 src-tauri/target/
 src-tauri/gen/

@@ -12,15 +12,11 @@ mod valorant;
 // Clip library + thumbnails.
 mod library;
 
-use std::time::Duration;
-
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, WindowEvent,
 };
-
-use commands::RecorderStatus;
 
 fn main() {
     let _log_guard = init_logging();
@@ -59,8 +55,11 @@ fn main() {
                 }
             }
             build_tray(app.handle())?;
-            spawn_status_heartbeat(app.handle().clone());
             register_clip_hotkey(app.handle());
+            // Live Valorant detection: poll presence, record full matches, and
+            // auto-cut highlight clips on match end (Mode B). Degrades to manual
+            // clips if Riot/capture aren't available.
+            valorant::orchestrator::spawn(app.handle().clone());
             tracing::info!("Hako core started");
             Ok(())
         })
@@ -215,24 +214,3 @@ fn show_main(app: &tauri::AppHandle) {
     }
 }
 
-/// Demonstrates the Rust → webview push path: emit a `recorder-status`
-/// event every ~2s. Real capture/Valorant state replaces this later.
-fn spawn_status_heartbeat(app: tauri::AppHandle) {
-    std::thread::spawn(move || {
-        let mut tick: u64 = 0;
-        loop {
-            std::thread::sleep(Duration::from_secs(2));
-            tick += 1;
-            let status = RecorderStatus {
-                capturing: false,
-                valorant_detected: false,
-                encoder: None,
-                buffer_seconds: 30,
-                message: format!("heartbeat #{tick} — recorder idle"),
-            };
-            if app.emit(events::RECORDER_STATUS, &status).is_err() {
-                break; // app shutting down
-            }
-        }
-    });
-}

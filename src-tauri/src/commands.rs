@@ -27,15 +27,38 @@ pub struct RecorderStatus {
     pub message: String,
 }
 
-/// Status command. Returns idle state.
+/// Status command — live recorder snapshot (capturing + Valorant detection).
 #[tauri::command]
-pub fn recorder_status() -> RecorderStatus {
+pub fn recorder_status(app: AppHandle) -> RecorderStatus {
+    recorder_status_snapshot(&app)
+}
+
+/// Compute the current recorder status: whether a capture is running and whether
+/// the VALORANT game window is present. Shared by the `recorder_status` command
+/// and the orchestrator's per-tick `recorder-status` event (which drives the
+/// titlebar's "Now Clipping" indicator live).
+pub fn recorder_status_snapshot(app: &AppHandle) -> RecorderStatus {
+    let capturing = is_capturing(app);
+    let valorant_detected = capture::find_valorant_window().is_some();
+    let buffer_seconds = app
+        .state::<SettingsState>()
+        .0
+        .lock()
+        .map(|s| s.buffer_seconds)
+        .unwrap_or(30);
+    let message = match (valorant_detected, capturing) {
+        (true, true) => "Recording Valorant",
+        (true, false) => "Valorant detected",
+        (false, true) => "Capturing",
+        (false, false) => "Waiting for game",
+    }
+    .to_string();
     RecorderStatus {
-        capturing: false,
-        valorant_detected: false,
+        capturing,
+        valorant_detected,
         encoder: None,
-        buffer_seconds: 30,
-        message: "Recorder idle".into(),
+        buffer_seconds,
+        message,
     }
 }
 
@@ -104,12 +127,25 @@ pub fn list_windows() -> Vec<WindowTarget> {
 #[tauri::command]
 pub fn start_capture(
     app: AppHandle,
-    state: State<CaptureState>,
-    settings: State<SettingsState>,
     hwnd: i64,
     target_fps: Option<u32>,
     adapter_index: Option<u32>,
 ) -> Result<(), String> {
+    start_capture_with(&app, hwnd, target_fps, adapter_index)
+}
+
+/// Start a capture of `hwnd`, pulling fps/buffer/audio/backend from saved
+/// settings. Shared by the `start_capture` command and the Valorant
+/// orchestrator's auto-start (Medal-style game detection). Errors if a capture
+/// is already running.
+pub fn start_capture_with(
+    app: &AppHandle,
+    hwnd: i64,
+    target_fps: Option<u32>,
+    adapter_index: Option<u32>,
+) -> Result<(), String> {
+    let settings = app.state::<SettingsState>();
+    let state = app.state::<CaptureState>();
     // Defaults (fps, buffer length, audio, backend) come from saved settings.
     let (cfg_fps, buffer_secs, capture_audio, use_hook) = {
         let s = settings.0.lock().map_err(|_| "settings poisoned")?;
@@ -123,9 +159,9 @@ pub fn start_capture(
     // `hook` = opt-in graphics-hook injection (beats the DWM cap, anti-cheat
     // risk); anything else = WGC (default, Vanguard-safe). See `core::hook`.
     let running = if use_hook {
-        capture::start_hook(app, hwnd, fps, adapter_index, buffer_secs, capture_audio)?
+        capture::start_hook(app.clone(), hwnd, fps, adapter_index, buffer_secs, capture_audio)?
     } else {
-        capture::start(app, hwnd, fps, adapter_index, buffer_secs, capture_audio)?
+        capture::start(app.clone(), hwnd, fps, adapter_index, buffer_secs, capture_audio)?
     };
     *guard = Some(running);
     Ok(())
@@ -138,6 +174,25 @@ pub fn stop_capture(state: State<CaptureState>) -> Result<(), String> {
         running.stop();
     }
     Ok(())
+}
+
+/// Stop the running capture from a plain `AppHandle` (no `State` extractor) —
+/// the orchestrator's auto-stop when the game exits. No-op if none.
+pub fn stop_capture_with(app: &AppHandle) {
+    if let Ok(mut guard) = app.state::<CaptureState>().0.lock() {
+        if let Some(mut running) = guard.take() {
+            running.stop();
+        }
+    }
+}
+
+/// Whether a capture is currently running (from a plain `AppHandle`).
+pub fn is_capturing(app: &AppHandle) -> bool {
+    app.state::<CaptureState>()
+        .0
+        .lock()
+        .map(|g| g.is_some())
+        .unwrap_or(false)
 }
 
 /// Whether a capture session is currently running. The recorder lives on
@@ -216,6 +271,48 @@ pub fn save_clip_full(
 #[tauri::command]
 pub fn save_clip(app: AppHandle, seconds: Option<u32>) -> Result<ClipRecord, String> {
     save_clip_full(&app, seconds.unwrap_or(30), None)
+}
+
+/// A fresh `<Videos>/Hako/hako_clip_<ms>.mp4` path (for the auto-clipper to cut
+/// session sub-ranges into).
+pub fn auto_clip_output_path(app: &AppHandle) -> Result<PathBuf, String> {
+    clip_output_path(app)
+}
+
+/// Register an already-written clip file (e.g. a Valorant auto-clip cut from the
+/// Mode-B session) into the library: generate a thumbnail, insert the row, and
+/// emit `clip-created`. `dimensions`/`duration` come from the cut result so we
+/// don't re-probe. `event` tags it (e.g. "Ace").
+pub fn finalize_auto_clip(
+    app: &AppHandle,
+    path: PathBuf,
+    title: String,
+    event: &str,
+    width: i64,
+    height: i64,
+    duration_secs: f64,
+) -> Result<ClipRecord, String> {
+    let thumb = generate_thumbnail(app, &path);
+    let size_bytes = std::fs::metadata(&path).map(|m| m.len() as i64).unwrap_or(0);
+    let new = NewClip {
+        path: path.to_string_lossy().to_string(),
+        title,
+        event: Some(event.to_string()),
+        duration_secs,
+        width,
+        height,
+        size_bytes,
+        thumb_path: thumb,
+    };
+    let library = app.state::<LibraryState>();
+    let record = {
+        let lib = library.0.lock().map_err(|_| "library poisoned")?;
+        let id = lib.insert(&new)?;
+        lib.get(id)?.ok_or("inserted clip vanished")?
+    };
+    let _ = app.emit(crate::events::CLIP_CREATED, &record);
+    tracing::info!("auto-clip saved ({event}) → {}", record.path);
+    Ok(record)
 }
 
 /// All clips in the library, newest first.

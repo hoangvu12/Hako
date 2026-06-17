@@ -9,11 +9,17 @@
 /// Periodic recorder status / heartbeat. Payload: [`crate::commands::RecorderStatus`].
 pub const RECORDER_STATUS: &str = "recorder-status";
 
-/// Valorant match state transitions. Payload: TBD.
+/// Valorant match state transitions (loop state, score, recording flag).
+/// Payload: [`crate::valorant::orchestrator::MatchStatePayload`].
 pub const MATCH_STATE_CHANGED: &str = "match-state-changed";
 
-/// A new clip was written to the library. Payload: TBD.
+/// A new clip was written to the library (manual save or Valorant auto-clip).
+/// Payload: [`crate::library::db::ClipRecord`].
 pub const CLIP_CREATED: &str = "clip-created";
+
+/// Post-match summary (K/D/A, headshot %, agent, map, win/loss, title) emitted
+/// once `match-details` is fetched. Payload: [`crate::valorant::summary::MatchSummary`].
+pub const MATCH_SUMMARY: &str = "match-summary";
 
 /// Live capture throughput. Payload: [`crate::core::capture::CaptureStats`].
 pub const CAPTURE_STATS: &str = "capture-stats";

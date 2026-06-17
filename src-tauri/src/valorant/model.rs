@@ -30,12 +30,42 @@ pub struct EntitlementsToken {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatSession {
     pub puuid: String,
+    /// Chat connection state; Medal waits until this is `"connected"` before
+    /// trusting the puuid/identity (see `service::start_session`).
+    #[serde(default)]
+    pub state: String,
     #[serde(default)]
     pub region: String,
     #[serde(default)]
     pub game_name: String,
     #[serde(default)]
     pub game_tag: String,
+}
+
+impl ChatSession {
+    /// Riot reports `"connected"` once the chat session is fully established.
+    pub fn is_connected(&self) -> bool {
+        self.state == "connected"
+    }
+}
+
+/// `GET /product-session/v1/external-sessions` — a map of running Riot product
+/// sessions keyed by an opaque id. Used to find the Valorant launch arguments
+/// (the `-ares-deployment=<shard>` flag carries our region/shard).
+pub type ExternalSessions = std::collections::HashMap<String, ExternalSession>;
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExternalSession {
+    #[serde(rename = "productId", default)]
+    pub product_id: String,
+    #[serde(rename = "launchConfiguration", default)]
+    pub launch_configuration: LaunchConfiguration,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct LaunchConfiguration {
+    #[serde(default)]
+    pub arguments: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +222,19 @@ impl LoopState {
 // Remote API: match-details — post-match
 // ---------------------------------------------------------------------------
 
+/// Deserialize helper: treat JSON `null` (and, with `#[serde(default)]`, a missing
+/// key) as `T::default()`. Riot's match-details returns `null` for several fields
+/// (the whole `players[].stats` object, `gameLengthMillis`, various arrays), and
+/// plain `#[serde(default)]` only covers a *missing* key — a present-but-`null`
+/// value still hard-fails the decode. Pair both: `#[serde(default, deserialize_with = "null_default")]`.
+fn null_default<'de, D, T>(de: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(de)?.unwrap_or_default())
+}
+
 /// `GET https://pd.{shard}.a.pvp.net/match-details/v1/matches/{matchID}`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct MatchDetails {
@@ -199,6 +242,9 @@ pub struct MatchDetails {
     pub match_info: MatchInfo,
     #[serde(default)]
     pub players: Vec<Player>,
+    /// Teams (with win flag) — used for the post-match win/loss result.
+    #[serde(default)]
+    pub teams: Vec<Team>,
     #[serde(rename = "roundResults", default)]
     pub round_results: Vec<RoundResult>,
 }
@@ -209,43 +255,117 @@ pub struct MatchInfo {
     pub match_id: String,
     #[serde(rename = "mapId", default)]
     pub map_id: String,
-    #[serde(rename = "gameLengthMillis", default)]
+    #[serde(rename = "gameLengthMillis", default, deserialize_with = "null_default")]
     pub game_length_millis: i64,
-    #[serde(rename = "queueId", default)]
+    #[serde(rename = "gameStartMillis", default, deserialize_with = "null_default")]
+    pub game_start_millis: i64,
+    #[serde(rename = "queueID", alias = "queueId", default)]
     pub queue_id: String,
+    /// Game-mode asset path (e.g. `/Game/GameModes/Bomb/BombGameMode.BombGameMode_C`).
+    /// Mapped to a display name via [`game_mode_name`]; drives the Skirmish offset.
+    #[serde(rename = "gameMode", default)]
+    pub game_mode: String,
+}
+
+/// Map a Valorant `gameMode` asset path to its display name. Port of Medal's
+/// `GameModeUtility`. Empty string for unknown/unmapped modes.
+pub fn game_mode_name(asset: &str) -> &'static str {
+    match asset {
+        "/Game/GameModes/Bomb/BombGameMode.BombGameMode_C" => "Standard",
+        "/Game/GameModes/Deathmatch/DeathmatchGameMode.DeathmatchGameMode_C" => "Deathmatch",
+        "/Game/GameModes/GunGame/GunGameTeamsGameMode.GunGameTeamsGameMode_C" => "Escalation",
+        "/Game/GameModes/NewPlayerExperience/NPEGameMode.NPEGameMode_C" => "Onboarding",
+        "/Game/GameModes/OneForAll/OneForAll_GameMode.OneForAll_GameMode_C" => "Replication",
+        "/Game/GameModes/QuickBomb/QuickBombGameMode.QuickBombGameMode_C" => "Spike Rush",
+        "/Game/GameModes/ShootingRange/ShootingRangeGameMode.ShootingRangeGameMode_C" => "PRACTICE",
+        "/Game/GameModes/SnowballFight/SnowballFightGameMode.SnowballFightGameMode_C" => {
+            "Snowball Fight"
+        }
+        "/Game/GameModes/_Development/Swiftplay_EndOfRoundCredits/Swiftplay_EoRCredits_GameMode.Swiftplay_EoRCredits_GameMode_C" => "Swiftplay",
+        "/Game/GameModes/Skirmish/SkirmishGameMode.SkirmishGameMode_C" => "Skirmish",
+        _ => "",
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Player {
+    /// Player UUID. Riot's match-details calls this `subject` (NOT `puuid`,
+    /// despite what some docs show) — verified live against `pd.ap` 2026-06.
+    #[serde(rename = "subject", alias = "puuid", default)]
     pub puuid: String,
-    #[serde(rename = "gameName", default)]
+    #[serde(rename = "gameName", default, deserialize_with = "null_default")]
     pub game_name: String,
-    #[serde(rename = "tagLine", default)]
+    #[serde(rename = "tagLine", default, deserialize_with = "null_default")]
     pub tag_line: String,
+    #[serde(rename = "teamId", default, deserialize_with = "null_default")]
+    pub team_id: String,
+    /// Agent UUID (`characterId`); resolved to a display name via valorant-api.com.
+    #[serde(rename = "characterId", default, deserialize_with = "null_default")]
+    pub character_id: String,
+    /// Match totals (kills/deaths/assists). The whole object is `null` for some
+    /// players/modes, so `null_default` collapses that to a zeroed `PlayerStats`.
+    #[serde(default, deserialize_with = "null_default")]
+    pub stats: PlayerStats,
+}
+
+/// `players[].stats` — the player's match totals.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PlayerStats {
+    #[serde(default)]
+    pub kills: i32,
+    #[serde(default)]
+    pub deaths: i32,
+    #[serde(default)]
+    pub assists: i32,
+}
+
+/// `teams[]` — carries the win flag per team id.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Team {
     #[serde(rename = "teamId", default)]
     pub team_id: String,
+    #[serde(default)]
+    pub won: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RoundResult {
-    #[serde(rename = "roundNum", default)]
+    #[serde(rename = "roundNum", default, deserialize_with = "null_default")]
     pub round_num: i32,
-    #[serde(rename = "playerStats", default)]
+    #[serde(rename = "playerStats", default, deserialize_with = "null_default")]
     pub player_stats: Vec<PlayerRoundStats>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PlayerRoundStats {
+    #[serde(rename = "subject", alias = "puuid", default)]
     pub puuid: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub kills: Vec<Kill>,
+    /// Per-weapon damage tally this round — used for headshot %.
+    #[serde(default, deserialize_with = "null_default")]
+    pub damage: Vec<DamageEvent>,
+}
+
+/// `playerStats[].damage[]` — shot-location counts, for headshot %.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DamageEvent {
+    #[serde(default)]
+    pub legshots: i32,
+    #[serde(default)]
+    pub bodyshots: i32,
+    #[serde(default)]
+    pub headshots: i32,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Kill {
-    #[serde(rename = "timeSinceGameStartMillis", default)]
+    /// ms since game start. Riot's key is `gameTime` (NOT `timeSinceGameStartMillis`)
+    /// — verified live 2026-06; the old name decoded to 0 and wrecked clip timing.
+    #[serde(rename = "gameTime", alias = "timeSinceGameStartMillis", default, deserialize_with = "null_default")]
     pub time_since_game_start_millis: i64,
-    #[serde(rename = "timeSinceRoundStartMillis", default)]
+    /// ms since round start. Riot's key is `roundTime`.
+    #[serde(rename = "roundTime", alias = "timeSinceRoundStartMillis", default, deserialize_with = "null_default")]
     pub time_since_round_start_millis: i64,
     #[serde(default)]
     pub killer: String,
@@ -307,6 +427,20 @@ pub enum EventKind {
 }
 
 impl EventKind {
+    /// Human label for clip titles / library tags (e.g. "Triple Kill", "Ace").
+    pub fn label(self) -> &'static str {
+        match self {
+            EventKind::Kill => "Kill",
+            EventKind::DoubleKill => "Double Kill",
+            EventKind::TripleKill => "Triple Kill",
+            EventKind::QuadraKill => "Quadra Kill",
+            EventKind::Ace => "Ace",
+            EventKind::Knife => "Knife",
+            EventKind::Death => "Death",
+            EventKind::Assist => "Assist",
+        }
+    }
+
     /// The multi-kill tier for `n` kills in a single round (n≥1; 5+ ⇒ Ace).
     pub fn for_multikill(n: usize) -> EventKind {
         match n {
@@ -383,6 +517,48 @@ mod tests {
         assert_eq!(p.score_ally, 7);
         assert_eq!(p.score_enemy, 5);
         assert_eq!(p.queue_id(), "competitive");
+    }
+
+    #[test]
+    fn decodes_real_match_details_shape() {
+        // Minimal slice of the REAL pd.{shard} match-details body (verified live
+        // 2026-06): player id is `subject`, kills use `gameTime`/`roundTime`,
+        // matchInfo uses `queueID`, and `stats` can be null.
+        let json = r#"{
+            "matchInfo": { "matchId": "abc", "mapId": "/Game/Maps/Ascent/Ascent",
+                "gameLengthMillis": null, "gameStartMillis": 1781697024000,
+                "queueID": "swiftplay",
+                "gameMode": "/Game/GameModes/Bomb/BombGameMode.BombGameMode_C" },
+            "players": [
+                { "subject": "p1", "gameName": "", "tagLine": null, "teamId": "Blue",
+                  "characterId": "agent-1",
+                  "stats": { "kills": 7, "deaths": 4, "assists": 2 } },
+                { "subject": "p2", "teamId": "Red", "stats": null }
+            ],
+            "teams": [ { "teamId": "Blue", "won": true } ],
+            "roundResults": [
+                { "roundNum": 0, "playerStats": [
+                    { "subject": "p1",
+                      "kills": [ { "gameTime": 109409, "roundTime": 54331,
+                          "killer": "p1", "victim": "p2",
+                          "finishingDamage": { "damageType": "Weapon", "damageItem": "x" } } ],
+                      "damage": [ { "legshots": 0, "bodyshots": 1, "headshots": 2 } ] }
+                ] }
+            ]
+        }"#;
+        let md: MatchDetails = serde_json::from_str(json).expect("real shape must decode");
+        assert_eq!(md.match_info.queue_id, "swiftplay");
+        assert_eq!(md.match_info.game_length_millis, 0); // null → default
+        assert_eq!(md.players[0].puuid, "p1"); // from `subject`
+        assert_eq!(md.players[0].stats.kills, 7);
+        assert_eq!(md.players[1].puuid, "p2");
+        assert_eq!(md.players[1].stats.kills, 0); // stats: null → zeroed
+        assert!(md.teams[0].won);
+        let kill = &md.round_results[0].player_stats[0].kills[0];
+        assert_eq!(md.round_results[0].player_stats[0].puuid, "p1");
+        assert_eq!(kill.time_since_game_start_millis, 109409); // from `gameTime`
+        assert_eq!(kill.time_since_round_start_millis, 54331); // from `roundTime`
+        assert_eq!(md.round_results[0].player_stats[0].damage[0].headshots, 2);
     }
 
     #[test]

@@ -17,7 +17,9 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::de::DeserializeOwned;
 
 use crate::valorant::lockfile::{self, Lockfile};
-use crate::valorant::model::{ChatSession, EntitlementsToken, Presence, PresencesResponse, PrivatePresence};
+use crate::valorant::model::{
+    ChatSession, EntitlementsToken, ExternalSessions, Presence, PresencesResponse, PrivatePresence,
+};
 
 /// A connected local-API client (lives as long as the Riot client's lockfile).
 pub struct LocalClient {
@@ -76,6 +78,20 @@ impl LocalClient {
         self.get_json("/chat/v1/session").await
     }
 
+    /// `GET /product-session/v1/external-sessions` — running Riot product
+    /// sessions, keyed by id. We parse the Valorant entry's launch arguments for
+    /// `-ares-deployment=<shard>` (our region/shard).
+    pub async fn sessions(&self) -> Result<ExternalSessions, String> {
+        self.get_json("/product-session/v1/external-sessions").await
+    }
+
+    /// Find the `valorant` product session and parse its `-ares-deployment=`
+    /// launch argument — the shard/region Medal anchors all pvp.net calls on.
+    /// `None` if Valorant isn't in the session list (e.g. only the launcher is up).
+    pub async fn valorant_deployment(&self) -> Result<Option<String>, String> {
+        Ok(parse_valorant_deployment(&self.sessions().await?))
+    }
+
     /// `GET /chat/v4/presences` — all presences (ours carries the Valorant blob).
     pub async fn presences(&self) -> Result<Vec<Presence>, String> {
         let r: PresencesResponse = self.get_json("/chat/v4/presences").await?;
@@ -94,6 +110,29 @@ impl LocalClient {
     }
 }
 
+/// Find the `valorant` product in an external-sessions map and extract its
+/// `-ares-deployment=<shard>` launch argument. Mirrors Medal's
+/// `RetrieveAndParseSessionInfo`: first valorant product, first arg with the
+/// prefix, value after `=`. `None` if absent/empty.
+pub fn parse_valorant_deployment(sessions: &ExternalSessions) -> Option<String> {
+    const PREFIX: &str = "-ares-deployment=";
+    for session in sessions.values() {
+        if session.product_id != "valorant" {
+            continue;
+        }
+        for arg in &session.launch_configuration.arguments {
+            if let Some(rest) = arg.strip_prefix(PREFIX) {
+                let v = rest.trim();
+                if !v.is_empty() {
+                    return Some(v.to_string());
+                }
+            }
+        }
+        break; // matched the valorant product; Medal stops after it
+    }
+    None
+}
+
 /// Decode the base64-JSON `private` presence blob.
 pub fn decode_private(private_b64: &str) -> Result<PrivatePresence, String> {
     let bytes = base64::engine::general_purpose::STANDARD
@@ -106,6 +145,26 @@ pub fn decode_private(private_b64: &str) -> Result<PrivatePresence, String> {
 mod tests {
     use super::*;
     use crate::valorant::model::LoopState;
+
+    #[test]
+    fn parses_ares_deployment_from_valorant_session() {
+        let json = r#"{
+            "abc": { "productId": "league_of_legends", "launchConfiguration": { "arguments": ["-foo"] } },
+            "def": { "productId": "valorant", "launchConfiguration": {
+                "arguments": ["--launch-product=valorant", "-ares-deployment=eu", "--other"] } }
+        }"#;
+        let sessions: crate::valorant::model::ExternalSessions = serde_json::from_str(json).unwrap();
+        assert_eq!(parse_valorant_deployment(&sessions).as_deref(), Some("eu"));
+    }
+
+    #[test]
+    fn deployment_none_when_no_valorant_or_no_flag() {
+        let json = r#"{ "x": { "productId": "valorant", "launchConfiguration": { "arguments": ["--no-flag"] } } }"#;
+        let s: crate::valorant::model::ExternalSessions = serde_json::from_str(json).unwrap();
+        assert_eq!(parse_valorant_deployment(&s), None);
+        let empty: crate::valorant::model::ExternalSessions = Default::default();
+        assert_eq!(parse_valorant_deployment(&empty), None);
+    }
 
     #[test]
     fn decodes_a_base64_private_blob() {

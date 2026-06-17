@@ -115,12 +115,28 @@ export function WindowTitlebar() {
 
         <Separator orientation="vertical" className="h-4" />
 
-        <div className="pointer-events-none flex items-center gap-2 text-sm font-medium text-foreground/80">
-          <GameController
-            className={cn("size-4", detected ? "text-success" : "")}
-            weight={detected ? "fill" : "regular"}
-          />
-          {detected ? "Valorant" : "Waiting For Game"}
+        <div className="pointer-events-none flex items-center gap-2.5">
+          {detected ? (
+            <>
+              <span className="relative flex size-2">
+                <span className="absolute inline-flex size-full animate-ping rounded-full bg-success/70" />
+                <span className="relative inline-flex size-2 rounded-full bg-success" />
+              </span>
+              <div className="flex flex-col leading-tight">
+                <span className="text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+                  Now Clipping
+                </span>
+                <span className="text-sm font-semibold text-foreground">
+                  Valorant
+                </span>
+              </div>
+            </>
+          ) : (
+            <div className="flex items-center gap-2 text-sm font-medium text-foreground/60">
+              <GameController className="size-4" weight="regular" />
+              Waiting For Game
+            </div>
+          )}
         </div>
 
         <Separator orientation="vertical" className="ml-1 h-4" />

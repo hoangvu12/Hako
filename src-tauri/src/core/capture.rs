@@ -47,7 +47,7 @@ use windows::Win32::System::WinRT::Direct3D11::{
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
 use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowTextLengthW, GetWindowTextW, IsWindowVisible,
+    EnumWindows, GetWindowTextLengthW, GetWindowTextW, IsIconic, IsWindowVisible,
 };
 
 use crate::core::audio::{AudioCapture, AudioMeta};
@@ -58,6 +58,7 @@ use crate::core::device;
 use crate::core::encode::{EncodedPacket, Encoder};
 use crate::core::hook::{HookCapture, RunningHook};
 use crate::core::mux::{self, AudioClip, ClipMeta};
+use crate::core::session::SessionWriter;
 use crate::events;
 
 /// Number of BGRA staging textures shared between the capture callback and the
@@ -137,6 +138,10 @@ pub struct ClipBuffer {
     /// Wall-clock tick (100 ns) of the first captured video frame — the anchor
     /// that ties video PTS (1/fps units) to absolute audio PTS for muxing.
     video_base: OnceLock<i64>,
+    /// Active Mode-B session writer (Valorant full-match recording). When
+    /// installed, every pushed packet is also teed to it; `None` otherwise. The
+    /// orchestrator installs/takes it on match start/end (`valorant::orchestrator`).
+    session: Mutex<Option<Arc<SessionWriter>>>,
 }
 
 impl ClipBuffer {
@@ -147,21 +152,65 @@ impl ClipBuffer {
             audio_ring: Mutex::new(AudioRing::new(retention_secs)),
             audio_meta: OnceLock::new(),
             video_base: OnceLock::new(),
+            session: Mutex::new(None),
         })
     }
 
-    /// Append a freshly encoded packet (called on the encode thread).
+    /// The currently-installed session writer, if any (clones the `Arc`).
+    fn active_session(&self) -> Option<Arc<SessionWriter>> {
+        self.session.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// Append a freshly encoded packet (called on the encode thread). Tees to the
+    /// Mode-B session writer when a Valorant match is recording.
     fn push(&self, pkt: EncodedPacket) {
+        if let Some(session) = self.active_session() {
+            // Reconstruct the packet's wall-clock tick from the shared video-base
+            // anchor + its PTS — the same linear map the save path uses to place
+            // audio against video. Both are known by the time packets flow.
+            if let (Some(&base), Some(meta)) = (self.video_base.get(), self.meta.get()) {
+                let fps = meta.fps.max(1) as i64;
+                let wall = base + pkt.pts * TICKS_PER_SECOND / fps;
+                session.push(&pkt, wall);
+            }
+        }
         if let Ok(mut r) = self.ring.lock() {
             r.push(pkt);
         }
     }
 
-    /// Append a freshly encoded AAC packet (called on the audio thread).
+    /// Append a freshly encoded AAC packet (called on the audio thread). Tees to
+    /// the session writer (audio PTS is already absolute ticks) when recording.
     pub fn push_audio(&self, pkt: EncodedPacket) {
+        if let Some(session) = self.active_session() {
+            session.push_audio(&pkt);
+        }
         if let Ok(mut r) = self.audio_ring.lock() {
             r.push(pkt);
         }
+    }
+
+    /// Publish a Mode-B session writer so subsequent packets are teed to it.
+    pub fn install_session(&self, writer: Arc<SessionWriter>) {
+        if let Ok(mut g) = self.session.lock() {
+            *g = Some(writer);
+        }
+    }
+
+    /// Detach the active session writer (match ended) and hand it back to the
+    /// caller to `finish()`. `None` if none was installed.
+    pub fn take_session(&self) -> Option<Arc<SessionWriter>> {
+        self.session.lock().ok().and_then(|mut g| g.take())
+    }
+
+    /// The muxing metadata (dimensions + avcC), once the encoder has opened.
+    pub fn clip_meta(&self) -> Option<ClipMeta> {
+        self.meta.get().cloned()
+    }
+
+    /// The AAC stream metadata, once the audio encoder has opened.
+    pub fn audio_meta(&self) -> Option<AudioMeta> {
+        self.audio_meta.get().cloned()
     }
 
     /// Publish the muxing metadata (once, when the encoder is ready).
@@ -306,6 +355,53 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
         }
     }
     BOOL(1) // continue enumeration
+}
+
+/// Find the live VALORANT **game** window (the Unreal client, not the Riot
+/// launcher), used to auto-start capture when the game launches — the way Medal
+/// detects the game process. Matches the game window's exact title; returns its
+/// HWND or `None` if the game isn't running.
+pub fn find_valorant_window() -> Option<i64> {
+    let mut found: i64 = 0;
+    // SAFETY: `found` outlives the EnumWindows call; the callback only writes it.
+    unsafe {
+        let _ = EnumWindows(
+            Some(find_valorant_proc),
+            LPARAM(&mut found as *mut i64 as isize),
+        );
+    }
+    (found != 0).then_some(found)
+}
+
+/// Whether a window is minimized (iconic). A minimized game — common with
+/// exclusive fullscreen when alt-tabbed — usually stops presenting frames, so
+/// the graphics hook can't capture it; the auto-capture skips it until it's back
+/// on screen rather than re-injecting into a non-rendering process.
+pub fn is_window_minimized(hwnd: i64) -> bool {
+    // SAFETY: IsIconic just reads window state; a stale/invalid HWND returns false.
+    unsafe { IsIconic(HWND(hwnd as *mut c_void)).as_bool() }
+}
+
+unsafe extern "system" fn find_valorant_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let out = &mut *(lparam.0 as *mut i64);
+    if IsWindowVisible(hwnd).as_bool() {
+        let len = GetWindowTextLengthW(hwnd);
+        if len > 0 {
+            let mut buf = vec![0u16; len as usize + 1];
+            let n = GetWindowTextW(hwnd, &mut buf);
+            if n > 0 {
+                let title = String::from_utf16_lossy(&buf[..n as usize]);
+                // The game window is titled exactly "VALORANT"; the Riot launcher
+                // is "Riot Client", and tab titles like "VALORANT - YouTube" won't
+                // match the trimmed-exact compare.
+                if title.trim().eq_ignore_ascii_case("VALORANT") {
+                    *out = hwnd.0 as i64;
+                    return BOOL(0); // stop enumeration
+                }
+            }
+        }
+    }
+    BOOL(1)
 }
 
 /// Cross-thread hand-off plumbing given to the FrameArrived callback.

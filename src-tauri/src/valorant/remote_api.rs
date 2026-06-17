@@ -12,9 +12,12 @@
 
 #![allow(dead_code)]
 
-use base64::Engine;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
+use std::sync::RwLock;
 
+use base64::Engine;
+use reqwest::header::AUTHORIZATION;
+
+use crate::valorant::local_api::LocalClient;
 use crate::valorant::model::{CurrentGamePlayer, MatchDetails};
 
 /// Fixed client-platform JSON, base64'd into `X-Riot-ClientPlatform`.
@@ -59,48 +62,128 @@ pub async fn fetch_client_version(http: &reqwest::Client) -> Result<String, Stri
     Ok(r.data.riot_client_version)
 }
 
-/// Authenticated remote client. Build once per session from local-API tokens.
+/// Resolve an agent's display name from its `characterId` via the community
+/// mirror (Medal's `Utils.GetAgentDisplayName`). Public endpoint, no auth.
+/// `None` on any failure (the caller falls back to "Unknown").
+pub async fn fetch_agent_name(agent_id: &str) -> Option<String> {
+    if agent_id.is_empty() {
+        return None;
+    }
+    #[derive(serde::Deserialize)]
+    struct Resp {
+        data: Data,
+    }
+    #[derive(serde::Deserialize)]
+    struct Data {
+        #[serde(rename = "displayName", default)]
+        display_name: String,
+    }
+    let url = format!("https://valorant-api.com/v1/agents/{agent_id}");
+    let r: Resp = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    (!r.data.display_name.is_empty()).then_some(r.data.display_name)
+}
+
+/// The auth headers that go stale and must be refreshed before remote calls.
+/// `client_version` is stable for the session; the access token + entitlements
+/// JWT expire, so [`RemoteClient::refresh_tokens`] re-reads them from the local
+/// API before each match-details call (mirroring Medal's `RefreshTokens`).
+struct Auth {
+    access_token: String,
+    entitlements_jwt: String,
+    client_version: String,
+}
+
+/// Authenticated remote client. Tokens live behind a lock and are applied
+/// **per request** (not baked into the client) so they can be refreshed without
+/// rebuilding the client — Riot's tokens expire and a match can run for
+/// 30+ minutes before we fetch its details.
 pub struct RemoteClient {
     http: reqwest::Client,
     region: String,
     shard: String,
+    auth: RwLock<Auth>,
 }
 
 impl RemoteClient {
-    /// `region` from the chat session; tokens from the entitlements endpoint.
+    /// Build with an explicit region **and** shard. Medal sets both to the
+    /// `-ares-deployment=` value (so `glz-{region}-1.{shard}` and `pd.{shard}`
+    /// match the live client); the bootstrap passes that through here.
+    pub fn with_region_shard(
+        region: &str,
+        shard: &str,
+        access_token: &str,
+        entitlements_jwt: &str,
+        client_version: &str,
+    ) -> Result<RemoteClient, String> {
+        let http = reqwest::Client::builder()
+            .build()
+            .map_err(|e| format!("build remote client: {e}"))?;
+        Ok(RemoteClient {
+            http,
+            region: region.to_string(),
+            shard: shard.to_string(),
+            auth: RwLock::new(Auth {
+                access_token: access_token.to_string(),
+                entitlements_jwt: entitlements_jwt.to_string(),
+                client_version: client_version.to_string(),
+            }),
+        })
+    }
+
+    /// Apply the four required Riot headers (current token snapshot) to a request.
+    /// The read guard is released before the caller awaits `send()`.
+    fn authed(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let a = self.auth.read().expect("auth lock poisoned");
+        rb.header(AUTHORIZATION, format!("Bearer {}", a.access_token))
+            .header("x-riot-entitlements-jwt", a.entitlements_jwt.clone())
+            .header("x-riot-clientversion", a.client_version.clone())
+            .header("x-riot-clientplatform", client_platform_header())
+    }
+
+    /// Re-read the entitlements token + JWT from the local API and swap them in.
+    /// Medal does this before **every** remote call; we do it before each
+    /// match-details attempt, since the match-start token is long stale by then.
+    pub async fn refresh_tokens(&self, local: &LocalClient) -> Result<(), String> {
+        let ent = local.entitlements().await?;
+        let mut a = self.auth.write().expect("auth lock poisoned");
+        a.access_token = ent.access_token;
+        a.entitlements_jwt = ent.token;
+        Ok(())
+    }
+
+    /// `region` from the chat session; the shard is derived via the
+    /// [`region_to_shard`] heuristic. Prefer [`with_region_shard`](Self::with_region_shard)
+    /// with the parsed `-ares-deployment=` value when available.
     pub fn new(
         region: &str,
         access_token: &str,
         entitlements_jwt: &str,
         client_version: &str,
     ) -> Result<RemoteClient, String> {
-        let mut headers = HeaderMap::new();
-        let mut set = |k: reqwest::header::HeaderName, v: &str| -> Result<(), String> {
-            headers.insert(k, HeaderValue::from_str(v).map_err(|e| e.to_string())?);
-            Ok(())
-        };
-        set(AUTHORIZATION, &format!("Bearer {access_token}"))?;
-        set(
-            reqwest::header::HeaderName::from_static("x-riot-entitlements-jwt"),
+        Self::with_region_shard(
+            region,
+            region_to_shard(region),
+            access_token,
             entitlements_jwt,
-        )?;
-        set(
-            reqwest::header::HeaderName::from_static("x-riot-clientversion"),
             client_version,
-        )?;
-        set(
-            reqwest::header::HeaderName::from_static("x-riot-clientplatform"),
-            &client_platform_header(),
-        )?;
-        let http = reqwest::Client::builder()
-            .default_headers(headers)
-            .build()
-            .map_err(|e| format!("build remote client: {e}"))?;
-        Ok(RemoteClient {
-            http,
-            region: region.to_string(),
-            shard: region_to_shard(region).to_string(),
-        })
+        )
+    }
+
+    /// The glz affinity/region this client targets.
+    pub fn region(&self) -> &str {
+        &self.region
+    }
+
+    /// The pvp.net shard this client targets.
+    pub fn shard(&self) -> &str {
+        &self.shard
     }
 
     /// Live match id, or `None` if we're not currently in a game (404).
@@ -110,8 +193,7 @@ impl RemoteClient {
             self.region, self.shard, puuid
         );
         let resp = self
-            .http
-            .get(&url)
+            .authed(self.http.get(&url))
             .send()
             .await
             .map_err(|e| format!("current-game: {e}"))?;
@@ -136,15 +218,21 @@ impl RemoteClient {
             self.shard, match_id
         );
         let resp = self
-            .http
-            .get(&url)
+            .authed(self.http.get(&url))
             .send()
             .await
             .map_err(|e| format!("match-details: {e}"))?;
         if !resp.status().is_success() {
             return Err(format!("match-details → HTTP {}", resp.status()));
         }
-        resp.json().await.map_err(|e| format!("decode match-details: {e}"))
+        // Decode from text (not resp.json()) so a schema mismatch yields the exact
+        // serde path/line — reqwest's own decode error is opaque ("error decoding
+        // response body"), which hides which field broke.
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| format!("match-details read body: {e}"))?;
+        serde_json::from_str(&body).map_err(|e| format!("decode match-details: {e}"))
     }
 }
 
