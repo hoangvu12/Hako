@@ -25,7 +25,11 @@ const TICKS_PER_MS: i64 = 10_000;
 
 /// Per-event enable flags. Defaults match Medal's stored Valorant
 /// config (`fW3AZxHf_c`): highlight-worthy on,
-/// single Kill / 2K / Death / Assist off.
+/// single Kill / 2K / Death / Assist off. The Outplayed-style additions
+/// (victory / clutch / spike) default on — they're the headline moments.
+///
+/// New fields are additive (`#[serde(default)]`), so configs written before they
+/// existed load forward-compatibly (the new toggles fall back to their defaults).
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct EventToggles {
@@ -37,6 +41,10 @@ pub struct EventToggles {
     pub knife: bool,
     pub death: bool,
     pub assist: bool,
+    pub victory: bool,
+    pub clutch: bool,
+    pub spike_detonated: bool,
+    pub spike_defused: bool,
 }
 
 impl Default for EventToggles {
@@ -50,6 +58,10 @@ impl Default for EventToggles {
             knife: true,
             death: false,
             assist: false,
+            victory: true,
+            clutch: true,
+            spike_detonated: true,
+            spike_defused: true,
         }
     }
 }
@@ -65,7 +77,119 @@ impl EventToggles {
             EventKind::Knife => self.knife,
             EventKind::Death => self.death,
             EventKind::Assist => self.assist,
+            EventKind::Victory => self.victory,
+            EventKind::Clutch => self.clutch,
+            EventKind::SpikeDetonated => self.spike_detonated,
+            EventKind::SpikeDefused => self.spike_defused,
         }
+    }
+}
+
+/// Per-event clip padding (seconds before / after the moment). Outplayed's
+/// "Events timing" advanced panel: each highlight kind gets its own window so a
+/// spike plant (long fuse) keeps more lead-in than a snap kill.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct EventTiming {
+    pub before: u32,
+    pub after: u32,
+}
+
+impl Default for EventTiming {
+    /// The neutral kill window; per-kind defaults override this in
+    /// [`EventTimings::default`].
+    fn default() -> Self {
+        EventTiming { before: 8, after: 4 }
+    }
+}
+
+impl EventTiming {
+    const fn new(before: u32, after: u32) -> Self {
+        EventTiming { before, after }
+    }
+}
+
+/// Per-event clip windows. Field-per-kind (not a map) to match the rest of the
+/// settings model and keep serde forward-compatible — an older config simply
+/// gets every field's default. Defaults mirror Outplayed's shipped timings.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct EventTimings {
+    pub kill: EventTiming,
+    pub double_kill: EventTiming,
+    pub triple_kill: EventTiming,
+    pub quadra_kill: EventTiming,
+    pub ace: EventTiming,
+    pub knife: EventTiming,
+    pub death: EventTiming,
+    pub assist: EventTiming,
+    pub victory: EventTiming,
+    pub clutch: EventTiming,
+    pub spike_detonated: EventTiming,
+    pub spike_defused: EventTiming,
+}
+
+impl Default for EventTimings {
+    fn default() -> Self {
+        EventTimings {
+            kill: EventTiming::new(8, 4),
+            double_kill: EventTiming::new(8, 4),
+            triple_kill: EventTiming::new(10, 4),
+            quadra_kill: EventTiming::new(10, 4),
+            ace: EventTiming::new(12, 5),
+            knife: EventTiming::new(8, 4),
+            death: EventTiming::new(8, 4),
+            assist: EventTiming::new(15, 4),
+            victory: EventTiming::new(8, 5),
+            clutch: EventTiming::new(12, 5),
+            // The spike fuse is 45 s; lead in from the plant.
+            spike_detonated: EventTiming::new(45, 10),
+            spike_defused: EventTiming::new(25, 10),
+        }
+    }
+}
+
+impl EventTimings {
+    /// The clip window for `kind`.
+    pub fn for_kind(&self, kind: EventKind) -> EventTiming {
+        match kind {
+            EventKind::Kill => self.kill,
+            EventKind::DoubleKill => self.double_kill,
+            EventKind::TripleKill => self.triple_kill,
+            EventKind::QuadraKill => self.quadra_kill,
+            EventKind::Ace => self.ace,
+            EventKind::Knife => self.knife,
+            EventKind::Death => self.death,
+            EventKind::Assist => self.assist,
+            EventKind::Victory => self.victory,
+            EventKind::Clutch => self.clutch,
+            EventKind::SpikeDetonated => self.spike_detonated,
+            EventKind::SpikeDefused => self.spike_defused,
+        }
+    }
+
+    /// The widest before/after across all *enabled* kinds — used to size the
+    /// merge tolerance so two near events still fuse under the largest window.
+    pub fn max_pad(&self, toggles: &EventToggles) -> (u32, u32) {
+        let kinds = [
+            EventKind::Kill,
+            EventKind::DoubleKill,
+            EventKind::TripleKill,
+            EventKind::QuadraKill,
+            EventKind::Ace,
+            EventKind::Knife,
+            EventKind::Death,
+            EventKind::Assist,
+            EventKind::Victory,
+            EventKind::Clutch,
+            EventKind::SpikeDetonated,
+            EventKind::SpikeDefused,
+        ];
+        kinds
+            .iter()
+            .filter(|k| toggles.enabled(**k))
+            .map(|k| self.for_kind(*k))
+            .fold((0, 0), |(b, a), t| (b.max(t.before), a.max(t.after)))
     }
 }
 
@@ -73,6 +197,14 @@ impl EventToggles {
 /// Events come back sorted by `time_since_game_start_millis`.
 pub fn derive_events(details: &MatchDetails, puuid: &str, toggles: &EventToggles) -> Vec<GameEvent> {
     let mut events = Vec::new();
+    // Our team id (for clutch round-win and the match Victory event). Empty if we
+    // aren't in the players list — the team-dependent events then never fire.
+    let our_team = details
+        .players
+        .iter()
+        .find(|p| p.puuid == puuid)
+        .map(|p| p.team_id.as_str())
+        .unwrap_or("");
 
     for round in &details.round_results {
         // Our kills this round (we are the killer), sorted in time.
@@ -127,11 +259,196 @@ pub fn derive_events(details: &MatchDetails, puuid: &str, toggles: &EventToggles
                 }
             }
         }
+
+        // Spike events (plant→detonate by us / defuse by us) and clutches need
+        // the round's wall-clock origin to position events that aren't anchored
+        // on one of our own kills; derive it from any kill in the round.
+        let round_offset = round_game_offset(round);
+        events.extend(derive_spike_events(round, puuid, round_offset));
+        if let Some(c) = detect_clutch(details, round, puuid, our_team) {
+            events.push(c);
+        }
+    }
+
+    // Match Victory — one event at the final action of the match if our team won.
+    if let Some(v) = detect_victory(details, our_team) {
+        events.push(v);
     }
 
     events.retain(|e| toggles.enabled(e.kind));
     events.sort_by_key(|e| e.time_since_game_start_millis);
     events
+}
+
+/// `gameTime − roundTime` for a round (constant for every kill in it), i.e. the
+/// round's start offset from match start in ms. `None` if the round has no kills
+/// to read it from (then game-time-relative events in the round can't be timed).
+fn round_game_offset(round: &crate::valorant::model::RoundResult) -> Option<i64> {
+    round
+        .player_stats
+        .iter()
+        .flat_map(|ps| ps.kills.iter())
+        .map(|k| k.time_since_game_start_millis - k.time_since_round_start_millis)
+        .next()
+}
+
+/// Spike highlights for a round: a [`EventKind::SpikeDetonated`] when *we* planted
+/// and the round ended by detonation, and a [`EventKind::SpikeDefused`] when *we*
+/// defused. Positioned at the detonation (plant + 45 s fuse) / defuse time.
+/// Skipped when the round offset is unknown (can't place on the game clock).
+fn derive_spike_events(
+    round: &crate::valorant::model::RoundResult,
+    puuid: &str,
+    round_offset: Option<i64>,
+) -> Vec<GameEvent> {
+    /// Spike fuse length in ms (45 s).
+    const SPIKE_FUSE_MS: i64 = 45_000;
+    let Some(offset) = round_offset else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let code = round.round_result_code.as_str();
+
+    if round.bomb_planter == puuid && code.eq_ignore_ascii_case("Detonate") {
+        let round_ms = round.plant_round_time + SPIKE_FUSE_MS;
+        out.push(GameEvent {
+            kind: EventKind::SpikeDetonated,
+            round: round.round_num,
+            time_since_game_start_millis: offset + round_ms,
+            time_since_round_start_millis: round_ms,
+        });
+    }
+    if round.bomb_defuser == puuid && code.eq_ignore_ascii_case("Defuse") {
+        let round_ms = round.defuse_round_time;
+        out.push(GameEvent {
+            kind: EventKind::SpikeDefused,
+            round: round.round_num,
+            time_since_game_start_millis: offset + round_ms,
+            time_since_round_start_millis: round_ms,
+        });
+    }
+    out
+}
+
+/// Detect a 1vX clutch: a round our team won in which we became the last player
+/// alive on our team while ≥1 enemy still lived, then closed it out with ≥1 kill.
+/// We simulate the round's alive sets from the full roster (`players[].team_id`)
+/// and the kill timeline. Anchored at our clinching (last) kill of the round.
+/// `None` if it wasn't a clutch (no team / the round wasn't ours / never 1vX).
+fn detect_clutch(
+    details: &MatchDetails,
+    round: &crate::valorant::model::RoundResult,
+    puuid: &str,
+    our_team: &str,
+) -> Option<GameEvent> {
+    use std::collections::HashSet;
+    if our_team.is_empty() || !round.winning_team.eq_ignore_ascii_case(our_team) {
+        return None;
+    }
+
+    // Round rosters from the match-level player list (everyone starts the round
+    // alive). A player with no team id is ignored.
+    let mut alive_team: HashSet<&str> = details
+        .players
+        .iter()
+        .filter(|p| p.team_id.eq_ignore_ascii_case(our_team) && !p.puuid.is_empty())
+        .map(|p| p.puuid.as_str())
+        .collect();
+    let enemy_count = details
+        .players
+        .iter()
+        .filter(|p| !p.team_id.is_empty() && !p.team_id.eq_ignore_ascii_case(our_team))
+        .count();
+    // We must actually be on the roster and not solo our own team.
+    if !alive_team.contains(puuid) || alive_team.len() < 2 {
+        return None;
+    }
+
+    let mut kills: Vec<&crate::valorant::model::Kill> = round
+        .player_stats
+        .iter()
+        .flat_map(|ps| ps.kills.iter())
+        .collect();
+    kills.sort_by_key(|k| k.time_since_round_start_millis);
+
+    let mut enemy_dead = 0usize;
+    let mut became_alone = false; // we are the last teammate standing
+    let mut our_kills_after_alone = 0usize;
+    let mut clinch: Option<&crate::valorant::model::Kill> = None;
+
+    for k in &kills {
+        // Tally an enemy elimination (victim is on the other team).
+        let victim_is_enemy = !alive_team.contains(k.victim.as_str())
+            && details.players.iter().any(|p| {
+                p.puuid == k.victim && !p.team_id.is_empty() && !p.team_id.eq_ignore_ascii_case(our_team)
+            });
+        if victim_is_enemy {
+            enemy_dead += 1;
+        }
+        // Remove a fallen teammate from the alive set.
+        alive_team.remove(k.victim.as_str());
+
+        if became_alone && k.killer == puuid {
+            our_kills_after_alone += 1;
+            clinch = Some(k);
+        }
+        // The instant our side is reduced to exactly us, with enemies remaining,
+        // the clutch is on.
+        if !became_alone && alive_team.len() == 1 && alive_team.contains(puuid) {
+            became_alone = true;
+            let enemies_alive = enemy_count.saturating_sub(enemy_dead);
+            if enemies_alive == 0 {
+                return None; // no one left to clutch against
+            }
+            // A kill that lands exactly as we become alone (it's what made us
+            // alone only if it was a teammate death; our own kill still counts).
+            if k.killer == puuid {
+                our_kills_after_alone += 1;
+                clinch = Some(k);
+            }
+        }
+    }
+
+    let clinch = clinch?;
+    if !became_alone || our_kills_after_alone == 0 {
+        return None;
+    }
+    Some(GameEvent {
+        kind: EventKind::Clutch,
+        round: round.round_num,
+        time_since_game_start_millis: clinch.time_since_game_start_millis,
+        time_since_round_start_millis: clinch.time_since_round_start_millis,
+    })
+}
+
+/// The match Victory event: emitted when our team is flagged `won`, anchored at
+/// the match's final recorded action (the latest kill across all rounds) so the
+/// clip lands on the match point. `None` if we didn't win or there are no kills.
+fn detect_victory(details: &MatchDetails, our_team: &str) -> Option<GameEvent> {
+    if our_team.is_empty() {
+        return None;
+    }
+    let won = details
+        .teams
+        .iter()
+        .find(|t| t.team_id.eq_ignore_ascii_case(our_team))
+        .map(|t| t.won)
+        .unwrap_or(false);
+    if !won {
+        return None;
+    }
+    // The last action of the match across every round.
+    let last = details
+        .round_results
+        .iter()
+        .flat_map(|r| r.player_stats.iter().flat_map(|ps| ps.kills.iter()).map(move |k| (r.round_num, k)))
+        .max_by_key(|(_, k)| k.time_since_game_start_millis)?;
+    Some(GameEvent {
+        kind: EventKind::Victory,
+        round: last.0,
+        time_since_game_start_millis: last.1.time_since_game_start_millis,
+        time_since_round_start_millis: last.1.time_since_round_start_millis,
+    })
 }
 
 /// A round's start wall-clock, logged live when the presence score changes.
@@ -312,6 +629,7 @@ mod tests {
                 kills,
                 damage: Vec::new(),
             }],
+            ..Default::default()
         }
     }
 
@@ -477,5 +795,166 @@ mod tests {
         assert_eq!(EventKind::Ace.label(), "Ace");
         assert_eq!(EventKind::TripleKill.label(), "Triple Kill");
         assert_eq!(EventKind::Knife.label(), "Knife");
+        assert_eq!(EventKind::SpikeDetonated.label(), "Spike Detonated");
+        assert_eq!(EventKind::Clutch.label(), "Clutch");
+    }
+
+    fn player(puuid: &str, team: &str) -> Player {
+        Player {
+            puuid: puuid.into(),
+            game_name: String::new(),
+            tag_line: String::new(),
+            team_id: team.into(),
+            character_id: String::new(),
+            stats: PlayerStats::default(),
+        }
+    }
+
+    /// All on default toggles, victory/clutch/spike are on.
+    #[test]
+    fn derives_spike_detonated_when_we_plant_and_detonate() {
+        let me = "ME";
+        // A kill at round 2000ms / game 92000ms ⇒ round offset 90000ms.
+        let r = RoundResult {
+            round_num: 4,
+            player_stats: vec![PlayerRoundStats {
+                puuid: me.into(),
+                kills: vec![kill(me, "v", 2000, 92_000)],
+                damage: Vec::new(),
+            }],
+            round_result_code: "Detonate".into(),
+            winning_team: "Blue".into(),
+            bomb_planter: me.into(),
+            plant_round_time: 30_000,
+            ..Default::default()
+        };
+        let details = MatchDetails {
+            match_info: MatchInfo::default(),
+            players: vec![player(me, "Blue")],
+            teams: vec![],
+            round_results: vec![r],
+        };
+        let ev = derive_events(&details, me, &EventToggles::default());
+        let spike = ev.iter().find(|e| e.kind == EventKind::SpikeDetonated).unwrap();
+        // Detonation = plant (30s) + 45s fuse = 75s into the round.
+        assert_eq!(spike.time_since_round_start_millis, 75_000);
+        // game time = offset 90s + 75s = 165s.
+        assert_eq!(spike.time_since_game_start_millis, 165_000);
+    }
+
+    #[test]
+    fn derives_spike_defused_when_we_defuse() {
+        let me = "ME";
+        let r = RoundResult {
+            round_num: 1,
+            player_stats: vec![PlayerRoundStats {
+                puuid: me.into(),
+                kills: vec![kill(me, "v", 1000, 41_000)], // offset 40s
+                damage: Vec::new(),
+            }],
+            round_result_code: "Defuse".into(),
+            winning_team: "Blue".into(),
+            bomb_defuser: me.into(),
+            defuse_round_time: 38_000,
+            ..Default::default()
+        };
+        let details = MatchDetails {
+            match_info: MatchInfo::default(),
+            players: vec![player(me, "Blue")],
+            teams: vec![],
+            round_results: vec![r],
+        };
+        let ev = derive_events(&details, me, &EventToggles::default());
+        let spike = ev.iter().find(|e| e.kind == EventKind::SpikeDefused).unwrap();
+        assert_eq!(spike.time_since_round_start_millis, 38_000);
+        assert_eq!(spike.time_since_game_start_millis, 78_000);
+    }
+
+    #[test]
+    fn detects_1v2_clutch() {
+        let me = "ME";
+        // Blue: me + mate. Red: e1 + e2. Blue wins. Mate dies first, then we take
+        // both enemies — a 1v2 clutch closed by our kills.
+        let r = RoundResult {
+            round_num: 7,
+            player_stats: vec![PlayerRoundStats {
+                puuid: me.into(),
+                kills: vec![
+                    kill("e1", "mate", 1000, 1000),
+                    kill(me, "e1", 2000, 2000),
+                    kill(me, "e2", 3000, 3000),
+                ],
+                damage: Vec::new(),
+            }],
+            winning_team: "Blue".into(),
+            ..Default::default()
+        };
+        let details = MatchDetails {
+            match_info: MatchInfo::default(),
+            players: vec![
+                player(me, "Blue"),
+                player("mate", "Blue"),
+                player("e1", "Red"),
+                player("e2", "Red"),
+            ],
+            teams: vec![],
+            round_results: vec![r],
+        };
+        let ev = derive_events(&details, me, &EventToggles::default());
+        let clutch = ev.iter().find(|e| e.kind == EventKind::Clutch).unwrap();
+        // Anchored at our clinching (last) kill.
+        assert_eq!(clutch.time_since_round_start_millis, 3000);
+    }
+
+    #[test]
+    fn no_clutch_when_round_lost() {
+        let me = "ME";
+        let r = RoundResult {
+            round_num: 7,
+            player_stats: vec![PlayerRoundStats {
+                puuid: me.into(),
+                kills: vec![kill(me, "e1", 2000, 2000), kill(me, "e2", 3000, 3000)],
+                damage: Vec::new(),
+            }],
+            winning_team: "Red".into(), // we lost
+            ..Default::default()
+        };
+        let details = MatchDetails {
+            match_info: MatchInfo::default(),
+            players: vec![
+                player(me, "Blue"),
+                player("mate", "Blue"),
+                player("e1", "Red"),
+                player("e2", "Red"),
+            ],
+            teams: vec![],
+            round_results: vec![r],
+        };
+        let ev = derive_events(&details, me, &EventToggles::default());
+        assert!(!ev.iter().any(|e| e.kind == EventKind::Clutch));
+    }
+
+    #[test]
+    fn derives_victory_at_last_action_when_team_won() {
+        let me = "ME";
+        let details = MatchDetails {
+            match_info: MatchInfo::default(),
+            players: vec![player(me, "Blue")],
+            teams: vec![
+                Team { team_id: "Blue".into(), won: true },
+                Team { team_id: "Red".into(), won: false },
+            ],
+            round_results: vec![
+                round(0, me, vec![kill(me, "v", 1000, 5_000)]),
+                round(1, me, vec![kill(me, "v", 1000, 90_000)]),
+            ],
+        };
+        let mut toggles = EventToggles::default();
+        toggles.victory = true;
+        let ev = derive_events(&details, me, &toggles);
+        let v = ev.iter().find(|e| e.kind == EventKind::Victory).unwrap();
+        // Anchored at the latest kill across the match (game time 90s).
+        assert_eq!(v.time_since_game_start_millis, 90_000);
+        assert_eq!(v.round, 1);
     }
 }

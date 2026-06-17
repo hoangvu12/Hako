@@ -25,17 +25,16 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::commands::{self, SettingsState};
 use crate::core::clock::TICKS_PER_SECOND;
 use crate::events;
+use crate::settings::AutoCaptureMode;
 use crate::valorant::local_api::LocalClient;
 use crate::valorant::model::{EventKind, MatchDetails};
 use crate::valorant::reconcile::{
-    self, EventToggles, RoundAnchor, TimelineIndex,
+    self, EventTimings, EventToggles, RoundAnchor, TimelineIndex,
 };
 use crate::valorant::remote_api::{self, RemoteClient};
 use crate::valorant::service::{self, SessionData};
 use crate::valorant::summary;
 
-/// Valorant clip padding: 10 s before & after (`EMS.Padding`/`EMS.EventWindow`).
-const PAD_SECS: u32 = 10;
 /// `MaxAutoClipLength` — clamp each merged window to 120 s.
 const MAX_AUTOCLIP_SECS: i64 = 120;
 /// `match-details` retry budget (Riot finalizes a few s after match end).
@@ -66,6 +65,9 @@ pub struct CutInput {
     pub game_start_ticks: i64,
     /// Remote client + match id (None ⇒ bootstrap failed; we can't fetch details).
     pub remote: Option<RemoteReady>,
+    /// Whether to cut per-event highlights or keep the whole match
+    /// ([`AutoCaptureMode::Highlights`] vs [`AutoCaptureMode::FullMatch`]).
+    pub mode: AutoCaptureMode,
 }
 
 /// Bootstrap the remote API and grab the live match id. Spawned at match start
@@ -146,7 +148,19 @@ async fn run(input: &CutInput) -> Result<(), String> {
     tracing::info!("auto-clip: match summary — {}", summary.title);
     let _ = input.app.emit(events::MATCH_SUMMARY, &summary);
 
+    // Full-match mode keeps the whole session as a single clip — no event
+    // derivation or cutting. The summary above still fires for the panel.
+    if input.mode == AutoCaptureMode::FullMatch {
+        let title = if summary.title.is_empty() {
+            "Full Match".to_string()
+        } else {
+            summary.title.clone()
+        };
+        return save_whole_session(&input.app, &input.session_path, &title, "Full Match");
+    }
+
     let toggles = load_toggles(&input.app);
+    let timings = load_timings(&input.app);
     let events = reconcile::derive_events(&details, &remote.data.puuid, &toggles);
     if events.is_empty() {
         tracing::info!("auto-clip: no enabled highlights in this match");
@@ -184,7 +198,10 @@ async fn run(input: &CutInput) -> Result<(), String> {
             ),
         };
         let Some(pts) = pts else { continue };
-        let (s, end) = reconcile::clip_window(pts, PAD_SECS, PAD_SECS, fps);
+        // Per-event clip window (Outplayed's "Events timing"): each kind has its
+        // own before/after padding instead of one global pad.
+        let t = timings.for_kind(e.kind);
+        let (s, end) = reconcile::clip_window(pts, t.before, t.after, fps);
         let end = end.min(s + max_len_pts);
         placed.push((s, end, e.kind));
     }
@@ -192,8 +209,10 @@ async fn run(input: &CutInput) -> Result<(), String> {
         return Err("no events could be reconciled to the session timeline".into());
     }
 
-    // Merge windows within 10 s (Medal `OverlapMergeGrouper`, tol = EventWindow).
-    let tol_pts = PAD_SECS as i64 * fps as i64;
+    // Merge windows whose padding nearly touches (Medal `OverlapMergeGrouper`,
+    // tol = the widest after-pad among enabled kinds so near events still fuse).
+    let (_, max_after) = timings.max_pad(&toggles);
+    let tol_pts = max_after.max(1) as i64 * fps as i64;
     let windows: Vec<(i64, i64)> = placed.iter().map(|&(s, e, _)| (s, e)).collect();
     let merged = reconcile::merge_windows_tol(windows, tol_pts);
 
@@ -288,14 +307,19 @@ fn dominant_kind(placed: &[(i64, i64, EventKind)], start: i64, end: i64) -> Opti
         .max_by_key(|k| kind_priority(*k))
 }
 
-/// Tag priority: a multi-kill/ace/knife outranks single kills, deaths, assists.
+/// Tag priority: the headline moments (Victory/Ace/Clutch) outrank multi-kills,
+/// which outrank single kills, spike plays, deaths, and assists.
 fn kind_priority(k: EventKind) -> u8 {
     match k {
-        EventKind::Ace => 7,
-        EventKind::QuadraKill => 6,
-        EventKind::TripleKill => 5,
-        EventKind::Knife => 4,
-        EventKind::DoubleKill => 3,
+        EventKind::Victory => 11,
+        EventKind::Ace => 10,
+        EventKind::Clutch => 9,
+        EventKind::QuadraKill => 8,
+        EventKind::TripleKill => 7,
+        EventKind::Knife => 6,
+        EventKind::DoubleKill => 5,
+        EventKind::SpikeDefused => 4,
+        EventKind::SpikeDetonated => 3,
         EventKind::Kill => 2,
         EventKind::Assist => 1,
         EventKind::Death => 0,
@@ -308,4 +332,40 @@ fn load_toggles(app: &AppHandle) -> EventToggles {
     app.try_state::<SettingsState>()
         .and_then(|s| s.0.lock().ok().map(|g| g.events))
         .unwrap_or_default()
+}
+
+/// Read the user's per-event clip windows (Outplayed "Events timing"), falling
+/// back to the default table when settings are unavailable.
+fn load_timings(app: &AppHandle) -> EventTimings {
+    app.try_state::<SettingsState>()
+        .and_then(|s| s.0.lock().ok().map(|g| g.event_timings))
+        .unwrap_or_default()
+}
+
+/// Save a whole Mode-B session file as a single library clip (FullMatch / Session
+/// modes): stream-copy it into the clips dir (which also probes its real
+/// dimensions + duration), tag it with `event`, and register it. The session temp
+/// is dropped by the caller.
+pub fn save_whole_session(
+    app: &AppHandle,
+    session_path: &std::path::Path,
+    title: &str,
+    event: &str,
+) -> Result<(), String> {
+    /// Upper bound on a session's length (s) — trim copies to EOF within it.
+    const WHOLE_FILE_SECS: f64 = 24.0 * 60.0 * 60.0;
+    let out = commands::auto_clip_output_path(app)?;
+    let res = crate::library::trim::trim_clip(session_path, &out, 0.0, WHOLE_FILE_SECS, false)
+        .map_err(|e| format!("whole-session copy failed: {e}"))?;
+    commands::finalize_auto_clip(
+        app,
+        out,
+        title.to_string(),
+        event,
+        res.width,
+        res.height,
+        res.duration_secs,
+    )?;
+    tracing::info!("auto-clip: saved {event} ({:.0}s)", res.duration_secs);
+    Ok(())
 }

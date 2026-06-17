@@ -305,7 +305,40 @@ export interface EventToggles {
   knife: boolean;
   death: boolean;
   assist: boolean;
+  victory: boolean;
+  clutch: boolean;
+  spike_detonated: boolean;
+  spike_defused: boolean;
 }
+
+/** One event's clip window in seconds (mirrors Rust `EventTiming`). */
+export interface EventTiming {
+  before: number;
+  after: number;
+}
+
+/**
+ * Per-event clip windows — Outplayed's "Events timing" (mirrors Rust
+ * `EventTimings`). One entry per toggle row; the auto-clip cut uses these instead
+ * of the single global pad_before/after (which still drive manual saves).
+ */
+export interface EventTimings {
+  kill: EventTiming;
+  double_kill: EventTiming;
+  triple_kill: EventTiming;
+  quadra_kill: EventTiming;
+  ace: EventTiming;
+  knife: EventTiming;
+  death: EventTiming;
+  assist: EventTiming;
+  victory: EventTiming;
+  clutch: EventTiming;
+  spike_detonated: EventTiming;
+  spike_defused: EventTiming;
+}
+
+/** Outplayed-style capture mode (mirrors Rust `Settings.auto_capture_mode`). */
+export type AutoCaptureMode = "manual" | "highlights" | "full_match" | "session";
 
 /** A selected render endpoint in `all_pc_audio` mode (Rust `AudioDeviceSel`). */
 export interface AudioDeviceSel {
@@ -431,6 +464,14 @@ export interface Settings {
   audio: AudioConfig | null;
   save_hotkey: string;
   events: EventToggles;
+  /** Per-event clip windows (Outplayed "Events timing"). */
+  event_timings: EventTimings;
+  /**
+   * What the live Valorant orchestrator captures: "manual" (buffer + hotkey
+   * only), "highlights" (default — cut per-event clips), "full_match" (keep the
+   * whole match as one clip), or "session" (record continuously while in-game).
+   */
+  auto_capture_mode: AutoCaptureMode;
   storage_dir: string | null;
   /**
    * Capture backend: "wgc" (default, Vanguard-safe, capped at the desktop

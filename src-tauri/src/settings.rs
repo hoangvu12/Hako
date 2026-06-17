@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::valorant::reconcile::EventToggles;
+use crate::valorant::reconcile::{EventTimings, EventToggles};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -54,6 +54,19 @@ pub struct Settings {
     pub save_hotkey: String,
     /// Per-event auto-clip toggles.
     pub events: EventToggles,
+    /// Per-event clip windows (before/after seconds) — Outplayed's "Events
+    /// timing". When absent (older configs) it loads as the default table; the
+    /// auto-clip cut falls back to these per-event pads instead of the single
+    /// global `pad_before_secs`/`pad_after_secs` (which still drive manual saves).
+    pub event_timings: EventTimings,
+    /// What the live Valorant orchestrator captures, Outplayed-style:
+    /// - `manual` — never auto-capture matches (buffer + save-hotkey only),
+    /// - `highlights` (default) — record the match, cut per-event highlights,
+    /// - `full_match` — keep the whole match as a single clip (no cutting),
+    /// - `session` — record continuously while the game is open as one clip.
+    ///
+    /// Distinct from [`Settings::capture_mode`] (the WGC-vs-hook *backend*).
+    pub auto_capture_mode: String,
     /// Where clips are written (null → `<Videos>/Hako`).
     pub storage_dir: Option<String>,
     /// Capture backend: `wgc` (default, Vanguard-safe, capped at the DWM
@@ -98,6 +111,8 @@ impl Default for Settings {
             audio: None,
             save_hotkey: "F9".into(),
             events: EventToggles::default(),
+            event_timings: EventTimings::default(),
+            auto_capture_mode: "highlights".into(),
             storage_dir: None,
             capture_mode: "wgc".into(),
             quality_preset: "custom".into(),
@@ -105,6 +120,37 @@ impl Default for Settings {
             gpu_adapter: -1,
             video_encoder: "gpu".into(),
         }
+    }
+}
+
+/// What the live Valorant orchestrator captures (Outplayed's "Capture mode").
+/// The string form is persisted in [`Settings::auto_capture_mode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoCaptureMode {
+    /// Never auto-record matches — buffer + save-hotkey only.
+    Manual,
+    /// Record the match and cut per-event highlights (the default).
+    Highlights,
+    /// Keep the whole match as a single clip; no highlight cutting.
+    FullMatch,
+    /// Record continuously while the game is open as one clip.
+    Session,
+}
+
+impl AutoCaptureMode {
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "manual" => AutoCaptureMode::Manual,
+            "full_match" | "fullmatch" => AutoCaptureMode::FullMatch,
+            "session" | "full_session" => AutoCaptureMode::Session,
+            // "highlights" and any unknown value → the historical behavior.
+            _ => AutoCaptureMode::Highlights,
+        }
+    }
+
+    /// Whether this mode records a per-match session (Highlights or FullMatch).
+    pub fn records_match(self) -> bool {
+        matches!(self, AutoCaptureMode::Highlights | AutoCaptureMode::FullMatch)
     }
 }
 
@@ -232,6 +278,12 @@ impl Settings {
     /// means RAM.
     pub fn buffers_to_disk(&self) -> bool {
         self.buffer_storage.eq_ignore_ascii_case("disk")
+    }
+
+    /// The live-capture auto mode, normalized. Unknown values fall back to
+    /// `highlights` (the historical behavior).
+    pub fn auto_mode(&self) -> AutoCaptureMode {
+        AutoCaptureMode::parse(&self.auto_capture_mode)
     }
 
     /// The output-resolution target box for [`Settings::resolution`], or `None`

@@ -172,6 +172,7 @@ mod tests {
                         headshots: 3,
                     }],
                 }],
+                ..Default::default()
             }],
         }
     }

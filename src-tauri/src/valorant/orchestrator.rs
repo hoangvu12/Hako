@@ -32,10 +32,11 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::task::JoinHandle;
 
-use crate::commands::{self, CaptureState};
+use crate::commands::{self, CaptureState, SettingsState};
 use crate::core::capture::{self, ClipBuffer};
 use crate::core::session::SessionWriter;
 use crate::events;
+use crate::settings::AutoCaptureMode;
 use crate::valorant::cut::{self, RemoteReady};
 use crate::valorant::local_api::LocalClient;
 use crate::valorant::log_watch::{self, LogTail, RoundTracker};
@@ -99,6 +100,8 @@ pub fn spawn(app: AppHandle) {
 async fn run(app: AppHandle) {
     let mut sm = StateMachine::new();
     let mut active: Option<ActiveMatch> = None;
+    // Continuous full-session recording (only used in `session` mode).
+    let mut full_session: Option<FullSession> = None;
     // True while *we* auto-started the capture (so we only auto-stop our own,
     // never the user's manual capture).
     let mut auto_capturing = false;
@@ -116,6 +119,13 @@ async fn run(app: AppHandle) {
         // Independent of presence so it works even if the local API is flaky.
         auto_manage_capture(&app, &mut auto_capturing, &mut next_capture_attempt);
 
+        // The user's capture mode (Manual / Highlights / FullMatch / Session).
+        // Read each tick so changing it in settings takes effect without restart.
+        let mode = current_auto_mode(&app);
+        // Session mode: keep one clip rolling for as long as capture is live,
+        // independent of match boundaries. A no-op in the other modes.
+        manage_full_session(&app, mode, &mut full_session);
+
         // Push the live recorder snapshot (game-detected / capturing) so the
         // titlebar's "Now Clipping" indicator updates without the game's presence.
         let _ = app.emit(events::RECORDER_STATUS, &commands::recorder_status_snapshot(&app));
@@ -131,6 +141,12 @@ async fn run(app: AppHandle) {
         for action in sm.update(loop_state, rounds_played) {
             match action {
                 Action::MatchStarted => {
+                    // Only Highlights / FullMatch record a per-match session.
+                    // Manual and Session don't (Manual = buffer + hotkey only;
+                    // Session records continuously via `manage_full_session`).
+                    if !mode.records_match() {
+                        continue;
+                    }
                     if let Some(stale) = active.take() {
                         tracing::warn!("auto-clip: new match started over an unfinished one");
                         stale.discard();
@@ -151,7 +167,7 @@ async fn run(app: AppHandle) {
                 }
                 Action::MatchEnded => {
                     if let Some(am) = active.take() {
-                        end_match(&app, am);
+                        end_match(&app, am, mode);
                     }
                 }
             }
@@ -226,7 +242,7 @@ fn start_match(app: &AppHandle, puuid: &str, presence: &PrivatePresence) -> Opti
 
 /// Finish the session and hand it to the post-match cut pipeline on its own task
 /// (the match-details retry can take tens of seconds — never block the loop).
-fn end_match(app: &AppHandle, am: ActiveMatch) {
+fn end_match(app: &AppHandle, am: ActiveMatch, mode: AutoCaptureMode) {
     am.clip.take_session(); // stop teeing into the (now finishing) writer
     let (path, timeline) = match am.session.finish() {
         Ok(x) => x,
@@ -253,6 +269,7 @@ fn end_match(app: &AppHandle, am: ActiveMatch) {
             fps,
             game_start_ticks: started_ticks,
             remote,
+            mode,
         })
         .await;
     });
@@ -282,6 +299,91 @@ fn capture_clip(app: &AppHandle) -> Option<Arc<ClipBuffer>> {
     let state = app.state::<CaptureState>();
     let guard = state.0.lock().ok()?;
     guard.as_ref().map(|rc| rc.clip())
+}
+
+/// The user's configured auto-capture mode (defaults to Highlights).
+fn current_auto_mode(app: &AppHandle) -> AutoCaptureMode {
+    app.try_state::<SettingsState>()
+        .and_then(|s| s.0.lock().ok().map(|g| g.auto_mode()))
+        .unwrap_or(AutoCaptureMode::Highlights)
+}
+
+/// A continuously-rolling full-session recording (Session mode): one writer teed
+/// off the live capture for as long as capture is up, saved as a single clip.
+struct FullSession {
+    clip: Arc<ClipBuffer>,
+    session: Arc<SessionWriter>,
+    session_path: PathBuf,
+}
+
+/// Drive Session-mode recording: while in `session` mode and capture is live,
+/// keep one [`FullSession`] open (opened lazily once the encoder is ready); when
+/// capture stops, the mode changes, or the game closes, finish it and save the
+/// whole file as one clip. A no-op in every other mode.
+fn manage_full_session(app: &AppHandle, mode: AutoCaptureMode, slot: &mut Option<FullSession>) {
+    let want = mode == AutoCaptureMode::Session && commands::is_capturing(app);
+    match (want, slot.is_some()) {
+        // Should be recording and isn't yet → try to open (may not be ready).
+        (true, false) => {
+            if let Some(fs) = start_full_session(app) {
+                tracing::info!("session-record: rolling → {}", fs.session_path.display());
+                *slot = Some(fs);
+            }
+        }
+        // Shouldn't be recording but is → finish + save what we have.
+        (false, true) => {
+            if let Some(fs) = slot.take() {
+                finish_full_session(app, fs);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Open a full-session writer over the live capture's clip buffer. `None` if no
+/// capture is running or the encoder isn't producing frames yet (retried next
+/// tick).
+fn start_full_session(app: &AppHandle) -> Option<FullSession> {
+    let clip = capture_clip(app)?;
+    let meta = clip.clip_meta()?; // encoder not open yet ⇒ try again later
+    let audio_tracks = clip.audio_track_metas();
+    let session_path = std::env::temp_dir().join(format!("hako_fullsession_{}.mp4", unix_millis()));
+    let writer = match SessionWriter::start(&session_path, &meta, &audio_tracks) {
+        Ok(w) => Arc::new(w),
+        Err(e) => {
+            tracing::warn!("session-record: could not open session writer: {e}");
+            return None;
+        }
+    };
+    clip.install_session(writer.clone());
+    Some(FullSession {
+        clip,
+        session: writer,
+        session_path,
+    })
+}
+
+/// Finish a full-session recording and save the whole file as one library clip
+/// (on a blocking task — the copy can take a moment). Best-effort.
+fn finish_full_session(app: &AppHandle, fs: FullSession) {
+    fs.clip.take_session(); // stop teeing into the writer
+    let (path, _timeline) = match fs.session.finish() {
+        Ok(x) => x,
+        Err(e) => {
+            tracing::warn!("session-record: finishing session failed: {e}");
+            let _ = std::fs::remove_file(&fs.session_path);
+            return;
+        }
+    };
+    let app = app.clone();
+    tokio::spawn(async move {
+        if let Err(e) = cut::save_whole_session(&app, &path, "Full Session", "Full Session") {
+            tracing::warn!("session-record: save failed: {e}");
+        }
+        if let Err(e) = std::fs::remove_file(&path) {
+            tracing::debug!("session-record: temp cleanup: {e}");
+        }
+    });
 }
 
 /// Backoff after a failed auto-start before retrying (don't re-inject the hook

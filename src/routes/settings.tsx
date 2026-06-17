@@ -11,12 +11,23 @@ import {
   Warning,
   SpeakerHigh,
   Check,
+  CaretDown,
+  Trophy,
+  Crown,
+  Sword,
+  Fire,
+  Knife,
+  Skull,
+  Handshake,
+  Bomb,
+  Wrench,
   type Icon,
 } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { Slider } from "@/components/ui/slider";
 import {
   Select,
   SelectContent,
@@ -31,6 +42,7 @@ import {
   effectiveAudioConfig,
   getGpuInfo,
   type AudioConfig,
+  type AutoCaptureMode,
   type EventToggles,
   type Settings,
 } from "@/lib/api";
@@ -71,17 +83,39 @@ const NAV: {
   },
 ];
 
-const EVENT_LABELS: { key: keyof EventToggles; label: string; hint: string }[] =
-  [
-    { key: "kill", label: "Kill", hint: "Any elimination" },
-    { key: "double_kill", label: "Double kill", hint: "Two in quick succession" },
-    { key: "triple_kill", label: "Triple kill", hint: "3K" },
-    { key: "quadra_kill", label: "Quadra kill", hint: "4K" },
-    { key: "ace", label: "Ace", hint: "Full team wipe (5K)" },
-    { key: "knife", label: "Knife kill", hint: "Melee elimination" },
-    { key: "death", label: "Death", hint: "Your deaths" },
-    { key: "assist", label: "Assist", hint: "Assisted eliminations" },
-  ];
+const EVENT_LABELS: {
+  key: keyof EventToggles;
+  label: string;
+  hint: string;
+  icon: Icon;
+}[] = [
+  { key: "victory", label: "Victory", hint: "You won the match", icon: Trophy },
+  { key: "clutch", label: "Clutch", hint: "1vX round win as the last alive", icon: Crown },
+  { key: "kill", label: "Kill", hint: "Any elimination", icon: Sword },
+  { key: "double_kill", label: "Double kill", hint: "Two in quick succession", icon: Sword },
+  { key: "triple_kill", label: "Triple kill", hint: "3K", icon: Sword },
+  { key: "quadra_kill", label: "Quadra kill", hint: "4K", icon: Sword },
+  { key: "ace", label: "Ace", hint: "Full team wipe (5K)", icon: Fire },
+  { key: "knife", label: "Knife kill", hint: "Melee elimination", icon: Knife },
+  { key: "death", label: "Death", hint: "Your deaths", icon: Skull },
+  { key: "assist", label: "Assist", hint: "Assisted eliminations", icon: Handshake },
+  { key: "spike_detonated", label: "Spike detonated", hint: "A spike you planted exploded", icon: Bomb },
+  { key: "spike_defused", label: "Spike defused", hint: "You defused the spike", icon: Wrench },
+];
+
+// Slider ranges for the per-event timing rows. Before can run long (the 45 s
+// spike fuse); after is shorter.
+const MAX_BEFORE_SECS = 60;
+const MAX_AFTER_SECS = 30;
+
+// Outplayed-style capture modes for the Auto Clipping section. Mirrors the Rust
+// `AutoCaptureMode`; the cards write `auto_capture_mode`.
+const CAPTURE_MODES: { key: AutoCaptureMode; label: string; blurb: string }[] = [
+  { key: "manual", label: "Manual only", blurb: "Don't auto-capture; buffer + hotkey still work" },
+  { key: "highlights", label: "Highlights", blurb: "Auto-clip the game events below" },
+  { key: "full_match", label: "Full match", blurb: "Keep the entire match as one clip" },
+  { key: "session", label: "Full session", blurb: "Record the whole time you're in-game" },
+];
 
 // Quality presets (Medal-style). A preset is just a named bundle of the
 // concrete knobs; selecting one writes resolution/fps/bitrate, after which those
@@ -276,6 +310,68 @@ function Row({
   );
 }
 
+/** A per-event clip-window editor laid out like Outplayed's "Events timing":
+ *  the before value, a slider that fills inward from the left, the event icon,
+ *  a slider that fills outward to the right, and the after value. Dragging
+ *  updates the draft live (`onChange`); the release commits it (`onCommit`). */
+function TimingRow({
+  icon: Icon,
+  label,
+  before,
+  after,
+  onChange,
+  onCommit,
+}: {
+  icon: Icon;
+  label: string;
+  before: number;
+  after: number;
+  onChange: (field: "before" | "after", value: number) => void;
+  onCommit: (field: "before" | "after", value: number) => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 py-2.5">
+      <span className="w-9 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+        {before}s
+      </span>
+      {/* Before: inverted so the fill grows from the centre icon leftwards. */}
+      <Slider
+        inverted
+        aria-label={`${label} seconds before`}
+        min={0}
+        max={MAX_BEFORE_SECS}
+        step={1}
+        value={[before]}
+        onValueChange={(v) => onChange("before", v[0] ?? 0)}
+        onValueCommit={(v) => onCommit("before", v[0] ?? 0)}
+        className="flex-1"
+      />
+      <div className="flex w-24 shrink-0 flex-col items-center gap-1">
+        <div className="flex size-9 items-center justify-center rounded-md border border-border/70 bg-secondary text-foreground">
+          <Icon className="size-4" weight="fill" />
+        </div>
+        <span className="text-center text-[11px] leading-tight font-medium text-muted-foreground">
+          {label}
+        </span>
+      </div>
+      {/* After: normal direction, fill grows from the centre icon rightwards. */}
+      <Slider
+        aria-label={`${label} seconds after`}
+        min={0}
+        max={MAX_AFTER_SECS}
+        step={1}
+        value={[after]}
+        onValueChange={(v) => onChange("after", v[0] ?? 0)}
+        onValueCommit={(v) => onCommit("after", v[0] ?? 0)}
+        className="flex-1"
+      />
+      <span className="w-9 shrink-0 text-xs tabular-nums text-muted-foreground">
+        {after}s
+      </span>
+    </div>
+  );
+}
+
 // Lazy-loaded: only the component splits out — `validateSearch` stays eager in
 // the route tree (router.tsx), which is required for type-safe search params.
 export const Route = createLazyRoute("/settings")({
@@ -299,6 +395,8 @@ function SettingsPage() {
     isSectionKey(search.section) ? search.section : "clip"
   );
   const [navQuery, setNavQuery] = useState("");
+  // Outplayed-style "Advanced options" disclosure for per-event timing.
+  const [showTiming, setShowTiming] = useState(false);
 
   // Initialise the draft once; instant-apply edits keep it in sync afterwards.
   useEffect(() => {
@@ -339,6 +437,32 @@ function SettingsPage() {
     });
   const toggleEvent = (key: keyof EventToggles) =>
     persist({ ...draft, events: { ...draft.events, [key]: !draft.events[key] } });
+  // Per-event timing edits. `setTimingLocal` updates the draft live while
+  // dragging (no save per pixel); `commitTiming` persists the final value on
+  // release. The commit takes the explicit value (not a stale closure read) so a
+  // single click — where onValueChange + onValueCommit fire in the same tick —
+  // still saves the new value.
+  const timingNext = (
+    key: keyof EventToggles,
+    field: "before" | "after",
+    value: number
+  ): Settings => ({
+    ...draft,
+    event_timings: {
+      ...draft.event_timings,
+      [key]: { ...draft.event_timings[key], [field]: value },
+    },
+  });
+  const setTimingLocal = (
+    key: keyof EventToggles,
+    field: "before" | "after",
+    value: number
+  ) => setDraft(timingNext(key, field, value));
+  const commitTiming = (
+    key: keyof EventToggles,
+    field: "before" | "after",
+    value: number
+  ) => persist(timingNext(key, field, value));
 
   const q = navQuery.trim().toLowerCase();
   // Single pass: filter each group's items and keep only non-empty groups in one
@@ -719,16 +843,88 @@ function SettingsPage() {
                 title="Auto Clipping"
                 subtitle="Choose which Valorant moments are clipped automatically."
               />
-              <Panel title="Events">
-                {EVENT_LABELS.map((ev) => (
-                  <Row key={ev.key} label={ev.label} hint={ev.hint}>
-                    <Switch
-                      checked={draft.events[ev.key]}
-                      onCheckedChange={() => toggleEvent(ev.key)}
+
+              <Panel title="Capture mode">
+                <div className="grid grid-cols-2 gap-3 pt-1">
+                  {CAPTURE_MODES.map((m) => (
+                    <PresetCard
+                      key={m.key}
+                      title={m.label}
+                      blurb={m.blurb}
+                      selected={draft.auto_capture_mode === m.key}
+                      onSelect={() => set("auto_capture_mode", m.key)}
                     />
-                  </Row>
-                ))}
+                  ))}
+                </div>
               </Panel>
+
+              {/* Events + timing only matter when auto-clipping highlights. */}
+              {draft.auto_capture_mode === "highlights" && (
+                <>
+                  <Panel title="Auto captured events">
+                    {EVENT_LABELS.map((ev) => (
+                      <Row key={ev.key} label={ev.label} hint={ev.hint}>
+                        <Switch
+                          checked={draft.events[ev.key]}
+                          onCheckedChange={() => toggleEvent(ev.key)}
+                        />
+                      </Row>
+                    ))}
+                  </Panel>
+
+                  {/* Advanced options: per-event clip windows (Outplayed's
+                      "Events timing"). Only the enabled events are shown. */}
+                  <Panel>
+                    <button
+                      type="button"
+                      onClick={() => setShowTiming((v) => !v)}
+                      className="flex w-full items-center gap-2 text-sm font-semibold text-foreground"
+                    >
+                      <CaretDown
+                        weight="bold"
+                        className={cn(
+                          "size-4 transition-transform",
+                          showTiming ? "rotate-0" : "-rotate-90"
+                        )}
+                      />
+                      Advanced options
+                      <span className="ml-auto text-xs font-normal text-muted-foreground">
+                        Events timing
+                      </span>
+                    </button>
+                    {showTiming && (
+                      <div className="pt-3">
+                        {EVENT_LABELS.filter((ev) => draft.events[ev.key]).map(
+                          (ev) => (
+                            <TimingRow
+                              key={ev.key}
+                              icon={ev.icon}
+                              label={ev.label}
+                              before={draft.event_timings[ev.key].before}
+                              after={draft.event_timings[ev.key].after}
+                              onChange={(field, value) =>
+                                setTimingLocal(ev.key, field, value)
+                              }
+                              onCommit={(field, value) =>
+                                commitTiming(ev.key, field, value)
+                              }
+                            />
+                          )
+                        )}
+                        {EVENT_LABELS.every((ev) => !draft.events[ev.key]) && (
+                          <p className="py-3 text-xs text-muted-foreground">
+                            Enable an event above to set its clip timing.
+                          </p>
+                        )}
+                        <p className="pt-2 text-xs text-muted-foreground">
+                          Seconds kept before and after each moment. The save-clip
+                          hotkey uses its own padding (Clip Settings).
+                        </p>
+                      </div>
+                    )}
+                  </Panel>
+                </>
+              )}
             </>
           )}
 

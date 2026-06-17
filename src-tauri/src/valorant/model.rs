@@ -328,12 +328,36 @@ pub struct Team {
     pub won: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct RoundResult {
     #[serde(rename = "roundNum", default, deserialize_with = "null_default")]
     pub round_num: i32,
     #[serde(rename = "playerStats", default, deserialize_with = "null_default")]
     pub player_stats: Vec<PlayerRoundStats>,
+    /// How the round ended: `"Elimination"` | `"Bomb detonated"` |
+    /// `"Bomb defused"` | `"Round timer expired"` | `"Surrendered"`. Riot's
+    /// machine-readable companion is `roundResultCode` ([`Self::result_code`]).
+    #[serde(rename = "roundResult", default, deserialize_with = "null_default")]
+    pub round_result: String,
+    /// Stable code for the round outcome: `"Elimination"` | `"Detonate"` |
+    /// `"Defuse"` | `"Surrendered"`.
+    #[serde(rename = "roundResultCode", default, deserialize_with = "null_default")]
+    pub round_result_code: String,
+    /// Team id that won the round (`"Blue"` / `"Red"`).
+    #[serde(rename = "winningTeam", default, deserialize_with = "null_default")]
+    pub winning_team: String,
+    /// puuid of whoever planted the spike this round (empty if no plant).
+    #[serde(rename = "bombPlanter", default, deserialize_with = "null_default")]
+    pub bomb_planter: String,
+    /// puuid of whoever defused the spike this round (empty if no defuse).
+    #[serde(rename = "bombDefuser", default, deserialize_with = "null_default")]
+    pub bomb_defuser: String,
+    /// ms since round start at which the spike was planted (0 if no plant).
+    #[serde(rename = "plantRoundTime", default, deserialize_with = "null_default")]
+    pub plant_round_time: i64,
+    /// ms since round start at which the spike was defused (0 if no defuse).
+    #[serde(rename = "defuseRoundTime", default, deserialize_with = "null_default")]
+    pub defuse_round_time: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -412,8 +436,8 @@ pub struct CurrentGamePlayer {
 // Derived events (Hako's own — the auto-clip event set)
 // ---------------------------------------------------------------------------
 
-/// The highlight kinds Hako can auto-clip. Mirrors Medal's event set
-/// (`events.json`). Serialized as the variant name for the UI / event toggles.
+/// The highlight kinds Hako can auto-clip. Mirrors Medal's / Outplayed's event
+/// set. Serialized as the variant name for the UI / event toggles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventKind {
     Kill,
@@ -424,6 +448,14 @@ pub enum EventKind {
     Knife,
     Death,
     Assist,
+    /// We won the match (anchored at the final round's last action).
+    Victory,
+    /// We won a round as the last player alive on our team (a 1vX clutch).
+    Clutch,
+    /// A spike we planted detonated (round won by detonation).
+    SpikeDetonated,
+    /// We defused the spike.
+    SpikeDefused,
 }
 
 impl EventKind {
@@ -438,6 +470,10 @@ impl EventKind {
             EventKind::Knife => "Knife",
             EventKind::Death => "Death",
             EventKind::Assist => "Assist",
+            EventKind::Victory => "Victory",
+            EventKind::Clutch => "Clutch",
+            EventKind::SpikeDetonated => "Spike Detonated",
+            EventKind::SpikeDefused => "Spike Defused",
         }
     }
 
