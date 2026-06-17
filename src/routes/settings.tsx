@@ -5,6 +5,7 @@ import {
   Scissors,
   SlidersHorizontal,
   Crosshair,
+  Monitor,
   HardDrives,
   Pulse,
   MagnifyingGlass,
@@ -47,13 +48,21 @@ import {
   type Settings,
 } from "@/lib/api";
 
-type SectionKey = "clip" | "quality" | "audio" | "auto" | "storage" | "status";
+type SectionKey =
+  | "clip"
+  | "quality"
+  | "audio"
+  | "auto"
+  | "capture"
+  | "storage"
+  | "status";
 
 const SECTION_KEYS = new Set<SectionKey>([
   "clip",
   "quality",
   "audio",
   "auto",
+  "capture",
   "storage",
   "status",
 ]);
@@ -67,19 +76,19 @@ const NAV: {
   {
     group: "Recording",
     items: [
-      { key: "clip", label: "Clip Settings", icon: Scissors },
-      { key: "quality", label: "Quality", icon: SlidersHorizontal },
+      { key: "clip", label: "Clips", icon: Scissors },
+      { key: "auto", label: "Auto-Capture", icon: Crosshair },
+      { key: "quality", label: "Video", icon: SlidersHorizontal },
       { key: "audio", label: "Recording Audio", icon: SpeakerHigh },
-      { key: "auto", label: "Auto Clipping", icon: Crosshair },
+      { key: "capture", label: "Capture", icon: Monitor },
     ],
   },
   {
-    group: "Storage",
-    items: [{ key: "storage", label: "Storage", icon: HardDrives }],
-  },
-  {
     group: "System",
-    items: [{ key: "status", label: "Status", icon: Pulse }],
+    items: [
+      { key: "storage", label: "Storage", icon: HardDrives },
+      { key: "status", label: "Status", icon: Pulse },
+    ],
   },
 ];
 
@@ -529,7 +538,7 @@ function SettingsPage() {
               <SectionHero
                 icon={Scissors}
                 title="Clip Settings"
-                subtitle="Set your save hotkey, replay buffer, and clip padding."
+                subtitle="Set your save hotkey and the padding kept around each clip."
               />
               <Panel title="Clipping">
                 <Row
@@ -542,28 +551,6 @@ function SettingsPage() {
                     onChange={(e) => setLocal("save_hotkey", e.target.value)}
                     onBlur={commit}
                   />
-                </Row>
-                <Row
-                  label="Replay buffer"
-                  hint={`Seconds of gameplay kept in RAM (~${fmtBytes(
-                    estBufferBytes(draft.bitrate_mbps, draft.buffer_seconds)
-                  )} at ${draft.bitrate_mbps} Mbps).`}
-                >
-                  <Select
-                    value={String(draft.buffer_seconds)}
-                    onValueChange={(v) => set("buffer_seconds", Number(v))}
-                  >
-                    <SelectTrigger size="sm" className="w-28">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {[30, 60, 90, 120, 180].map((s) => (
-                        <SelectItem key={s} value={String(s)}>
-                          {s}s
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
                 </Row>
                 <Row
                   label="Pad before"
@@ -607,7 +594,7 @@ function SettingsPage() {
             <>
               <SectionHero
                 icon={SlidersHorizontal}
-                title="Quality"
+                title="Video"
                 subtitle="Manage your recording resolution, frames per second, bitrate and more."
               />
               <Panel title="Recording Quality">
@@ -746,23 +733,6 @@ function SettingsPage() {
                     </SelectContent>
                   </Select>
                 </Row>
-                <Row
-                  label="Recording buffer"
-                  hint="RAM is fastest but uses memory; Disk spools the replay buffer to your drive to free RAM."
-                >
-                  <Select
-                    value={draft.buffer_storage === "disk" ? "disk" : "ram"}
-                    onValueChange={(v) => set("buffer_storage", v)}
-                  >
-                    <SelectTrigger size="sm" className="w-28">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="ram">RAM</SelectItem>
-                      <SelectItem value="disk">Disk</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </Row>
               </Panel>
 
               {/* Medal-style nudge: above the desktop-composition rate, WGC capture
@@ -772,23 +742,23 @@ function SettingsPage() {
                   <Warning className="size-4 shrink-0" weight="fill" />
                   <span>
                     {draft.target_fps} FPS is above the ~60&nbsp;FPS desktop-composition
-                    cap. Unless you enable game-hook capture (below), WGC can't deliver
-                    that many frames and clips may look choppy.
+                    cap. Unless you enable game-hook capture (in Capture settings), WGC
+                    can't deliver that many frames and clips may look choppy.
                   </span>
                 </div>
               )}
+            </>
+          )}
 
-              {/* The bitrate ceiling drives the replay-buffer RAM (bitrate × the
-                  buffer length set in Clip Settings); surface it here. Only the RAM
-                  backend spends memory — the disk backend spools to drive instead. */}
-              {draft.buffer_storage !== "disk" && (
-                <BufferRamHint
-                  bitrateMbps={draft.bitrate_mbps}
-                  bufferSeconds={draft.buffer_seconds}
-                />
-              )}
+          {active === "capture" && (
+            <>
+              <SectionHero
+                icon={Monitor}
+                title="Capture"
+                subtitle="How frames are grabbed and how much gameplay is held ready to clip."
+              />
 
-              <Panel title="Capture mode">
+              <Panel title="Capture method">
                 <Row
                   label="Backend"
                   hint="WGC is Vanguard-safe; game-hook beats the FPS cap but carries anti-cheat risk."
@@ -819,6 +789,56 @@ function SettingsPage() {
                   </span>
                 </div>
               )}
+
+              <Panel title="Replay buffer">
+                <Row
+                  label="Buffer length"
+                  hint="Seconds of gameplay held ready to save as a clip."
+                >
+                  <Select
+                    value={String(draft.buffer_seconds)}
+                    onValueChange={(v) => set("buffer_seconds", Number(v))}
+                  >
+                    <SelectTrigger size="sm" className="w-28">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {[30, 60, 90, 120, 180].map((s) => (
+                        <SelectItem key={s} value={String(s)}>
+                          {s}s
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Row>
+                <Row
+                  label="Storage"
+                  hint="RAM is fastest but uses memory; Disk spools the replay buffer to your drive to free RAM."
+                >
+                  <Select
+                    value={draft.buffer_storage === "disk" ? "disk" : "ram"}
+                    onValueChange={(v) => set("buffer_storage", v)}
+                  >
+                    <SelectTrigger size="sm" className="w-28">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="ram">RAM</SelectItem>
+                      <SelectItem value="disk">Disk</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Row>
+              </Panel>
+
+              {/* The bitrate ceiling (Video) × the buffer length above drives the
+                  replay-buffer RAM. Only the RAM backend spends memory — the disk
+                  backend spools to drive instead. */}
+              {draft.buffer_storage !== "disk" && (
+                <BufferRamHint
+                  bitrateMbps={draft.bitrate_mbps}
+                  bufferSeconds={draft.buffer_seconds}
+                />
+              )}
             </>
           )}
 
@@ -840,11 +860,11 @@ function SettingsPage() {
             <>
               <SectionHero
                 icon={Crosshair}
-                title="Auto Clipping"
+                title="Auto-Capture"
                 subtitle="Choose which Valorant moments are clipped automatically."
               />
 
-              <Panel title="Capture mode">
+              <Panel title="Mode">
                 <div className="grid grid-cols-2 gap-3 pt-1">
                   {CAPTURE_MODES.map((m) => (
                     <PresetCard
