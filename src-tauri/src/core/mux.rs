@@ -34,7 +34,11 @@ pub struct ClipMeta {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
-    /// avcC SPS/PPS from the encoder (`Encoder::extradata`).
+    /// FFmpeg `AV_CODEC_ID_*` of the encoded video stream (H.264/HEVC/AV1) — set
+    /// from the encoder so the muxer declares the right stream type.
+    pub codec_id: u32,
+    /// Codec config record from the encoder (`Encoder::extradata`): avcC for
+    /// H.264, hvcC for HEVC, av1C for AV1 (all produced by GLOBAL_HEADER).
     pub extradata: Vec<u8>,
 }
 
@@ -156,7 +160,8 @@ unsafe fn write_inner(
     (*st_v).time_base = ffi::AVRational { num: 1, den: fps };
     let par = (*st_v).codecpar;
     (*par).codec_type = ffi::AVMEDIA_TYPE_VIDEO;
-    (*par).codec_id = ffi::AV_CODEC_ID_H264;
+    (*par).codec_id = meta.codec_id;
+    // codec_tag left 0 so the MP4 muxer picks the right fourcc (avc1/hvc1/av01).
     (*par).width = meta.width as i32;
     (*par).height = meta.height as i32;
     (*par).format = ffi::AV_PIX_FMT_NV12; // informational for a copy stream
@@ -420,6 +425,7 @@ mod tests {
             width: w,
             height: h,
             fps,
+            codec_id: ffi::AV_CODEC_ID_H264,
             extradata,
         };
         let packets = ring.slice_last(1);
@@ -536,6 +542,7 @@ mod tests {
             width: w,
             height: h,
             fps,
+            codec_id: ffi::AV_CODEC_ID_H264,
             extradata: enc.extradata(),
         };
 
@@ -622,6 +629,7 @@ mod tests {
             width: w,
             height: h,
             fps,
+            codec_id: ffi::AV_CODEC_ID_H264,
             extradata: enc.extradata(),
         };
 

@@ -741,6 +741,8 @@ pub fn planned_track_names(cfg: &AudioConfig, game_pid: Option<u32>) -> Vec<Stri
 // ---------------------------------------------------------------------------
 
 fn audio_thread(clip: Arc<ClipBuffer>, stop: Arc<AtomicBool>, cfg: AudioConfig, game_pid: Option<u32>) {
+    // Keep audio glitch-free even while the game saturates the CPU.
+    crate::core::boost_current_thread_priority("audio");
     // Audio runs on its own COM apartment (MTA), independent of the capture
     // thread's WinRT init.
     unsafe {

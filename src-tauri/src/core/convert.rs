@@ -16,6 +16,10 @@
 
 #![allow(dead_code)]
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::ffi::c_void;
+
 use windows::core::{Interface, Result};
 use windows::Win32::Graphics::Direct3D11::{
     ID3D11Device, ID3D11DeviceContext, ID3D11Resource, ID3D11Texture2D, ID3D11VideoContext,
@@ -44,6 +48,13 @@ pub struct Converter {
     processor: ID3D11VideoProcessor,
     width: u32,
     height: u32,
+    /// Cached VideoProcessor views, keyed by the texture's COM pointer. Both the
+    /// BGRA staging pool and the NV12 ring reuse a fixed set of texture objects,
+    /// so each view is created once and reused for every frame instead of being
+    /// rebuilt per `convert` call (a per-frame driver allocation otherwise). Owned
+    /// here; lives on the single encode thread, so `RefCell` is enough.
+    input_views: RefCell<HashMap<*mut c_void, ID3D11VideoProcessorInputView>>,
+    output_views: RefCell<HashMap<*mut c_void, ID3D11VideoProcessorOutputView>>,
 }
 
 impl Converter {
@@ -103,6 +114,8 @@ impl Converter {
             processor,
             width,
             height,
+            input_views: RefCell::new(HashMap::new()),
+            output_views: RefCell::new(HashMap::new()),
         })
     }
 
@@ -148,14 +161,15 @@ impl Converter {
         Ok(tex.expect("CreateTexture2D returned null NV12 texture"))
     }
 
-    /// Convert one BGRA frame into `nv12_out` (must be from `create_nv12_texture`).
-    ///
-    /// Creates per-call input/output views — WGC recycles its frame-pool
-    /// textures, so caching by pointer is a later optimization.
-    pub fn convert(&self, bgra: &ID3D11Texture2D, nv12_out: &ID3D11Texture2D) -> Result<()> {
+    /// Cached VideoProcessor **input** view for a BGRA texture (created once per
+    /// distinct texture; see the cache fields). A view is permanently bound to its
+    /// texture, which is sound here because the staging pool reuses fixed textures.
+    fn input_view(&self, bgra: &ID3D11Texture2D) -> Result<ID3D11VideoProcessorInputView> {
+        let key = bgra.as_raw();
+        if let Some(v) = self.input_views.borrow().get(&key) {
+            return Ok(v.clone());
+        }
         let bgra_res: ID3D11Resource = bgra.cast()?;
-        let nv12_res: ID3D11Resource = nv12_out.cast()?;
-
         let in_desc = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
             FourCC: 0,
             ViewDimension: D3D11_VPIV_DIMENSION_TEXTURE2D,
@@ -176,7 +190,18 @@ impl Converter {
             )?;
         }
         let input_view = input_view.expect("null input view");
+        self.input_views.borrow_mut().insert(key, input_view.clone());
+        Ok(input_view)
+    }
 
+    /// Cached VideoProcessor **output** view for an NV12 texture (created once per
+    /// distinct texture; the NV12 ring reuses a fixed set).
+    fn output_view(&self, nv12_out: &ID3D11Texture2D) -> Result<ID3D11VideoProcessorOutputView> {
+        let key = nv12_out.as_raw();
+        if let Some(v) = self.output_views.borrow().get(&key) {
+            return Ok(v.clone());
+        }
+        let nv12_res: ID3D11Resource = nv12_out.cast()?;
         let out_desc = D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC {
             ViewDimension: D3D11_VPOV_DIMENSION_TEXTURE2D,
             Anonymous: D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0 {
@@ -193,6 +218,20 @@ impl Converter {
             )?;
         }
         let output_view = output_view.expect("null output view");
+        self.output_views
+            .borrow_mut()
+            .insert(key, output_view.clone());
+        Ok(output_view)
+    }
+
+    /// Convert one BGRA frame into `nv12_out` (must be from `create_nv12_texture`).
+    ///
+    /// Input/output views are cached per texture ([`Self::input_view`] /
+    /// [`Self::output_view`]) since both pools reuse fixed textures — no per-frame
+    /// view allocation on the encode thread.
+    pub fn convert(&self, bgra: &ID3D11Texture2D, nv12_out: &ID3D11Texture2D) -> Result<()> {
+        let input_view = self.input_view(bgra)?;
+        let output_view = self.output_view(nv12_out)?;
 
         let stream = D3D11_VIDEO_PROCESSOR_STREAM {
             Enable: true.into(),

@@ -57,7 +57,7 @@ use crate::core::buffer::{AudioRing, BufferStats, PacketRing};
 use crate::core::clock::{MasterClock, TICKS_PER_SECOND};
 use crate::core::convert::Converter;
 use crate::core::device;
-use crate::core::encode::{EncodedPacket, Encoder};
+use crate::core::encode::{EncodeSettings, EncodedPacket, Encoder};
 use crate::core::hook::{HookCapture, RunningHook};
 use crate::core::mux::{self, AudioClip, ClipMeta};
 use crate::core::session::SessionWriter;
@@ -71,6 +71,10 @@ const STAGING_POOL: usize = 4;
 /// the encoder holds asynchronously (`async_depth` ≈ 1–2) so a reused texture is
 /// never still in flight.
 const NV12_RING: usize = 6;
+/// WGC frame-pool depth — frames WGC keeps in flight before recycling. 2 is the
+/// practical minimum; 3–4 gives headroom so a brief encode-thread stall doesn't
+/// make WGC drop *real* frames (it only costs a few capture-sized BGRA textures).
+const WGC_POOL_FRAMES: i32 = 4;
 
 /// A capturable top-level window (for the UI picker).
 #[derive(Debug, Clone, Serialize)]
@@ -508,6 +512,7 @@ pub fn start(
     adapter_index: Option<u32>,
     buffer_secs: u32,
     audio: AudioConfig,
+    enc_cfg: EncodeSettings,
 ) -> std::result::Result<RunningCapture, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let shared = Arc::new(Shared::default());
@@ -530,7 +535,7 @@ pub fn start(
             .spawn(move || {
                 capture_thread(
                     app, hwnd_raw, target_fps, adapter_index, audio, game_pid, stop, shared, clip,
-                    ready_tx,
+                    enc_cfg, ready_tx,
                 )
             })
             .map_err(|e| format!("failed to spawn capture thread: {e}"))?
@@ -560,6 +565,7 @@ fn capture_thread(
     stop: Arc<AtomicBool>,
     shared: Arc<Shared>,
     clip: Arc<ClipBuffer>,
+    enc_cfg: EncodeSettings,
     ready_tx: std::sync::mpsc::Sender<std::result::Result<(), String>>,
 ) {
     // WGC objects are agile, but the thread still needs COM initialized (MTA).
@@ -577,6 +583,7 @@ fn capture_thread(
         &stop,
         &shared,
         clip,
+        enc_cfg,
     ) {
         Err(e) => {
             let _ = ready_tx.send(Err(e));
@@ -633,6 +640,7 @@ fn run_pipeline(
     _stop: &Arc<AtomicBool>,
     shared: &Arc<Shared>,
     clip: Arc<ClipBuffer>,
+    enc_cfg: EncodeSettings,
 ) -> std::result::Result<RunningPipeline, String> {
     // Capture on the chosen adapter, else the display-owning one.
     let gpus = device::enumerate_gpus().map_err(|e| format!("enumerate gpus: {e:?}"))?;
@@ -686,8 +694,8 @@ fn run_pipeline(
             .name("hako-encode".into())
             .spawn(move || {
                 encode_thread(
-                    device, context, vendor, width, height, target_fps, filled_rx, free_pool,
-                    shared, clip, enc_ready_tx,
+                    device, context, vendor, width, height, target_fps, enc_cfg, filled_rx,
+                    free_pool, shared, clip, enc_ready_tx,
                 )
             })
             .map_err(|e| format!("spawn encode thread: {e}"))?
@@ -769,6 +777,7 @@ pub fn start_hook(
     adapter_index: Option<u32>,
     buffer_secs: u32,
     audio: AudioConfig,
+    enc_cfg: EncodeSettings,
 ) -> std::result::Result<RunningCapture, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let shared = Arc::new(Shared::default());
@@ -787,7 +796,7 @@ pub fn start_hook(
             .spawn(move || {
                 hook_capture_thread(
                     app, hwnd_raw, target_fps, adapter_index, audio, game_pid, stop, shared, clip,
-                    ready_tx,
+                    enc_cfg, ready_tx,
                 )
             })
             .map_err(|e| format!("failed to spawn hook capture thread: {e}"))?
@@ -817,6 +826,7 @@ fn hook_capture_thread(
     stop: Arc<AtomicBool>,
     shared: Arc<Shared>,
     clip: Arc<ClipBuffer>,
+    enc_cfg: EncodeSettings,
     ready_tx: std::sync::mpsc::Sender<std::result::Result<(), String>>,
 ) {
     match run_hook_pipeline(
@@ -828,6 +838,7 @@ fn hook_capture_thread(
         &stop,
         &shared,
         clip,
+        enc_cfg,
     ) {
         Err(e) => {
             let _ = ready_tx.send(Err(e));
@@ -875,6 +886,7 @@ fn run_hook_pipeline(
     stop: &Arc<AtomicBool>,
     shared: &Arc<Shared>,
     clip: Arc<ClipBuffer>,
+    enc_cfg: EncodeSettings,
 ) -> std::result::Result<RunningHookPipeline, String> {
     // Adapter selection DIFFERS from WGC. The hook copies the game's backbuffer
     // into a *legacy* shared texture on the GPU the game RENDERS on (the dGPU on
@@ -962,8 +974,8 @@ fn run_hook_pipeline(
             .name("hako-encode".into())
             .spawn(move || {
                 encode_thread(
-                    device, context, vendor, width, height, target_fps, filled_rx, free_pool,
-                    shared, clip, enc_ready_tx,
+                    device, context, vendor, width, height, target_fps, enc_cfg, filled_rx,
+                    free_pool, shared, clip, enc_ready_tx,
                 )
             })
             .map_err(|e| format!("spawn encode thread: {e}"))?
@@ -1218,7 +1230,7 @@ fn setup_wgc(
     let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
         &winrt_device,
         DirectXPixelFormat::B8G8R8A8UIntNormalized,
-        2,
+        WGC_POOL_FRAMES,
         size,
     )?;
     let session = pool.CreateCaptureSession(&item)?;
@@ -1336,12 +1348,17 @@ fn encode_thread(
     width: u32,
     height: u32,
     fps: u32,
+    enc_cfg: EncodeSettings,
     filled_rx: Receiver<(ID3D11Texture2D, i64)>,
     free_pool: Arc<Mutex<Vec<ID3D11Texture2D>>>,
     shared: Arc<Shared>,
     clip: Arc<ClipBuffer>,
     ready_tx: std::sync::mpsc::Sender<std::result::Result<(), String>>,
 ) {
+    // The encode thread must keep draining captured frames even while the game
+    // pins the CPU, or the bounded hand-off channel backs up and WGC drops frames.
+    crate::core::boost_current_thread_priority("encode");
+
     let converter = match Converter::new(&device, &context, width, height) {
         Ok(c) => c,
         Err(e) => {
@@ -1349,19 +1366,30 @@ fn encode_thread(
             return;
         }
     };
-    let mut encoder = match Encoder::new(&device, &context, vendor, width, height, fps) {
+    let mut encoder = match Encoder::new(
+        &device,
+        &context,
+        vendor,
+        enc_cfg.codec,
+        enc_cfg.bitrate_mbps,
+        width,
+        height,
+        fps,
+    ) {
         Ok(e) => e,
         Err(e) => {
             let _ = ready_tx.send(Err(format!("encoder init: {e}")));
             return;
         }
     };
-    // Publish muxing metadata now that the encoder (and its avcC extradata)
-    // exists, so the save path can write clips (mux.rs).
+    // Publish muxing metadata now that the encoder (and its codec-config
+    // extradata) exists, so the save path can write clips (mux.rs). codec_id comes
+    // from the encoder, which may have fallen back from the requested codec.
     clip.set_meta(ClipMeta {
         width,
         height,
         fps,
+        codec_id: encoder.codec().av_codec_id(),
         extradata: encoder.extradata(),
     });
     let mut nv12_ring: Vec<ID3D11Texture2D> = Vec::with_capacity(NV12_RING);
@@ -1673,10 +1701,14 @@ mod tests {
                 let shared = shared.clone();
                 let free_pool = free_pool.clone();
                 let clip = clip.clone();
+                let enc_cfg = EncodeSettings {
+                    codec: crate::core::encode::VideoCodec::H264,
+                    bitrate_mbps: 20,
+                };
                 std::thread::spawn(move || {
                     encode_thread(
-                        device, context, vendor, width, height, 60, filled_rx, free_pool, shared,
-                        clip, rdy_tx,
+                        device, context, vendor, width, height, 60, enc_cfg, filled_rx, free_pool,
+                        shared, clip, rdy_tx,
                     )
                 })
             };

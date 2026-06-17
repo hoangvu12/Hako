@@ -853,6 +853,7 @@ mod tests {
             width: w,
             height: h,
             fps,
+            codec_id: ffi::AV_CODEC_ID_H264,
             extradata: enc.extradata(),
         };
         let (m_meta, m_pkts) = crate::core::audio::encode_silence_aac(1.5);

@@ -177,13 +177,17 @@ pub fn start_capture_with(
     // Defaults (fps, buffer length, audio config, backend) come from saved
     // settings. `effective_audio()` yields the Medal-style per-source config,
     // synthesizing one from the legacy fields for pre-feature configs.
-    let (cfg_fps, buffer_secs, audio_cfg, use_hook) = {
+    let (cfg_fps, buffer_secs, audio_cfg, use_hook, enc_cfg) = {
         let s = settings.0.lock().map_err(|_| "settings poisoned")?;
         (
             s.target_fps,
             s.buffer_seconds,
             s.effective_audio(),
             s.uses_hook_capture(),
+            encode::EncodeSettings {
+                codec: encode::VideoCodec::from_setting(&s.codec),
+                bitrate_mbps: s.bitrate_mbps,
+            },
         )
     };
     let mut guard = state.0.lock().map_err(|_| "capture state poisoned")?;
@@ -194,9 +198,9 @@ pub fn start_capture_with(
     // `hook` = opt-in graphics-hook injection (beats the DWM cap, anti-cheat
     // risk); anything else = WGC (default, Vanguard-safe). See `core::hook`.
     let running = if use_hook {
-        capture::start_hook(app.clone(), hwnd, fps, adapter_index, buffer_secs, audio_cfg)?
+        capture::start_hook(app.clone(), hwnd, fps, adapter_index, buffer_secs, audio_cfg, enc_cfg)?
     } else {
-        capture::start(app.clone(), hwnd, fps, adapter_index, buffer_secs, audio_cfg)?
+        capture::start(app.clone(), hwnd, fps, adapter_index, buffer_secs, audio_cfg, enc_cfg)?
     };
     *guard = Some(running);
     Ok(())

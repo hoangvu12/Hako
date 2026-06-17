@@ -17,6 +17,17 @@ const SWS_BILINEAR: i32 = 2;
 const AVMEDIA_TYPE_VIDEO: i32 = 0;
 const AVSEEK_FLAG_BACKWARD: i32 = 1;
 const AV_TIME_BASE: i64 = 1_000_000;
+// Decoder multithreading (ABI-stable values from avcodec.h). `thread_count = 0`
+// lets FFmpeg pick (~logical cores); frame+slice threading speeds the filmstrip's
+// many-frame decode on multicore. Off the live hot path (runs after a clip saves).
+const FF_THREAD_FRAME: i32 = 1;
+const FF_THREAD_SLICE: i32 = 2;
+
+/// Enable multithreaded software decode on `dctx` before `avcodec_open2`.
+unsafe fn enable_threaded_decode(dctx: *mut ffi::AVCodecContext) {
+    (*dctx).thread_count = 0;
+    (*dctx).thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+}
 
 /// Extract a thumbnail from `video` into `out_jpg`, scaled so its width is at
 /// most `max_width` (height follows the source aspect ratio, both even).
@@ -156,6 +167,7 @@ unsafe fn compose_filmstrip(
     if ffi::avcodec_parameters_to_context(dctx, codecpar) < 0 {
         return Err("parameters_to_context failed".into());
     }
+    enable_threaded_decode(dctx);
     if ffi::avcodec_open2(dctx, dec, ptr::null_mut()) < 0 {
         return Err("open decoder failed".into());
     }
@@ -330,6 +342,7 @@ unsafe fn decode_first_frame(
     if ffi::avcodec_parameters_to_context(dctx, codecpar) < 0 {
         return Err("parameters_to_context failed".into());
     }
+    enable_threaded_decode(dctx);
     if ffi::avcodec_open2(dctx, dec, ptr::null_mut()) < 0 {
         return Err("open decoder failed".into());
     }
@@ -536,6 +549,7 @@ mod tests {
             width: w,
             height: h,
             fps,
+            codec_id: ffi::AV_CODEC_ID_H264,
             extradata: enc.extradata(),
         };
         let mp4 = std::env::temp_dir().join("hako_thumb_src.mp4");
@@ -595,7 +609,13 @@ mod tests {
         for p in enc.flush().expect("flush") {
             ring.push(p);
         }
-        let meta = mux::ClipMeta { width: w, height: h, fps, extradata: enc.extradata() };
+        let meta = mux::ClipMeta {
+            width: w,
+            height: h,
+            fps,
+            codec_id: ffi::AV_CODEC_ID_H264,
+            extradata: enc.extradata(),
+        };
         let mp4 = std::env::temp_dir().join("hako_strip_src.mp4");
         let _ = std::fs::remove_file(&mp4);
         mux::write_clip(&mp4, &meta, &ring.slice_last(1), &[]).expect("mux");

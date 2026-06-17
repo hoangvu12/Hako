@@ -62,6 +62,16 @@ impl Library {
     }
 
     fn from_conn(conn: Connection) -> Result<Library, String> {
+        // Performance pragmas: WAL lets reads (the UI clip list) proceed without
+        // blocking on a write, and synchronous=NORMAL drops the per-insert fsync
+        // to once-per-checkpoint (far lower insert latency, negligible risk for a
+        // clip index). Best-effort: ignored on an in-memory DB / older SQLite.
+        let _ = conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             PRAGMA temp_store=MEMORY;
+             PRAGMA busy_timeout=5000;",
+        );
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS clips (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,

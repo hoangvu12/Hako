@@ -195,6 +195,11 @@ pub struct Encoder {
     /// Which HW backend this encoder drives — decides D3D11-direct (NVENC) vs
     /// mapped-to-QSV input, and which derived contexts exist.
     backend: Backend,
+    /// The codec this encoder opened with (after any fallback) — drives the
+    /// encoder name, the muxer stream `codec_id`, and logging.
+    codec: VideoCodec,
+    /// Target bit rate in bits/sec (from `Settings::bitrate_mbps`).
+    bitrate_bps: i64,
     /// Our shared D3D11 immediate context. Kept for the NVENC path, which
     /// GPU-copies the converted NV12 into FFmpeg's pool texture-array slice
     /// (`CopySubresourceRegion`) before submitting the frame.
@@ -228,26 +233,127 @@ enum Backend {
 }
 
 impl Backend {
-    fn encoder_name(self) -> &'static str {
+    fn encoder_name(self, codec: VideoCodec) -> &'static str {
+        match (self, codec) {
+            (Backend::Nvenc, VideoCodec::H264) => "h264_nvenc",
+            (Backend::Nvenc, VideoCodec::Hevc) => "hevc_nvenc",
+            (Backend::Nvenc, VideoCodec::Av1) => "av1_nvenc",
+            (Backend::Qsv, VideoCodec::H264) => "h264_qsv",
+            (Backend::Qsv, VideoCodec::Hevc) => "hevc_qsv",
+            (Backend::Qsv, VideoCodec::Av1) => "av1_qsv",
+        }
+    }
+
+    /// Encoder option sets to try with `avcodec_open2`, **lowest GPU load / latency
+    /// first**, falling back to progressively more conservative sets. Option
+    /// availability is build- and GPU-specific (QSV `low_power`/VDEnc needs Gen9+
+    /// Intel; some NVENC options vary by driver), and a rejected option makes
+    /// `avcodec_open2` fail — so we re-try with fewer options rather than refusing
+    /// to start. The last set reproduces the historical default, so this can only
+    /// improve on or match what opened before.
+    ///
+    /// Note: `tune=ull` does NOT itself disable lookahead at the FFmpeg layer, so
+    /// `rc-lookahead=0` is set explicitly (B-frames are already off via
+    /// `max_b_frames = 0`). QSV has no `rc` option — CBR/VBR is implied by the
+    /// bitrate fields on the codec context, so only `low_power`/`preset`/
+    /// `async_depth` are passed here.
+    fn open_option_sets(self) -> Vec<Vec<(&'static str, &'static str)>> {
         match self {
-            Backend::Nvenc => "h264_nvenc",
-            Backend::Qsv => "h264_qsv",
+            Backend::Nvenc => vec![
+                vec![
+                    ("preset", "p1"),          // fastest NVENC preset → least load
+                    ("tune", "ull"),           // ultra-low-latency tuning
+                    ("rc-lookahead", "0"),     // no lookahead (latency + GPU)
+                    ("multipass", "disabled"), // single pass
+                ],
+                vec![("preset", "p4")], // older driver: just a balanced preset
+                vec![],                 // bare (historical default)
+            ],
+            Backend::Qsv => vec![
+                vec![
+                    ("low_power", "1"),     // VDEnc fixed-function path (Gen9+)
+                    ("preset", "veryfast"), // fastest target-usage
+                    ("async_depth", "1"),   // shallow async → immediate backpressure
+                ],
+                vec![("preset", "veryfast"), ("async_depth", "1")], // no low_power
+                vec![("async_depth", "1")],                          // bare (historical default)
+            ],
+        }
+    }
+}
+
+/// Output video codec, selected from `Settings::codec`. The hardware encoder
+/// actually used is this codec × the adapter vendor (e.g. Hevc × NVIDIA =
+/// `hevc_nvenc`), with graceful fallback toward H.264 when a codec's encoder
+/// isn't available on the GPU/driver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoCodec {
+    H264,
+    Hevc,
+    Av1,
+}
+
+/// Codec + bitrate selection, threaded from settings down to the encode thread.
+#[derive(Debug, Clone, Copy)]
+pub struct EncodeSettings {
+    pub codec: VideoCodec,
+    pub bitrate_mbps: u32,
+}
+
+impl VideoCodec {
+    /// Parse the `Settings::codec` string ("h264" | "hevc" | "av1"); unknown ⇒ H264.
+    pub fn from_setting(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "hevc" | "h265" => VideoCodec::Hevc,
+            "av1" => VideoCodec::Av1,
+            _ => VideoCodec::H264,
+        }
+    }
+
+    /// FFmpeg `AV_CODEC_ID_*` for muxing a stream of this codec — used by the
+    /// stream-copy writers (`mux.rs`, `session.rs`) to declare the output stream.
+    pub fn av_codec_id(self) -> u32 {
+        match self {
+            VideoCodec::H264 => ffi::AV_CODEC_ID_H264,
+            VideoCodec::Hevc => ffi::AV_CODEC_ID_HEVC,
+            VideoCodec::Av1 => ffi::AV_CODEC_ID_AV1,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            VideoCodec::H264 => "H.264",
+            VideoCodec::Hevc => "HEVC",
+            VideoCodec::Av1 => "AV1",
+        }
+    }
+
+    /// This codec plus the fallbacks to try if its encoder is unavailable, most
+    /// preferred first, always ending at H.264 (universally supported in HW).
+    fn fallback_chain(self) -> &'static [VideoCodec] {
+        match self {
+            VideoCodec::Av1 => &[VideoCodec::Av1, VideoCodec::Hevc, VideoCodec::H264],
+            VideoCodec::Hevc => &[VideoCodec::Hevc, VideoCodec::H264],
+            VideoCodec::H264 => &[VideoCodec::H264],
         }
     }
 }
 
 impl Encoder {
-    /// Build the H.264 encoder matching the **capture adapter's vendor**: NVIDIA
-    /// → `h264_nvenc`, Intel → `h264_qsv`. Both encode on the *same* device the
-    /// frame was captured/converted on, so there's no cross-adapter copy.
+    /// Build the hardware encoder matching the **capture adapter's vendor** ×
+    /// requested `codec`: NVIDIA → `*_nvenc`, Intel → `*_qsv`. Both encode on the
+    /// *same* device the frame was captured/converted on (no cross-adapter copy).
     ///
-    /// This is what fixes capturing on an NVIDIA display adapter: QSV can only
-    /// derive from an Intel device, so a hardcoded `h264_qsv` failed there with
-    /// `av_hwdevice_ctx_create_derived(QSV)`.
+    /// `codec` falls back toward H.264 if its encoder isn't present in this FFmpeg
+    /// build or won't open on this GPU (e.g. AV1 NVENC needs RTX 40-series); the
+    /// codec that actually opened is reported by [`Self::codec`]. `bitrate_mbps`
+    /// sets the target bit rate.
     pub fn new(
         device: &ID3D11Device,
         context: &ID3D11DeviceContext,
         vendor: Vendor,
+        codec: VideoCodec,
+        bitrate_mbps: u32,
         width: u32,
         height: u32,
         fps: u32,
@@ -255,16 +361,43 @@ impl Encoder {
         let backend = match vendor {
             Vendor::Nvidia => Backend::Nvenc,
             Vendor::Intel => Backend::Qsv,
-            // AMD (AMF) is the remaining vendor; Other has no HW H.264 path.
-            // Never silently fall back to software x264.
+            // AMD (AMF) is the remaining vendor; Other has no HW path.
+            // Never silently fall back to software encoding.
             Vendor::Amd => {
                 return Err("AMD (AMF) hardware encode is not implemented yet".into())
             }
             Vendor::Other => {
-                return Err("no hardware H.264 encoder for this adapter's vendor".into())
+                return Err("no hardware encoder for this adapter's vendor".into())
             }
         };
-        Self::build(device, context, backend, width, height, fps)
+
+        // Try the requested codec, then graceful fallbacks toward H.264. Skip any
+        // whose encoder isn't compiled into this FFmpeg build before attempting.
+        let mut last_err = String::new();
+        for &cand in codec.fallback_chain() {
+            let name = backend.encoder_name(cand);
+            if !encoder_exists(name) {
+                last_err = format!("{name} not available in this build");
+                continue;
+            }
+            match Self::build(device, context, backend, cand, bitrate_mbps, width, height, fps) {
+                Ok(enc) => {
+                    if cand != codec {
+                        tracing::warn!(
+                            "{} encode unavailable; fell back to {}",
+                            codec.label(),
+                            cand.label()
+                        );
+                    }
+                    return Ok(enc);
+                }
+                Err(e) => last_err = e,
+            }
+        }
+        Err(format!(
+            "no usable {} hardware encoder (last error: {last_err})",
+            codec.label()
+        ))
     }
 
     /// Build a QSV H.264 encoder explicitly (Intel input). Used by tests.
@@ -275,7 +408,7 @@ impl Encoder {
         height: u32,
         fps: u32,
     ) -> std::result::Result<Self, String> {
-        Self::build(device, context, Backend::Qsv, width, height, fps)
+        Self::build(device, context, Backend::Qsv, VideoCodec::H264, 20, width, height, fps)
     }
 
     /// Build an NVENC H.264 encoder explicitly (NVIDIA input).
@@ -286,10 +419,11 @@ impl Encoder {
         height: u32,
         fps: u32,
     ) -> std::result::Result<Self, String> {
-        Self::build(device, context, Backend::Nvenc, width, height, fps)
+        Self::build(device, context, Backend::Nvenc, VideoCodec::H264, 20, width, height, fps)
     }
 
-    /// Build an encoder for `backend` on `device` for `width`x`height` @ `fps`.
+    /// Build an encoder for `backend` × `codec` on `device` for `width`x`height`
+    /// @ `fps`, targeting `bitrate_mbps`.
     ///
     /// `device`/`context` are our shared D3D11 device (must have
     /// `VIDEO_SUPPORT`). They are AddRef'd and handed to FFmpeg, which Releases
@@ -298,6 +432,8 @@ impl Encoder {
         device: &ID3D11Device,
         context: &ID3D11DeviceContext,
         backend: Backend,
+        codec: VideoCodec,
+        bitrate_mbps: u32,
         width: u32,
         height: u32,
         fps: u32,
@@ -306,10 +442,13 @@ impl Encoder {
         let width = width & !1;
         let height = height & !1;
         let fps = fps.clamp(1, 480);
+        let bitrate_bps = (bitrate_mbps.clamp(1, 200) as i64) * 1_000_000;
 
         // Build incrementally; on any error tear down what we've made so far.
         let mut enc = Encoder {
             backend,
+            codec,
+            bitrate_bps,
             context: context.clone(),
             codec_ctx: ptr::null_mut(),
             d3d11_frames: ptr::null_mut(),
@@ -325,6 +464,12 @@ impl Encoder {
             Ok(()) => Ok(enc),
             Err(e) => Err(e), // enc's Drop frees any partial allocations
         }
+    }
+
+    /// The codec this encoder actually opened with (may differ from the requested
+    /// one after fallback). Its [`VideoCodec::av_codec_id`] is what the muxers use.
+    pub fn codec(&self) -> VideoCodec {
+        self.codec
     }
 
     fn init(
@@ -429,63 +574,101 @@ impl Encoder {
             }
 
             // 5. Encoder context. Input is QSV frames (Intel) or D3D11 frames
-            //    (NVENC, direct).
-            let cname = CString::new(self.backend.encoder_name()).unwrap();
+            //    (NVENC, direct). Opened with a low-latency / low-GPU-load option
+            //    set so capture doesn't steal frames from the game; falls back to
+            //    progressively barer sets if a GPU/driver rejects an option (see
+            //    `Backend::open_option_sets`). A failed `avcodec_open2` taints the
+            //    context, so each attempt re-allocates a fresh one.
+            let cname = CString::new(self.backend.encoder_name(self.codec)).unwrap();
             let codec = ffi::avcodec_find_encoder_by_name(cname.as_ptr());
             if codec.is_null() {
-                return Err(format!("{} encoder not found", self.backend.encoder_name()));
-            }
-            self.codec_ctx = ffi::avcodec_alloc_context3(codec);
-            if self.codec_ctx.is_null() {
-                return Err("avcodec_alloc_context3 failed".into());
-            }
-            let c = &mut *self.codec_ctx;
-            c.width = self.width as i32;
-            c.height = self.height as i32;
-            // QSV consumes mapped QSV frames; NVENC the D3D11 frames directly.
-            c.pix_fmt = match self.backend {
-                Backend::Qsv => ffi::AV_PIX_FMT_QSV,
-                Backend::Nvenc => ffi::AV_PIX_FMT_D3D11,
-            };
-            c.time_base = ffi::AVRational {
-                num: 1,
-                den: self.fps as i32,
-            };
-            c.framerate = ffi::AVRational {
-                num: self.fps as i32,
-                den: 1,
-            };
-            c.gop_size = self.fps as i32; // keyint = 1s (clip cut points)
-            c.max_b_frames = 0; // low-latency capture path
-            c.bit_rate = 20_000_000; // generous default; CQP tuned later
-            // Emit SPS/PPS as avcC extradata (not in-band) so mux.rs can write
-            // them once into the MP4 header on stream-copy.
-            c.flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-            c.hw_frames_ctx = match self.backend {
-                Backend::Qsv => ffi::av_buffer_ref(self.qsv_frames),
-                Backend::Nvenc => ffi::av_buffer_ref(self.d3d11_frames),
-            };
-
-            let mut opts: *mut ffi::AVDictionary = ptr::null_mut();
-            match self.backend {
-                Backend::Qsv => {
-                    // Shallow async so backpressure is immediate.
-                    let k = CString::new("async_depth").unwrap();
-                    let v = CString::new("1").unwrap();
-                    ffi::av_dict_set(&mut opts, k.as_ptr(), v.as_ptr(), 0);
-                }
-                Backend::Nvenc => {
-                    // (debugging) no custom opts — isolate the EncodePicture error.
-                }
+                return Err(format!("{} encoder not found", self.backend.encoder_name(self.codec)));
             }
 
-            let r = ffi::avcodec_open2(self.codec_ctx, codec, &mut opts);
-            ffi::av_dict_free(&mut opts);
-            if r < 0 {
+            let attempts = self.backend.open_option_sets();
+            let mut opened = false;
+            let mut last_err = String::new();
+            for (attempt_idx, set) in attempts.iter().enumerate() {
+                if !self.codec_ctx.is_null() {
+                    ffi::avcodec_free_context(&mut self.codec_ctx);
+                }
+                self.codec_ctx = ffi::avcodec_alloc_context3(codec);
+                if self.codec_ctx.is_null() {
+                    return Err("avcodec_alloc_context3 failed".into());
+                }
+                let c = &mut *self.codec_ctx;
+                c.width = self.width as i32;
+                c.height = self.height as i32;
+                // QSV consumes mapped QSV frames; NVENC the D3D11 frames directly.
+                c.pix_fmt = match self.backend {
+                    Backend::Qsv => ffi::AV_PIX_FMT_QSV,
+                    Backend::Nvenc => ffi::AV_PIX_FMT_D3D11,
+                };
+                c.time_base = ffi::AVRational {
+                    num: 1,
+                    den: self.fps as i32,
+                };
+                c.framerate = ffi::AVRational {
+                    num: self.fps as i32,
+                    den: 1,
+                };
+                c.gop_size = self.fps as i32; // keyint = 1s (clip cut points)
+                c.max_b_frames = 0; // no B-frames: no reorder delay on the capture path
+                c.bit_rate = self.bitrate_bps; // from Settings::bitrate_mbps
+                // Emit SPS/PPS as avcC extradata (not in-band) so mux.rs can write
+                // them once into the MP4 header on stream-copy.
+                c.flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+                c.hw_frames_ctx = match self.backend {
+                    Backend::Qsv => ffi::av_buffer_ref(self.qsv_frames),
+                    Backend::Nvenc => ffi::av_buffer_ref(self.d3d11_frames),
+                };
+
+                let mut opts: *mut ffi::AVDictionary = ptr::null_mut();
+                for (k, v) in set.iter() {
+                    let ck = CString::new(*k).unwrap();
+                    let cv = CString::new(*v).unwrap();
+                    ffi::av_dict_set(&mut opts, ck.as_ptr(), cv.as_ptr(), 0);
+                }
+
+                let r = ffi::avcodec_open2(self.codec_ctx, codec, &mut opts);
+                // Options the encoder didn't consume stay in the dict; on a
+                // successful open that means an unrecognized option name.
+                let leftover = ffi::av_dict_count(opts);
+                ffi::av_dict_free(&mut opts);
+
+                if r >= 0 {
+                    if leftover > 0 {
+                        tracing::warn!(
+                            encoder = self.backend.encoder_name(self.codec),
+                            "encoder ignored {leftover} unrecognized option(s)"
+                        );
+                    }
+                    tracing::info!(
+                        encoder = self.backend.encoder_name(self.codec),
+                        attempt = attempt_idx,
+                        options = ?set,
+                        width = self.width,
+                        height = self.height,
+                        fps = self.fps,
+                        "opened hardware encoder"
+                    );
+                    opened = true;
+                    break;
+                }
+
+                last_err = av_err(r);
+                tracing::warn!(
+                    encoder = self.backend.encoder_name(self.codec),
+                    attempt = attempt_idx,
+                    options = ?set,
+                    "avcodec_open2 failed ({last_err}); trying a more conservative option set"
+                );
+            }
+            if !opened {
                 return Err(format!(
-                    "avcodec_open2({}): {}",
-                    self.backend.encoder_name(),
-                    av_err(r)
+                    "avcodec_open2({}) failed for every option set: {}",
+                    self.backend.encoder_name(self.codec),
+                    last_err
                 ));
             }
 

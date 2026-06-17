@@ -34,7 +34,10 @@
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 
 use rusty_ffmpeg::ffi;
 
@@ -52,22 +55,62 @@ const AV_PKT_FLAG_KEY: i32 = 1;
 /// Required trailing zero-padding on any buffer handed to FFmpeg as extradata.
 const AV_INPUT_BUFFER_PADDING_SIZE: usize = 64;
 
+/// Cap on compressed bytes queued for the writer thread before [`SessionWriter`]
+/// starts dropping. This protects the *live* path: the encode/audio threads only
+/// ever enqueue (a cheap move) and never block on disk, so a slow disk degrades
+/// the full-match file (Mode B) instead of stalling capture (Mode A / instant
+/// replay). ~256 MB ≈ ~100 s at 20 Mbps of slack to absorb disk bursts.
+const MAX_QUEUED_BYTES: usize = 256 * 1024 * 1024;
+
+/// A unit of work for the session writer thread: one already-encoded packet
+/// (compressed bytes are *moved* in, so the hot threads never touch disk).
+enum WriterMsg {
+    Video {
+        data: Vec<u8>,
+        pts: i64,
+        keyframe: bool,
+        wallclock_ticks: i64,
+    },
+    Audio {
+        track_idx: usize,
+        data: Vec<u8>,
+        pts: i64,
+    },
+}
+
 /// Streaming full-match MP4 writer with a wall-clock↔PTS timeline.
 ///
 /// Shared behind an `Arc` like [`crate::core::capture::ClipBuffer`]: the encode
 /// thread calls [`push`](Self::push) (video) and the audio thread calls
-/// [`push_audio`](Self::push_audio), both through the interior `Mutex` that
-/// serializes access to the (non-thread-safe) FFmpeg output context.
+/// [`push_audio`](Self::push_audio). Those calls only **enqueue** the packet
+/// (moving its compressed bytes) onto a channel drained by a dedicated
+/// `hako-session-writer` thread — so all muxing + disk I/O happens off the hot
+/// capture path and a slow disk can never stall the encoder. The queue is
+/// byte-capped ([`MAX_QUEUED_BYTES`]): on overload, full-match packets are
+/// dropped (Mode B degrades) rather than blocking live capture (Mode A).
 pub struct SessionWriter {
     out_path: PathBuf,
-    state: Mutex<SessionState>,
+    /// Channel to the writer thread; `take`n on [`finish`](Self::finish) to close
+    /// the channel so the thread drains, finalizes, and exits.
+    tx: Mutex<Option<Sender<WriterMsg>>>,
+    /// Writer thread handle; joined on finish to recover the timeline / error.
+    thread: Mutex<Option<JoinHandle<Result<TimelineIndex, String>>>>,
+    /// Cached finish result, so [`finish`](Self::finish) is idempotent.
+    result: Mutex<Option<Result<TimelineIndex, String>>>,
+    /// Compressed bytes currently queued for the writer (backpressure cap).
+    queued_bytes: Arc<AtomicUsize>,
+    /// Packets dropped because the queue was over [`MAX_QUEUED_BYTES`].
+    dropped: AtomicU64,
+    /// Video / audio packets written so far (updated by the writer thread).
+    video_count: Arc<AtomicU64>,
+    audio_count: Arc<AtomicU64>,
 }
 
-// SAFETY: every access to the raw FFmpeg pointers in `SessionState` goes through
-// `state`'s `Mutex`, so they are never touched concurrently. The pointers own no
-// thread-affine resources (the mp4 muxer is plain libavformat, not D3D/COM).
-unsafe impl Send for SessionWriter {}
-unsafe impl Sync for SessionWriter {}
+// SAFETY: the raw FFmpeg pointers live in `SessionState`, which is *owned* by the
+// single writer thread after `start` spawns it (moved into the closure). Nothing
+// else touches those pointers, so moving the state to that thread is sound; the
+// mp4 muxer is plain libavformat (no thread-affine D3D/COM resources).
+unsafe impl Send for SessionState {}
 
 struct SessionState {
     /// mp4 output context; null once finished/failed.
@@ -95,8 +138,10 @@ struct SessionState {
     session_start_ticks: Option<i64>,
 
     timeline: TimelineIndex,
-    video_count: u64,
-    audio_count: u64,
+    /// Shared with [`SessionWriter`] so `counts()` can read them while the writer
+    /// thread owns the rest of the state.
+    video_count: Arc<AtomicU64>,
+    audio_count: Arc<AtomicU64>,
     finished: bool,
 }
 
@@ -128,7 +173,10 @@ impl SessionWriter {
         let c_mp4 = CString::new("mp4").unwrap();
         let fps = meta.fps.max(1) as i32;
 
-        unsafe {
+        let video_count = Arc::new(AtomicU64::new(0));
+        let audio_count = Arc::new(AtomicU64::new(0));
+
+        let state = unsafe {
             let mut ofmt: *mut ffi::AVFormatContext = ptr::null_mut();
             let r = ffi::avformat_alloc_output_context2(
                 &mut ofmt,
@@ -140,22 +188,48 @@ impl SessionWriter {
                 return Err(format!("avformat_alloc_output_context2: {}", av_err(r)));
             }
 
-            // Build streams + header inside a closure so any failure tears the
-            // context back down before returning.
-            match Self::open_inner(ofmt, &c_path, meta, audio_tracks, fps) {
-                Ok(state) => Ok(SessionWriter {
-                    out_path: out_path.to_path_buf(),
-                    state: Mutex::new(state),
-                }),
+            // Build streams + header; on any failure tear the context back down.
+            match Self::open_inner(
+                ofmt,
+                &c_path,
+                meta,
+                audio_tracks,
+                fps,
+                video_count.clone(),
+                audio_count.clone(),
+            ) {
+                Ok(state) => state,
                 Err(e) => {
                     if !(*ofmt).pb.is_null() && ((*(*ofmt).oformat).flags & AVFMT_NOFILE) == 0 {
                         ffi::avio_closep(&mut (*ofmt).pb);
                     }
                     ffi::avformat_free_context(ofmt);
-                    Err(e)
+                    return Err(e);
                 }
             }
-        }
+        };
+
+        // Spawn the dedicated writer thread; the encode/audio threads only enqueue.
+        let queued_bytes = Arc::new(AtomicUsize::new(0));
+        let (tx, rx) = std::sync::mpsc::channel::<WriterMsg>();
+        let thread = {
+            let queued_bytes = queued_bytes.clone();
+            std::thread::Builder::new()
+                .name("hako-session-writer".into())
+                .spawn(move || writer_loop(state, rx, queued_bytes))
+                .map_err(|e| format!("spawn session writer thread: {e}"))?
+        };
+
+        Ok(SessionWriter {
+            out_path: out_path.to_path_buf(),
+            tx: Mutex::new(Some(tx)),
+            thread: Mutex::new(Some(thread)),
+            result: Mutex::new(None),
+            queued_bytes,
+            dropped: AtomicU64::new(0),
+            video_count,
+            audio_count,
+        })
     }
 
     /// Declare the streams, open the file, and write the mp4 header. On success
@@ -166,6 +240,8 @@ impl SessionWriter {
         meta: &ClipMeta,
         audio_tracks: &[(String, AudioMeta)],
         fps: i32,
+        video_count: Arc<AtomicU64>,
+        audio_count: Arc<AtomicU64>,
     ) -> Result<SessionState, String> {
         // Stream 0: H.264 video, time base = 1/fps (our packet PTS units).
         let st_v = ffi::avformat_new_stream(ofmt, ptr::null());
@@ -176,7 +252,8 @@ impl SessionWriter {
         (*st_v).time_base = ffi::AVRational { num: 1, den: fps };
         let par = (*st_v).codecpar;
         (*par).codec_type = ffi::AVMEDIA_TYPE_VIDEO;
-        (*par).codec_id = ffi::AV_CODEC_ID_H264;
+        (*par).codec_id = meta.codec_id;
+        // codec_tag left 0 so the MP4 muxer picks the right fourcc (avc1/hvc1/av01).
         (*par).width = meta.width as i32;
         (*par).height = meta.height as i32;
         (*par).format = ffi::AV_PIX_FMT_NV12; // informational for a copy stream
@@ -260,48 +337,110 @@ impl SessionWriter {
             last_video_pts: i64::MIN,
             session_start_ticks: None,
             timeline: TimelineIndex::new(),
-            video_count: 0,
-            audio_count: 0,
+            video_count,
+            audio_count,
             finished: false,
         })
     }
 
-    /// Append one already-encoded **video** packet, stream-copied to the session
-    /// file, and record its timeline sample. `wallclock_ticks` is the packet's
-    /// capture timestamp (100 ns, `SystemRelativeTime`/QPC domain) — the same
-    /// clock the round anchors use. No-op once finished.
+    /// Enqueue one already-encoded **video** packet for the writer thread (which
+    /// stream-copies it to the session file and records its timeline sample).
+    /// `wallclock_ticks` is the packet's capture timestamp (100 ns,
+    /// `SystemRelativeTime`/QPC domain) — the same clock the round anchors use.
+    /// Returns immediately; no-op once finished or if the queue is over its cap.
     pub fn push(&self, pkt: &EncodedPacket, wallclock_ticks: i64) {
-        if let Ok(mut s) = self.state.lock() {
-            s.write_video(pkt, wallclock_ticks);
-        }
+        self.enqueue(
+            pkt.data.len(),
+            WriterMsg::Video {
+                data: pkt.data.clone(),
+                pts: pkt.pts,
+                keyframe: pkt.keyframe,
+                wallclock_ticks,
+            },
+        );
     }
 
-    /// Append one already-encoded **AAC** packet for output track `track_idx`
-    /// (PTS in absolute 100 ns ticks, the audio ring's unit) to that track's
-    /// stream. Rebased against the session start; anything before the first video
-    /// frame is dropped. No-op if the session has no stream for that track, or
-    /// once finished.
+    /// Enqueue one already-encoded **AAC** packet for output track `track_idx`
+    /// (PTS in absolute 100 ns ticks, the audio ring's unit). The writer thread
+    /// rebases it against the session start and drops anything before the first
+    /// video frame / for an undeclared track. Returns immediately; no-op once
+    /// finished or if the queue is over its cap.
     pub fn push_audio(&self, track_idx: usize, pkt: &EncodedPacket) {
-        if let Ok(mut s) = self.state.lock() {
-            s.write_audio(track_idx, pkt);
+        self.enqueue(
+            pkt.data.len(),
+            WriterMsg::Audio {
+                track_idx,
+                data: pkt.data.clone(),
+                pts: pkt.pts,
+            },
+        );
+    }
+
+    /// Hand a message to the writer thread, accounting queued bytes. Drops (rather
+    /// than blocks) when the queue is over [`MAX_QUEUED_BYTES`] so the live encode
+    /// path is never stalled by a slow disk.
+    fn enqueue(&self, len: usize, msg: WriterMsg) {
+        if self
+            .queued_bytes
+            .load(Ordering::Relaxed)
+            .saturating_add(len)
+            > MAX_QUEUED_BYTES
+        {
+            let n = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+            // Log on the first drop and then sparsely, so a slow disk doesn't spam.
+            if n == 1 || n % 600 == 0 {
+                tracing::warn!(
+                    "session writer overloaded (disk can't keep up); dropping full-match packets ({n} so far)"
+                );
+            }
+            return;
+        }
+        if let Ok(g) = self.tx.lock() {
+            if let Some(tx) = g.as_ref() {
+                self.queued_bytes.fetch_add(len, Ordering::Relaxed);
+                if tx.send(msg).is_err() {
+                    // Writer thread gone (already finished): undo the reservation.
+                    self.queued_bytes.fetch_sub(len, Ordering::Relaxed);
+                }
+            }
         }
     }
 
-    /// Finalize the mp4 (write trailer, close IO) and return the session path and
-    /// its timeline index. Idempotent: later calls return the same path/timeline
-    /// without rewriting. Errors only if the trailer write fails.
+    /// Finalize the mp4: close the channel so the writer thread drains the queue,
+    /// writes the trailer, and exits; then join it for the timeline index.
+    /// Idempotent — later calls return the same cached path/timeline (or error).
     pub fn finish(&self) -> Result<(PathBuf, TimelineIndex), String> {
-        let mut s = self.state.lock().map_err(|_| "session writer poisoned")?;
-        s.finalize()?;
-        Ok((self.out_path.clone(), s.timeline.clone()))
+        // Drop the sender → the writer thread's `recv` ends after draining.
+        if let Ok(mut g) = self.tx.lock() {
+            let _ = g.take();
+        }
+        let mut stored = self.result.lock().map_err(|_| "session result poisoned")?;
+        if stored.is_none() {
+            let handle = self.thread.lock().ok().and_then(|mut h| h.take());
+            let r = match handle {
+                Some(h) => h
+                    .join()
+                    .unwrap_or_else(|_| Err("session writer thread panicked".into())),
+                None => Err("session writer already finalized".into()),
+            };
+            let dropped = self.dropped.load(Ordering::Relaxed);
+            if dropped > 0 {
+                tracing::warn!("session writer dropped {dropped} packet(s) total (disk too slow)");
+            }
+            *stored = Some(r);
+        }
+        match stored.as_ref().unwrap() {
+            Ok(tl) => Ok((self.out_path.clone(), tl.clone())),
+            Err(e) => Err(e.clone()),
+        }
     }
 
     /// Number of video / audio packets written so far.
     pub fn counts(&self) -> (u64, u64) {
-        self.state
-            .lock()
-            .map(|s| (s.video_count, s.audio_count))
-            .unwrap_or((0, 0))
+        (
+            self.video_count.load(Ordering::Relaxed),
+            self.audio_count.load(Ordering::Relaxed),
+        )
     }
 
     /// The session file path (valid even after `finish`).
@@ -310,18 +449,52 @@ impl SessionWriter {
     }
 }
 
+/// The session writer thread: drains `rx`, stream-copying each packet to the mp4,
+/// until the channel closes; then finalizes and returns the timeline index.
+fn writer_loop(
+    mut state: SessionState,
+    rx: Receiver<WriterMsg>,
+    queued_bytes: Arc<AtomicUsize>,
+) -> Result<TimelineIndex, String> {
+    while let Ok(msg) = rx.recv() {
+        match msg {
+            WriterMsg::Video {
+                data,
+                pts,
+                keyframe,
+                wallclock_ticks,
+            } => {
+                let len = data.len();
+                state.write_video(&data, pts, keyframe, wallclock_ticks);
+                queued_bytes.fetch_sub(len, Ordering::Relaxed);
+            }
+            WriterMsg::Audio {
+                track_idx,
+                data,
+                pts,
+            } => {
+                let len = data.len();
+                state.write_audio(track_idx, &data, pts);
+                queued_bytes.fetch_sub(len, Ordering::Relaxed);
+            }
+        }
+    }
+    let timeline = state.timeline.clone();
+    state.finalize().map(|()| timeline)
+}
+
 impl SessionState {
-    fn write_video(&mut self, pkt: &EncodedPacket, wallclock_ticks: i64) {
+    fn write_video(&mut self, data: &[u8], pkt_pts: i64, keyframe: bool, wallclock_ticks: i64) {
         if self.finished || self.ofmt.is_null() {
             return;
         }
-        let first = *self.first_video_pts.get_or_insert(pkt.pts);
+        let first = *self.first_video_pts.get_or_insert(pkt_pts);
         if self.session_start_ticks.is_none() {
             self.session_start_ticks = Some(wallclock_ticks);
         }
         // Rebase to a 0-based, strictly-increasing session timeline (the muxer
         // requires monotonic DTS; capture is VFR so rounding can collide).
-        let mut spts = pkt.pts - first;
+        let mut spts = pkt_pts - first;
         if spts <= self.last_video_pts {
             spts = self.last_video_pts + 1;
         }
@@ -338,17 +511,19 @@ impl SessionState {
                 spts,
                 self.video_src_tb,
                 self.video_dst_tb,
-                pkt.keyframe,
-                &pkt.data,
+                keyframe,
+                data,
             )
         };
         match ok {
-            Ok(()) => self.video_count += 1,
+            Ok(()) => {
+                self.video_count.fetch_add(1, Ordering::Relaxed);
+            }
             Err(e) => tracing::warn!("session: video write failed: {e}"),
         }
     }
 
-    fn write_audio(&mut self, track_idx: usize, pkt: &EncodedPacket) {
+    fn write_audio(&mut self, track_idx: usize, data: &[u8], pkt_pts: i64) {
         if self.finished || self.ofmt.is_null() {
             return;
         }
@@ -359,7 +534,7 @@ impl SessionState {
         let Some(audio) = self.audio.get_mut(track_idx) else {
             return; // no stream for this track (video-only, or out of range)
         };
-        let rel_ticks = pkt.pts - start;
+        let rel_ticks = pkt_pts - start;
         if rel_ticks < 0 {
             return; // before the clip start — drop (small leading silence)
         }
@@ -373,11 +548,13 @@ impl SessionState {
         let (index, src_tb, dst_tb) = (audio.index, audio.src_tb, audio.dst_tb);
         let ok = unsafe {
             write_packet(
-                self.ofmt, self.pkt, index, pts_samples, src_tb, dst_tb, true, &pkt.data,
+                self.ofmt, self.pkt, index, pts_samples, src_tb, dst_tb, true, data,
             )
         };
         match ok {
-            Ok(()) => self.audio_count += 1,
+            Ok(()) => {
+                self.audio_count.fetch_add(1, Ordering::Relaxed);
+            }
             Err(e) => tracing::warn!("session: audio write failed: {e}"),
         }
     }
@@ -569,6 +746,7 @@ mod tests {
             width: w,
             height: h,
             fps,
+            codec_id: ffi::AV_CODEC_ID_H264,
             extradata: enc.extradata(),
         };
         assert!(!meta.extradata.is_empty(), "no avcC extradata");
@@ -672,6 +850,7 @@ mod tests {
             width: w,
             height: h,
             fps,
+            codec_id: ffi::AV_CODEC_ID_H264,
             extradata: enc.extradata(),
         };
 
@@ -773,6 +952,7 @@ mod tests {
             width: w,
             height: h,
             fps,
+            codec_id: ffi::AV_CODEC_ID_H264,
             extradata: enc.extradata(),
         };
 
