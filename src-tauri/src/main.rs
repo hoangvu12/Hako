@@ -4,6 +4,12 @@
 // Fast multithreaded allocator for the whole process (see Cargo.toml note). The
 // capture/encode/mux/audio paths allocate frequently across threads; mimalloc
 // beats the default Windows heap on that pattern.
+//
+// NOTE: mimalloc was briefly suspected of the STATUS_HEAP_CORRUPTION (0xc0000374)
+// crash and bisected out — it was innocent. The real cause was a VT_BLOB
+// PROPVARIANT freeing a stack pointer in the process-loopback audio path (see
+// `core::audio` process_loopback::open). The Cargo.toml `libmimalloc-sys` v2 pin
+// is therefore no longer required for correctness, only kept as a known-good pin.
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

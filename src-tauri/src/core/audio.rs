@@ -1349,21 +1349,31 @@ mod process_loopback {
         };
         // Wrap the params struct in a VT_BLOB PROPVARIANT (the activation API's
         // documented contract). Write through an explicit deref of the
-        // `ManuallyDrop` union field (the default PROPVARIANT holds no value to
-        // drop, so no leak).
+        // `ManuallyDrop` union field.
         let mut pv = PROPVARIANT::default();
-        let inner = &mut *pv.Anonymous.Anonymous;
-        inner.vt = VT_BLOB;
-        inner.Anonymous.blob = BLOB {
-            cbSize: std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
-            pBlobData: &mut params as *mut _ as *mut u8,
-        };
+        {
+            let inner = &mut *pv.Anonymous.Anonymous;
+            inner.vt = VT_BLOB;
+            inner.Anonymous.blob = BLOB {
+                cbSize: std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
+                pBlobData: &mut params as *mut _ as *mut u8,
+            };
+        }
+        // CRITICAL: `PROPVARIANT`'s `Drop` calls `PropVariantClear`, which for a
+        // `VT_BLOB` does `CoTaskMemFree(blob.pBlobData)`. Our `pBlobData` points at
+        // the *stack* local `params`, NOT COM-allocated memory — so letting the
+        // destructor run frees a stack pointer through the COM heap and corrupts it
+        // (STATUS_HEAP_CORRUPTION 0xc0000374, surfacing later at an unrelated
+        // alloc/free). Suppress the destructor with `ManuallyDrop`: nothing in this
+        // PROPVARIANT is heap-owned, so this leaks nothing, and `params` stays alive
+        // on the stack for the whole (synchronously-awaited) activation call below.
+        let pv = std::mem::ManuallyDrop::new(pv);
 
         let handler: IActivateAudioInterfaceCompletionHandler = Handler { event }.into();
         let op: IActivateAudioInterfaceAsyncOperation = ActivateAudioInterfaceAsync(
             VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
             &IAudioClient::IID,
-            Some(&pv),
+            Some(&*pv),
             &handler,
         )
         .map_err(|e| format!("ActivateAudioInterfaceAsync ({name}): {e}"))?;
@@ -1993,5 +2003,33 @@ mod tests {
             CoUninitialize();
         }
         result.expect("audio capture pipeline");
+    }
+
+    /// Regression test for the process-loopback STATUS_HEAP_CORRUPTION: the
+    /// `open()` builds a VT_BLOB PROPVARIANT pointing at a stack local; PROPVARIANT's
+    /// Drop calls PropVariantClear → CoTaskMemFree(stack ptr) → heap corruption.
+    /// We then churn the heap so the corrupted metadata is hit and the process
+    /// fast-fails. If this test survives, the bug is fixed.
+    #[test]
+    fn process_loopback_open_does_not_corrupt_heap() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        }
+        // Our own pid is a valid, live target; we don't care whether activation
+        // ultimately succeeds — the bug is the PROPVARIANT drop on `open()` return.
+        let pid = std::process::id();
+        let _ = unsafe { Source::open_process_loopback(pid, "self-repro") };
+        // Hammer the heap: a corrupted free-list/header now faults here.
+        let mut sink: Vec<Vec<u8>> = Vec::new();
+        for i in 0..5000 {
+            sink.push(vec![(i % 251) as u8; 1024 + (i % 4096)]);
+            if sink.len() > 64 {
+                sink.drain(0..32);
+            }
+        }
+        unsafe {
+            CoUninitialize();
+        }
+        println!("survived process_loopback open + {} heap ops", sink.len());
     }
 }
