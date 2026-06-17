@@ -7,7 +7,9 @@ import {
   Events,
   renameClip,
   saveClip,
+  trimClip,
   type ClipRecord,
+  type TrimMode,
 } from "@/lib/api";
 
 const CLIPS_KEY = ["clips"];
@@ -48,6 +50,20 @@ export function useRenameClip() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, title }: { id: number; title: string }) => renameClip(id, title),
+    onSuccess: () => qc.invalidateQueries({ queryKey: CLIPS_KEY }),
+  });
+}
+
+export function useTrimClip() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: {
+      id: number;
+      start: number;
+      end: number;
+      dropAudio: boolean;
+      mode: TrimMode;
+    }) => trimClip(args),
     onSuccess: () => qc.invalidateQueries({ queryKey: CLIPS_KEY }),
   });
 }

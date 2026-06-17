@@ -140,6 +140,33 @@ impl Library {
         }
     }
 
+    /// Refresh the media fields after an in-place edit (e.g. a trim that
+    /// overwrote the file). Leaves title/event/path untouched.
+    pub fn update_media(
+        &self,
+        id: i64,
+        duration_secs: f64,
+        width: i64,
+        height: i64,
+        size_bytes: i64,
+        thumb_path: Option<&str>,
+    ) -> Result<(), String> {
+        let n = self
+            .conn
+            .execute(
+                "UPDATE clips
+                   SET duration_secs = ?1, width = ?2, height = ?3,
+                       size_bytes = ?4, thumb_path = ?5
+                 WHERE id = ?6",
+                params![duration_secs, width, height, size_bytes, thumb_path, id],
+            )
+            .map_err(|e| format!("update_media: {e}"))?;
+        if n == 0 {
+            return Err(format!("no clip with id {id}"));
+        }
+        Ok(())
+    }
+
     pub fn rename(&self, id: i64, title: &str) -> Result<(), String> {
         let n = self
             .conn

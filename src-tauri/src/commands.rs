@@ -247,6 +247,110 @@ pub fn rename_clip(library: State<LibraryState>, id: i64, title: String) -> Resu
         .rename(id, &title)
 }
 
+/// Where a trim writes its result: replace the original file, or save a copy.
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TrimMode {
+    Overwrite,
+    Copy,
+}
+
+/// Loss-lessly trim a clip to `[start, end)` seconds (stream copy, optional audio
+/// drop). `Copy` writes a new library clip; `Overwrite` replaces the original
+/// file in place and refreshes its row. Returns the resulting record.
+///
+/// The FFmpeg remux is slow IO, so the library lock is only held to read the
+/// source row and to commit the result — never across the trim itself.
+#[tauri::command]
+pub fn trim_clip(
+    app: AppHandle,
+    library: State<LibraryState>,
+    id: i64,
+    start: f64,
+    end: f64,
+    drop_audio: bool,
+    mode: TrimMode,
+) -> Result<ClipRecord, String> {
+    let rec = {
+        let lib = library.0.lock().map_err(|_| "library poisoned")?;
+        lib.get(id)?.ok_or("clip not found")?
+    };
+    let input = PathBuf::from(&rec.path);
+
+    match mode {
+        TrimMode::Copy => {
+            let out = clip_output_path(&app)?;
+            let res = crate::library::trim::trim_clip(&input, &out, start, end, drop_audio)?;
+            let thumb = generate_thumbnail(&app, &out);
+            let size_bytes = std::fs::metadata(&out).map(|m| m.len() as i64).unwrap_or(0);
+            let new = NewClip {
+                path: out.to_string_lossy().to_string(),
+                title: format!("{} (trim)", rec.title),
+                event: rec.event.clone(),
+                duration_secs: res.duration_secs,
+                width: res.width,
+                height: res.height,
+                size_bytes,
+                thumb_path: thumb,
+            };
+            let record = {
+                let lib = library.0.lock().map_err(|_| "library poisoned")?;
+                let id = lib.insert(&new)?;
+                lib.get(id)?.ok_or("inserted clip vanished")?
+            };
+            let _ = app.emit(crate::events::CLIP_CREATED, &record);
+            tracing::info!("trimmed clip {id} → copy {}", record.path);
+            Ok(record)
+        }
+        TrimMode::Overwrite => {
+            // Trim to a fresh temp file, then atomically swap it over the
+            // original (which the webview may still hold open — hence retries).
+            let tmp = clip_output_path(&app)?;
+            let res = crate::library::trim::trim_clip(&input, &tmp, start, end, drop_audio)?;
+            replace_file_retrying(&tmp, &input)?;
+
+            let thumb = generate_thumbnail(&app, &input);
+            let size_bytes = std::fs::metadata(&input).map(|m| m.len() as i64).unwrap_or(0);
+            let record = {
+                let lib = library.0.lock().map_err(|_| "library poisoned")?;
+                lib.update_media(
+                    id,
+                    res.duration_secs,
+                    res.width,
+                    res.height,
+                    size_bytes,
+                    thumb.as_deref(),
+                )?;
+                lib.get(id)?.ok_or("clip vanished after trim")?
+            };
+            tracing::info!("trimmed clip {id} → overwrite {}", record.path);
+            Ok(record)
+        }
+    }
+}
+
+/// Replace `dst` with `src`, retrying briefly: right after a trim the webview's
+/// `<video>` may still hold the old file open (Windows share-deny), so a rename
+/// can transiently fail until the element releases it.
+fn replace_file_retrying(src: &Path, dst: &Path) -> Result<(), String> {
+    let mut last = String::new();
+    for attempt in 0..20 {
+        match std::fs::rename(src, dst) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                last = e.to_string();
+                std::thread::sleep(std::time::Duration::from_millis(if attempt < 5 {
+                    50
+                } else {
+                    150
+                }));
+            }
+        }
+    }
+    let _ = std::fs::remove_file(src);
+    Err(format!("could not replace original clip (file in use?): {last}"))
+}
+
 /// Current user settings.
 #[tauri::command]
 pub fn get_settings(settings: State<SettingsState>) -> Result<Settings, String> {

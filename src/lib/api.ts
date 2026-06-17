@@ -159,6 +159,30 @@ export async function renameClip(id: number, title: string): Promise<void> {
   await invoke("rename_clip", { id, title });
 }
 
+/** Where a trim writes its result. */
+export type TrimMode = "overwrite" | "copy";
+
+/**
+ * Loss-lessly trim a clip to `[start, end)` seconds (stream copy, optionally
+ * dropping audio). `"copy"` creates a new library clip; `"overwrite"` replaces
+ * the original file in place. Returns the resulting record.
+ */
+export async function trimClip(args: {
+  id: number;
+  start: number;
+  end: number;
+  dropAudio: boolean;
+  mode: TrimMode;
+}): Promise<ClipRecord> {
+  return invoke<ClipRecord>("trim_clip", {
+    id: args.id,
+    start: args.start,
+    end: args.end,
+    dropAudio: args.dropAudio,
+    mode: args.mode,
+  });
+}
+
 /** Per-event auto-clip toggles (mirrors Rust `EventToggles`). */
 export interface EventToggles {
   kill: boolean;

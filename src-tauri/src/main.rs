@@ -40,6 +40,7 @@ fn main() {
             commands::clips_list,
             commands::delete_clip,
             commands::rename_clip,
+            commands::trim_clip,
             commands::get_settings,
             commands::update_settings,
             commands::valorant_status
