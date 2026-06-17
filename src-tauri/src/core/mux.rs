@@ -190,7 +190,16 @@ unsafe fn write_inner(
         }
     }
 
-    let r = ffi::avformat_write_header(ofmt, ptr::null_mut());
+    // `movflags=faststart` runs a second pass on trailer-write that relocates the
+    // `moov` atom to the front of the file. Without it `moov` lands at the end, so
+    // a player (and our range-streaming protocol) must fetch the tail before it
+    // can start — costing startup + first-seek latency in the editor.
+    let mut hdr_opts: *mut ffi::AVDictionary = ptr::null_mut();
+    let mov_k = CString::new("movflags").unwrap();
+    let mov_v = CString::new("faststart").unwrap();
+    ffi::av_dict_set(&mut hdr_opts, mov_k.as_ptr(), mov_v.as_ptr(), 0);
+    let r = ffi::avformat_write_header(ofmt, &mut hdr_opts);
+    ffi::av_dict_free(&mut hdr_opts);
     if r < 0 {
         return Err(format!("avformat_write_header: {}", av_err(r)));
     }

@@ -3,6 +3,7 @@
 
 mod commands;
 mod events;
+mod media;
 mod settings;
 
 // Performance-critical capture/encode pipeline.
@@ -23,6 +24,8 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        // Range-aware clip streaming (smooth playback + seeking in the editor).
+        .register_uri_scheme_protocol(media::SCHEME, media::handle)
         .manage(commands::CaptureState::default())
         .invoke_handler(tauri::generate_handler![
             commands::recorder_status,

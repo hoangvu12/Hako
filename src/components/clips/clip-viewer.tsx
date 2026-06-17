@@ -30,11 +30,18 @@ import {
   useRenameClip,
   useTrimClip,
 } from "@/hooks/use-library";
-import { useFilmstrip } from "@/hooks/use-filmstrip";
 import type { ClipRecord, TrimMode } from "@/lib/api";
 
 const SPEEDS = [1, 1.5, 2, 0.5] as const;
 const MIN_TRIM = 0.3; // shortest selectable range, seconds
+/** Tiles in the Rust-generated sprite-sheet filmstrip (commands.rs FILMSTRIP_TILES). */
+const FILMSTRIP_TILES = 16;
+/**
+ * Custom range-aware streaming scheme (src-tauri/src/media.rs). The clip video
+ * loads through this instead of the `asset:` protocol so WebView2 gets proper
+ * `206 Partial Content` seeking and doesn't starve during playback.
+ */
+const STREAM_SCHEME = "hakoclip";
 
 function fmtTime(secs: number): string {
   if (!Number.isFinite(secs) || secs < 0) secs = 0;
@@ -188,13 +195,17 @@ function ViewerStage({
   const videoRef = React.useRef<HTMLVideoElement>(null);
   const barRef = React.useRef<HTMLDivElement>(null);
 
-  // Cache-bust so an overwrite (same path, new bytes) actually reloads.
+  // Cache-bust so an overwrite (same path, new bytes) actually reloads. The video
+  // streams over our range-aware scheme; images stay on the plain asset protocol.
   const src = React.useMemo(
-    () => `${convertFileSrc(clip.path)}?v=${clip.size_bytes}`,
+    () => `${convertFileSrc(clip.path, STREAM_SCHEME)}?v=${clip.size_bytes}`,
     [clip.path, clip.size_bytes],
   );
   const poster = clip.thumb_path
     ? `${convertFileSrc(clip.thumb_path)}?v=${clip.size_bytes}`
+    : undefined;
+  const filmstripUrl = clip.filmstrip_path
+    ? `${convertFileSrc(clip.filmstrip_path)}?v=${clip.size_bytes}`
     : undefined;
 
   const [playing, setPlaying] = React.useState(false);
@@ -212,8 +223,6 @@ function ViewerStage({
   const [audioEnabled, setAudioEnabled] = React.useState(true);
   const [drag, setDrag] = React.useState<null | "seek" | "start" | "end">(null);
   const [saveOpen, setSaveOpen] = React.useState(false);
-
-  const filmstrip = useFilmstrip(src, clip.duration_secs);
 
   // Reflect muted/volume/speed onto the element (React doesn't track these).
   React.useEffect(() => {
@@ -379,15 +388,20 @@ function ViewerStage({
   const progress = duration > 0 ? (current / duration) * 100 : 0;
   const startPct = duration > 0 ? (trimStart / duration) * 100 : 0;
   const endPct = duration > 0 ? (trimEnd / duration) * 100 : 100;
-  const step = rulerStep(duration);
-  const ticks: number[] = [];
-  for (let t = 0; t <= duration + 0.001; t += step) ticks.push(t);
-  // Finer ticks (4 per major step) for the ruler's measure marks.
-  const minorStep = step / 4;
-  const minorTicks: { pct: number; major: boolean }[] = [];
-  for (let i = 0; i * minorStep <= duration + 0.001; i++) {
-    minorTicks.push({ pct: ((i * minorStep) / duration) * 100, major: i % 4 === 0 });
-  }
+  // Ruler ticks depend only on duration — memoize so playhead updates (which fire
+  // a few times a second) don't rebuild these arrays on every render.
+  const { ticks, minorTicks } = React.useMemo(() => {
+    const step = rulerStep(duration);
+    const ticks: number[] = [];
+    for (let t = 0; t <= duration + 0.001; t += step) ticks.push(t);
+    // Finer ticks (4 per major step) for the ruler's measure marks.
+    const minorStep = step / 4;
+    const minorTicks: { pct: number; major: boolean }[] = [];
+    for (let i = 0; i * minorStep <= duration + 0.001; i++) {
+      minorTicks.push({ pct: ((i * minorStep) / duration) * 100, major: i % 4 === 0 });
+    }
+    return { ticks, minorTicks };
+  }, [duration]);
 
   const trimmed = clip.event != null;
   const selDuration = trimEnd - trimStart;
@@ -553,31 +567,8 @@ function ViewerStage({
                   onPointerUp={endDrag}
                   className="absolute inset-0 touch-none overflow-hidden rounded-lg border border-white/10 bg-black/40"
                 >
-                  {/* Frames */}
-                  <div className="pointer-events-none absolute inset-0 flex">
-                    {filmstrip.status === "ready" ? (
-                      filmstrip.frames.map((f, i) => (
-                        <img
-                          key={i}
-                          src={f}
-                          alt=""
-                          draggable={false}
-                          className="h-full min-w-0 flex-1 object-cover"
-                        />
-                      ))
-                    ) : poster ? (
-                      <div
-                        className="size-full opacity-40"
-                        style={{
-                          backgroundImage: `url(${poster})`,
-                          backgroundSize: "auto 100%",
-                          backgroundRepeat: "repeat-x",
-                        }}
-                      />
-                    ) : (
-                      <div className="size-full bg-white/5" />
-                    )}
-                  </div>
+                  {/* Frames — sliced out of the Rust sprite-sheet (no webview decode) */}
+                  <FilmstripStrip sprite={filmstripUrl} poster={poster} />
 
                   {/* Dim the trimmed-away regions (outside the selection) */}
                   <div
@@ -588,10 +579,6 @@ function ViewerStage({
                     className="pointer-events-none absolute inset-y-0 right-0 bg-black/60"
                     style={{ width: `${100 - endPct}%` }}
                   />
-
-                  {filmstrip.status === "loading" ? (
-                    <div className="pointer-events-none absolute inset-0 animate-pulse bg-white/5" />
-                  ) : null}
                 </div>
 
                 {/* Unclipped selection chrome: a cohesive rounded frame whose
@@ -784,6 +771,58 @@ function ViewerStage({
     </div>
   );
 }
+
+/**
+ * The scrubber's frame strip. Renders `FILMSTRIP_TILES` slots, each showing one
+ * tile of the Rust-generated sprite sheet via `background-position` — so there's
+ * no second `<video>` decoding in the webview (which used to contend with
+ * playback for the hardware decoder). Memoized: playhead ticks don't touch it.
+ * Falls back to a repeated poster for clips saved before filmstrips existed.
+ */
+const FilmstripStrip = React.memo(function FilmstripStrip({
+  sprite,
+  poster,
+}: {
+  sprite?: string;
+  poster?: string;
+}) {
+  if (sprite) {
+    return (
+      <div className="pointer-events-none absolute inset-0 flex">
+        {Array.from({ length: FILMSTRIP_TILES }, (_, i) => (
+          <div
+            key={i}
+            className="h-full min-w-0 flex-1"
+            style={{
+              backgroundImage: `url(${sprite})`,
+              // Stretch the sprite to N slot-widths, then step to tile i — exact:
+              // tile i lands flush in slot i (see media/filmstrip layout).
+              backgroundSize: `${FILMSTRIP_TILES * 100}% 100%`,
+              backgroundPosition: `${(i / (FILMSTRIP_TILES - 1)) * 100}% 0`,
+              backgroundRepeat: "no-repeat",
+            }}
+          />
+        ))}
+      </div>
+    );
+  }
+  return (
+    <div className="pointer-events-none absolute inset-0">
+      {poster ? (
+        <div
+          className="size-full opacity-40"
+          style={{
+            backgroundImage: `url(${poster})`,
+            backgroundSize: "auto 100%",
+            backgroundRepeat: "repeat-x",
+          }}
+        />
+      ) : (
+        <div className="size-full bg-white/5" />
+      )}
+    </div>
+  );
+});
 
 function TrimHandle({
   side,

@@ -25,6 +25,8 @@ pub struct ClipRecord {
     pub height: i64,
     pub size_bytes: i64,
     pub thumb_path: Option<String>,
+    /// Sprite-sheet filmstrip for the editor scrubber (one JPEG, N tiles).
+    pub filmstrip_path: Option<String>,
     pub created_unix_ms: i64,
 }
 
@@ -39,6 +41,7 @@ pub struct NewClip {
     pub height: i64,
     pub size_bytes: i64,
     pub thumb_path: Option<String>,
+    pub filmstrip_path: Option<String>,
 }
 
 pub struct Library {
@@ -70,11 +73,15 @@ impl Library {
                 height          INTEGER NOT NULL DEFAULT 0,
                 size_bytes      INTEGER NOT NULL DEFAULT 0,
                 thumb_path      TEXT,
+                filmstrip_path  TEXT,
                 created_unix_ms INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_clips_created ON clips(created_unix_ms DESC);",
         )
         .map_err(|e| format!("init schema: {e}"))?;
+        // Migration for DBs created before the filmstrip column existed. SQLite
+        // has no "ADD COLUMN IF NOT EXISTS", so we ignore the duplicate-column error.
+        let _ = conn.execute("ALTER TABLE clips ADD COLUMN filmstrip_path TEXT", []);
         Ok(Library { conn })
     }
 
@@ -84,8 +91,8 @@ impl Library {
         self.conn
             .execute(
                 "INSERT INTO clips
-                   (path, title, event, duration_secs, width, height, size_bytes, thumb_path, created_unix_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                   (path, title, event, duration_secs, width, height, size_bytes, thumb_path, filmstrip_path, created_unix_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     clip.path,
                     clip.title,
@@ -95,6 +102,7 @@ impl Library {
                     clip.height,
                     clip.size_bytes,
                     clip.thumb_path,
+                    clip.filmstrip_path,
                     created,
                 ],
             )
@@ -108,7 +116,7 @@ impl Library {
             .conn
             .prepare(
                 "SELECT id, path, title, event, duration_secs, width, height, size_bytes,
-                        thumb_path, created_unix_ms
+                        thumb_path, filmstrip_path, created_unix_ms
                  FROM clips ORDER BY created_unix_ms DESC",
             )
             .map_err(|e| format!("prepare list: {e}"))?;
@@ -127,7 +135,7 @@ impl Library {
             .conn
             .prepare(
                 "SELECT id, path, title, event, duration_secs, width, height, size_bytes,
-                        thumb_path, created_unix_ms
+                        thumb_path, filmstrip_path, created_unix_ms
                  FROM clips WHERE id = ?1",
             )
             .map_err(|e| format!("prepare get: {e}"))?;
@@ -150,15 +158,16 @@ impl Library {
         height: i64,
         size_bytes: i64,
         thumb_path: Option<&str>,
+        filmstrip_path: Option<&str>,
     ) -> Result<(), String> {
         let n = self
             .conn
             .execute(
                 "UPDATE clips
                    SET duration_secs = ?1, width = ?2, height = ?3,
-                       size_bytes = ?4, thumb_path = ?5
-                 WHERE id = ?6",
-                params![duration_secs, width, height, size_bytes, thumb_path, id],
+                       size_bytes = ?4, thumb_path = ?5, filmstrip_path = ?6
+                 WHERE id = ?7",
+                params![duration_secs, width, height, size_bytes, thumb_path, filmstrip_path, id],
             )
             .map_err(|e| format!("update_media: {e}"))?;
         if n == 0 {
@@ -204,7 +213,8 @@ fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<ClipRecord> {
         height: row.get(6)?,
         size_bytes: row.get(7)?,
         thumb_path: row.get(8)?,
-        created_unix_ms: row.get(9)?,
+        filmstrip_path: row.get(9)?,
+        created_unix_ms: row.get(10)?,
     })
 }
 
@@ -229,6 +239,7 @@ mod tests {
             height: 1440,
             size_bytes: 1234,
             thumb_path: None,
+            filmstrip_path: None,
         }
     }
 

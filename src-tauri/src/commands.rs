@@ -234,8 +234,9 @@ pub fn save_clip_full(
     let out = clip_output_path(app)?;
     let saved = clip.save_last(seconds, &out)?;
 
-    // Best-effort thumbnail — a clip without one is still valid.
+    // Best-effort thumbnail + scrubber filmstrip — a clip without them is valid.
     let thumb = generate_thumbnail(app, &saved.path);
+    let filmstrip = generate_filmstrip(app, &saved.path, saved.duration_secs);
 
     let size_bytes = std::fs::metadata(&saved.path).map(|m| m.len() as i64).unwrap_or(0);
     let title = saved
@@ -253,6 +254,7 @@ pub fn save_clip_full(
         height: saved.height as i64,
         size_bytes,
         thumb_path: thumb,
+        filmstrip_path: filmstrip,
     };
 
     let library = app.state::<LibraryState>();
@@ -293,6 +295,7 @@ pub fn finalize_auto_clip(
     duration_secs: f64,
 ) -> Result<ClipRecord, String> {
     let thumb = generate_thumbnail(app, &path);
+    let filmstrip = generate_filmstrip(app, &path, duration_secs);
     let size_bytes = std::fs::metadata(&path).map(|m| m.len() as i64).unwrap_or(0);
     let new = NewClip {
         path: path.to_string_lossy().to_string(),
@@ -303,6 +306,7 @@ pub fn finalize_auto_clip(
         height,
         size_bytes,
         thumb_path: thumb,
+        filmstrip_path: filmstrip,
     };
     let library = app.state::<LibraryState>();
     let record = {
@@ -329,6 +333,9 @@ pub fn delete_clip(library: State<LibraryState>, id: i64) -> Result<(), String> 
         let _ = std::fs::remove_file(&rec.path);
         if let Some(t) = rec.thumb_path {
             let _ = std::fs::remove_file(t);
+        }
+        if let Some(f) = rec.filmstrip_path {
+            let _ = std::fs::remove_file(f);
         }
     }
     lib.delete(id)
@@ -379,6 +386,7 @@ pub fn trim_clip(
             let out = clip_output_path(&app)?;
             let res = crate::library::trim::trim_clip(&input, &out, start, end, drop_audio)?;
             let thumb = generate_thumbnail(&app, &out);
+            let filmstrip = generate_filmstrip(&app, &out, res.duration_secs);
             let size_bytes = std::fs::metadata(&out).map(|m| m.len() as i64).unwrap_or(0);
             let new = NewClip {
                 path: out.to_string_lossy().to_string(),
@@ -389,6 +397,7 @@ pub fn trim_clip(
                 height: res.height,
                 size_bytes,
                 thumb_path: thumb,
+                filmstrip_path: filmstrip,
             };
             let record = {
                 let lib = library.0.lock().map_err(|_| "library poisoned")?;
@@ -407,6 +416,7 @@ pub fn trim_clip(
             replace_file_retrying(&tmp, &input)?;
 
             let thumb = generate_thumbnail(&app, &input);
+            let filmstrip = generate_filmstrip(&app, &input, res.duration_secs);
             let size_bytes = std::fs::metadata(&input).map(|m| m.len() as i64).unwrap_or(0);
             let record = {
                 let lib = library.0.lock().map_err(|_| "library poisoned")?;
@@ -417,6 +427,7 @@ pub fn trim_clip(
                     res.height,
                     size_bytes,
                     thumb.as_deref(),
+                    filmstrip.as_deref(),
                 )?;
                 lib.get(id)?.ok_or("clip vanished after trim")?
             };
@@ -512,6 +523,33 @@ fn generate_thumbnail(app: &AppHandle, video: &Path) -> Option<String> {
         Ok(()) => Some(out.to_string_lossy().to_string()),
         Err(e) => {
             tracing::warn!("thumbnail failed for {}: {e}", video.display());
+            None
+        }
+    }
+}
+
+/// Number of frames / per-tile width in the editor scrubber's sprite-sheet.
+const FILMSTRIP_TILES: u32 = 16;
+const FILMSTRIP_TILE_WIDTH: u32 = 160;
+
+/// Extract a sprite-sheet filmstrip next to the clip
+/// (`<Videos>/Hako/thumbs/<stem>_strip.jpg`). Best-effort: a clip without one
+/// falls back to the poster in the editor.
+fn generate_filmstrip(app: &AppHandle, video: &Path, duration_secs: f64) -> Option<String> {
+    let dir = clip_dir(app).ok()?.join("thumbs");
+    std::fs::create_dir_all(&dir).ok()?;
+    let stem = video.file_stem()?.to_str()?;
+    let out = dir.join(format!("{stem}_strip.jpg"));
+    match crate::library::thumbs::extract_filmstrip(
+        video,
+        &out,
+        FILMSTRIP_TILES,
+        FILMSTRIP_TILE_WIDTH,
+        duration_secs,
+    ) {
+        Ok(()) => Some(out.to_string_lossy().to_string()),
+        Err(e) => {
+            tracing::warn!("filmstrip failed for {}: {e}", video.display());
             None
         }
     }

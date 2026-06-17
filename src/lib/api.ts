@@ -36,6 +36,8 @@ export interface ClipRecord {
   height: number;
   size_bytes: number;
   thumb_path: string | null;
+  /** Sprite-sheet filmstrip (one JPEG, N tiles) for the editor scrubber. */
+  filmstrip_path: string | null;
   created_unix_ms: number;
 }
 
