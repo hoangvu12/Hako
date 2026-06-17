@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useRouter } from "@tanstack/react-router";
+import { useRouter, useRouterState } from "@tanstack/react-router";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ArrowLeft, ArrowRight, Minus, Square, X } from "@phosphor-icons/react";
 
@@ -15,6 +15,40 @@ import {
 /** Shared style for the min/maximize/close caption buttons. */
 const CONTROL_CLS =
   "flex h-8 w-10 items-center justify-center rounded-md text-foreground/70 transition-colors hover:bg-secondary hover:text-foreground";
+
+/**
+ * Back/forward history control. Lit up (and clickable) only when there's
+ * somewhere to go in that direction, dimmed and disabled otherwise — like a
+ * browser's nav arrows.
+ */
+function NavButton({
+  label,
+  enabled,
+  onClick,
+  children,
+}: {
+  label: string;
+  enabled: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      disabled={!enabled}
+      onClick={onClick}
+      className={cn(
+        "flex size-6 items-center justify-center rounded transition-colors",
+        enabled
+          ? "text-foreground/70 hover:bg-secondary hover:text-foreground"
+          : "cursor-not-allowed text-foreground/25"
+      )}
+    >
+      {children}
+    </button>
+  );
+}
 
 /**
  * "Auto Clip" toggle pill. Reflects whether the Valorant orchestrator
@@ -85,6 +119,13 @@ async function windowAction(action: "minimize" | "toggleMaximize" | "close") {
 
 export function WindowTitlebar() {
   const router = useRouter();
+  // Subscribe to location so the nav arrows re-evaluate on every navigation.
+  const location = useRouterState({ select: (s) => s.location });
+  const canBack = router.history.canGoBack();
+  // No `canGoForward` in the history API — derive it: a forward entry exists
+  // when the current index isn't the last one in the session history.
+  const tsrIndex = (location.state as { __TSR_index?: number }).__TSR_index ?? 0;
+  const canForward = tsrIndex < router.history.length - 1;
 
   // Mirror the OS window's maximized state so the control swaps maximize/restore.
   const [maximized, setMaximized] = useState(false);
@@ -117,23 +158,21 @@ export function WindowTitlebar() {
     >
       {/* Left: history, game status, hotkey hints */}
       <div data-tauri-drag-region className="flex items-center gap-3">
-        <div className="flex items-center gap-1 text-muted-foreground">
-          <button
-            type="button"
-            aria-label="Back"
+        <div className="flex items-center gap-1">
+          <NavButton
+            label="Back"
+            enabled={canBack}
             onClick={() => router.history.back()}
-            className="flex size-6 items-center justify-center rounded transition-colors hover:text-foreground"
           >
             <ArrowLeft className="size-4" />
-          </button>
-          <button
-            type="button"
-            aria-label="Forward"
+          </NavButton>
+          <NavButton
+            label="Forward"
+            enabled={canForward}
             onClick={() => router.history.forward()}
-            className="flex size-6 items-center justify-center rounded transition-colors hover:text-foreground"
           >
             <ArrowRight className="size-4" />
-          </button>
+          </NavButton>
         </div>
 
         <Separator orientation="vertical" className="h-4" />
