@@ -44,6 +44,19 @@ pub struct TrimResult {
     pub duration_secs: f64,
 }
 
+/// Which audio streams a trim keeps in the output.
+#[derive(Debug, Clone, Copy)]
+pub enum AudioKeep {
+    /// Every audio stream (multi-track clips keep all their stems).
+    All,
+    /// None — produce a video-only clip.
+    None,
+    /// Only the one audio stream at this **absolute** input stream index — the
+    /// editor export's stream-copy path when a single stem is chosen at unity
+    /// gain (it becomes the sole master track).
+    Only(i32),
+}
+
 /// Trim `input` → `output` over `[start, end)` seconds via stream copy.
 /// When `drop_audio` is set, the output is video-only.
 pub fn trim_clip(
@@ -52,6 +65,35 @@ pub fn trim_clip(
     start: f64,
     end: f64,
     drop_audio: bool,
+) -> Result<TrimResult, String> {
+    trim_inner(
+        input,
+        output,
+        start,
+        end,
+        if drop_audio { AudioKeep::None } else { AudioKeep::All },
+    )
+}
+
+/// Trim `input` → `output` over `[start, end)` keeping **only** the audio stream
+/// at absolute index `audio_idx` (stream-copy). The editor's export uses this
+/// when a single stem is selected at unity gain.
+pub fn trim_keeping_audio(
+    input: &Path,
+    output: &Path,
+    start: f64,
+    end: f64,
+    audio_idx: i32,
+) -> Result<TrimResult, String> {
+    trim_inner(input, output, start, end, AudioKeep::Only(audio_idx))
+}
+
+fn trim_inner(
+    input: &Path,
+    output: &Path,
+    start: f64,
+    end: f64,
+    keep_audio: AudioKeep,
 ) -> Result<TrimResult, String> {
     if !(end > start) {
         return Err("trim end must be after start".into());
@@ -75,21 +117,18 @@ pub fn trim_clip(
             }
 
             // --- locate streams -------------------------------------------------
+            // Keep the first video stream plus EVERY audio stream (multi-track
+            // clips carry one AAC stream per recorded track) unless dropping audio.
             let nb = (*ic).nb_streams as i32;
             let mut video_idx = -1i32;
-            let mut audio_idx = -1i32;
             let (mut vw, mut vh) = (0i64, 0i64);
             for i in 0..nb {
                 let st = *(*ic).streams.offset(i as isize);
                 let par = (*st).codecpar;
-                match (*par).codec_type {
-                    t if t == AVMEDIA_TYPE_VIDEO && video_idx < 0 => {
-                        video_idx = i;
-                        vw = (*par).width as i64;
-                        vh = (*par).height as i64;
-                    }
-                    t if t == AVMEDIA_TYPE_AUDIO && audio_idx < 0 && !drop_audio => audio_idx = i,
-                    _ => {}
+                if (*par).codec_type == AVMEDIA_TYPE_VIDEO && video_idx < 0 {
+                    video_idx = i;
+                    vw = (*par).width as i64;
+                    vh = (*par).height as i64;
                 }
             }
             if video_idx < 0 {
@@ -108,22 +147,41 @@ pub fn trim_clip(
             }
 
             // input stream index -> output stream index (-1 = drop).
+            let meta_keys = ["title", "handler_name"];
             let mut mapping = vec![-1i32; nb as usize];
             let mut out_count = 0i32;
             for i in 0..nb {
-                if i != video_idx && i != audio_idx {
+                let in_st = *(*ic).streams.offset(i as isize);
+                let in_par = (*in_st).codecpar;
+                let keep_this_audio = (*in_par).codec_type == AVMEDIA_TYPE_AUDIO
+                    && match keep_audio {
+                        AudioKeep::All => true,
+                        AudioKeep::None => false,
+                        AudioKeep::Only(idx) => i == idx,
+                    };
+                let keep = i == video_idx || keep_this_audio;
+                if !keep {
                     continue;
                 }
-                let in_st = *(*ic).streams.offset(i as isize);
                 let out_st = ffi::avformat_new_stream(ofmt, ptr::null());
                 if out_st.is_null() {
                     return Err("avformat_new_stream failed".into());
                 }
-                if ffi::avcodec_parameters_copy((*out_st).codecpar, (*in_st).codecpar) < 0 {
+                if ffi::avcodec_parameters_copy((*out_st).codecpar, in_par) < 0 {
                     return Err("avcodec_parameters_copy failed".into());
                 }
                 (*(*out_st).codecpar).codec_tag = 0; // let mp4 pick the tag
                 (*out_st).time_base = (*in_st).time_base;
+                // Carry the track name (multi-track stems are titled via both the
+                // udta `title` and the `hdlr` handler_name) so the cut clip keeps
+                // its labels — parameters_copy doesn't copy stream metadata.
+                for key in meta_keys {
+                    let k = CString::new(key).unwrap();
+                    let entry = ffi::av_dict_get((*in_st).metadata, k.as_ptr(), ptr::null(), 0);
+                    if !entry.is_null() {
+                        ffi::av_dict_set(&mut (*out_st).metadata, k.as_ptr(), (*entry).value, 0);
+                    }
+                }
                 mapping[i as usize] = out_count;
                 out_count += 1;
             }

@@ -81,15 +81,16 @@ struct SessionState {
     /// The video stream's time base after `write_header` (mp4 may rescale).
     video_dst_tb: ffi::AVRational,
 
-    audio: Option<AudioStream>,
+    /// One entry per declared AAC stream (track 0 = master mix, 1..N = stems);
+    /// empty for a video-only session. Indexed by the `track_idx` the audio
+    /// thread pushes with.
+    audio: Vec<AudioStream>,
 
     /// PTS of the first video packet (capture-clock relative); session PTS is
     /// rebased off this so the file starts at 0.
     first_video_pts: Option<i64>,
     /// Last session video PTS written, to keep PTS strictly increasing.
     last_video_pts: i64,
-    /// Last session audio PTS (samples) written, kept strictly increasing.
-    last_audio_pts: i64,
     /// Wall-clock tick of the first video packet — the origin audio rebases on.
     session_start_ticks: Option<i64>,
 
@@ -104,19 +105,23 @@ struct AudioStream {
     sample_rate: i64,
     src_tb: ffi::AVRational,
     dst_tb: ffi::AVRational,
+    /// Last session audio PTS (samples) written for this stream, kept strictly
+    /// increasing per stream.
+    last_pts: i64,
 }
 
 impl SessionWriter {
     /// Open `out_path` as an mp4 and write the header, declaring an H.264 video
-    /// stream (`meta`) and — when `audio_meta` is `Some` — an AAC audio stream.
+    /// stream (`meta`) and one named AAC stream per entry in `audio_tracks`
+    /// (track 0 = master mix; empty ⇒ video-only).
     ///
-    /// All streams must be declared before any packet, so audio presence is
-    /// fixed here: if the session is recorded with audio, pass the published
-    /// [`AudioMeta`]; otherwise the session is video-only.
+    /// All streams must be declared before any packet, so the audio-track layout
+    /// is fixed here: pass every published `(name, AudioMeta)` (the audio thread
+    /// then pushes packets tagged with the matching track index).
     pub fn start(
         out_path: &Path,
         meta: &ClipMeta,
-        audio_meta: Option<&AudioMeta>,
+        audio_tracks: &[(String, AudioMeta)],
     ) -> Result<SessionWriter, String> {
         let path_str = out_path.to_str().ok_or("session path is not valid UTF-8")?;
         let c_path = CString::new(path_str).map_err(|_| "session path contains NUL")?;
@@ -137,7 +142,7 @@ impl SessionWriter {
 
             // Build streams + header inside a closure so any failure tears the
             // context back down before returning.
-            match Self::open_inner(ofmt, &c_path, meta, audio_meta, fps) {
+            match Self::open_inner(ofmt, &c_path, meta, audio_tracks, fps) {
                 Ok(state) => Ok(SessionWriter {
                     out_path: out_path.to_path_buf(),
                     state: Mutex::new(state),
@@ -159,7 +164,7 @@ impl SessionWriter {
         ofmt: *mut ffi::AVFormatContext,
         c_path: &CString,
         meta: &ClipMeta,
-        audio_meta: Option<&AudioMeta>,
+        audio_tracks: &[(String, AudioMeta)],
         fps: i32,
     ) -> Result<SessionState, String> {
         // Stream 0: H.264 video, time base = 1/fps (our packet PTS units).
@@ -177,16 +182,23 @@ impl SessionWriter {
         (*par).format = ffi::AV_PIX_FMT_NV12; // informational for a copy stream
         set_extradata(par, &meta.extradata)?;
 
-        // Stream 1 (optional): AAC audio. Declared only when meta has the
-        // AudioSpecificConfig the mp4 esds box needs.
-        let audio_meta = audio_meta.filter(|a| !a.extradata.is_empty());
-        let audio = if let Some(a) = audio_meta {
+        // Streams 1..N (optional): one named AAC track each (track 0 = master mix,
+        // the rest are stems). A track is declared only when its meta carries the
+        // AudioSpecificConfig the mp4 esds box needs, so a stem whose encoder
+        // never produced one is skipped.
+        let title_key = CString::new("title").unwrap();
+        let handler_key = CString::new("handler_name").unwrap();
+        let mut audio: Vec<(*mut ffi::AVStream, i64)> = Vec::new();
+        for (name, a) in audio_tracks {
+            if a.extradata.is_empty() {
+                continue;
+            }
             let st_a = ffi::avformat_new_stream(ofmt, ptr::null());
             if st_a.is_null() {
                 return Err("avformat_new_stream(audio) failed".into());
             }
             let sr = a.sample_rate.max(1) as i32;
-            (*st_a).id = 1;
+            (*st_a).id = (audio.len() as i32) + 1;
             (*st_a).time_base = ffi::AVRational { num: 1, den: sr };
             let apar = (*st_a).codecpar;
             (*apar).codec_type = ffi::AVMEDIA_TYPE_AUDIO;
@@ -195,10 +207,17 @@ impl SessionWriter {
             (*apar).format = ffi::AV_SAMPLE_FMT_FLTP; // informational for copy
             ffi::av_channel_layout_default(&mut (*apar).ch_layout, a.channels.max(1) as i32);
             set_extradata(apar, &a.extradata)?;
-            Some((st_a, sr as i64))
-        } else {
-            None
-        };
+            // Label the stream so the editor can show the track name.
+            // `handler_name` (the trak `hdlr` box) survives the MP4 round-trip
+            // most reliably; we also set `title` (udta) for tools reading that.
+            if !name.is_empty() {
+                if let Ok(c_name) = CString::new(name.as_str()) {
+                    ffi::av_dict_set(&mut (*st_a).metadata, handler_key.as_ptr(), c_name.as_ptr(), 0);
+                    ffi::av_dict_set(&mut (*st_a).metadata, title_key.as_ptr(), c_name.as_ptr(), 0);
+                }
+            }
+            audio.push((st_a, sr as i64));
+        }
 
         // Open the file and write the header (mp4 is not a file-less format).
         if ((*(*ofmt).oformat).flags & AVFMT_NOFILE) == 0 {
@@ -219,12 +238,16 @@ impl SessionWriter {
 
         // `write_header` may have adjusted the stream time bases.
         let video_dst_tb = (*st_v).time_base;
-        let audio = audio.map(|(st_a, sr)| AudioStream {
-            index: (*st_a).index,
-            sample_rate: sr,
-            src_tb: ffi::AVRational { num: 1, den: sr as i32 },
-            dst_tb: (*st_a).time_base,
-        });
+        let audio = audio
+            .into_iter()
+            .map(|(st_a, sr)| AudioStream {
+                index: (*st_a).index,
+                sample_rate: sr,
+                src_tb: ffi::AVRational { num: 1, den: sr as i32 },
+                dst_tb: (*st_a).time_base,
+                last_pts: i64::MIN,
+            })
+            .collect();
 
         Ok(SessionState {
             ofmt,
@@ -235,7 +258,6 @@ impl SessionWriter {
             audio,
             first_video_pts: None,
             last_video_pts: i64::MIN,
-            last_audio_pts: i64::MIN,
             session_start_ticks: None,
             timeline: TimelineIndex::new(),
             video_count: 0,
@@ -254,13 +276,14 @@ impl SessionWriter {
         }
     }
 
-    /// Append one already-encoded **AAC** packet (PTS in absolute 100 ns ticks,
-    /// the audio ring's unit). Rebased against the session start; anything before
-    /// the first video frame is dropped. No-op if the session has no audio
-    /// stream, or once finished.
-    pub fn push_audio(&self, pkt: &EncodedPacket) {
+    /// Append one already-encoded **AAC** packet for output track `track_idx`
+    /// (PTS in absolute 100 ns ticks, the audio ring's unit) to that track's
+    /// stream. Rebased against the session start; anything before the first video
+    /// frame is dropped. No-op if the session has no stream for that track, or
+    /// once finished.
+    pub fn push_audio(&self, track_idx: usize, pkt: &EncodedPacket) {
         if let Ok(mut s) = self.state.lock() {
-            s.write_audio(pkt);
+            s.write_audio(track_idx, pkt);
         }
     }
 
@@ -325,16 +348,16 @@ impl SessionState {
         }
     }
 
-    fn write_audio(&mut self, pkt: &EncodedPacket) {
+    fn write_audio(&mut self, track_idx: usize, pkt: &EncodedPacket) {
         if self.finished || self.ofmt.is_null() {
             return;
         }
-        let Some(audio) = self.audio.as_ref() else {
-            return; // video-only session
-        };
         // Need the session origin (first video frame) before audio can be placed.
         let Some(start) = self.session_start_ticks else {
             return;
+        };
+        let Some(audio) = self.audio.get_mut(track_idx) else {
+            return; // no stream for this track (video-only, or out of range)
         };
         let rel_ticks = pkt.pts - start;
         if rel_ticks < 0 {
@@ -342,10 +365,10 @@ impl SessionState {
         }
         let mut pts_samples =
             (rel_ticks as i128 * audio.sample_rate as i128 / TICKS_PER_SECOND as i128) as i64;
-        if pts_samples <= self.last_audio_pts {
-            pts_samples = self.last_audio_pts + 1;
+        if pts_samples <= audio.last_pts {
+            pts_samples = audio.last_pts + 1;
         }
-        self.last_audio_pts = pts_samples;
+        audio.last_pts = pts_samples;
 
         let (index, src_tb, dst_tb) = (audio.index, audio.src_tb, audio.dst_tb);
         let ok = unsafe {
@@ -457,9 +480,10 @@ mod tests {
     };
     use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 
-    /// Reopen an mp4 and return (stream count, [(codec_type, codec_id)], video
-    /// packet count) — proves the session file is a valid, demuxable MP4.
-    unsafe fn probe(path: &Path) -> (u32, Vec<(i32, u32)>, usize) {
+    /// Reopen an mp4 and return (stream count, [(codec_type, codec_id, title)],
+    /// video packet count) — proves the session file is a valid, demuxable MP4
+    /// and exposes each stream's `title` so multi-track names can be checked.
+    unsafe fn probe(path: &Path) -> (u32, Vec<(i32, u32, Option<String>)>, usize) {
         let c = CString::new(path.to_str().unwrap()).unwrap();
         let mut ic: *mut ffi::AVFormatContext = ptr::null_mut();
         let r = ffi::avformat_open_input(&mut ic, c.as_ptr(), ptr::null_mut(), ptr::null_mut());
@@ -468,12 +492,28 @@ mod tests {
         assert!(r >= 0, "avformat_find_stream_info: {}", av_err(r));
 
         let nb = (*ic).nb_streams;
+        let read_label = |metadata: *mut ffi::AVDictionary| -> Option<String> {
+            let read = |key: &str| -> Option<String> {
+                let k = CString::new(key).unwrap();
+                let e = ffi::av_dict_get(metadata, k.as_ptr(), ptr::null(), 0);
+                if e.is_null() {
+                    None
+                } else {
+                    Some(std::ffi::CStr::from_ptr((*e).value).to_string_lossy().into_owned())
+                }
+            };
+            read("title").or_else(|| {
+                read("handler_name")
+                    .filter(|h| h != "SoundHandler" && h != "VideoHandler" && !h.is_empty())
+            })
+        };
         let mut streams = Vec::new();
         let mut video_index = -1i32;
         for i in 0..nb as isize {
             let st = *(*ic).streams.offset(i);
             let par = (*st).codecpar;
-            streams.push(((*par).codec_type, (*par).codec_id));
+            let title = read_label((*st).metadata);
+            streams.push(((*par).codec_type, (*par).codec_id, title));
             if (*par).codec_type == ffi::AVMEDIA_TYPE_VIDEO {
                 video_index = (*st).index;
             }
@@ -539,7 +579,7 @@ mod tests {
         let out = std::env::temp_dir().join("hako_session_test.mp4");
         let _ = std::fs::remove_file(&out);
 
-        let writer = SessionWriter::start(&out, &meta, None).expect("start session");
+        let writer = SessionWriter::start(&out, &meta, &[]).expect("start session");
 
         // Encode 90 frames (~1.5 s) and stream each packet straight through,
         // tagging it with a wall-clock tick derived from its PTS (as the encode
@@ -588,7 +628,7 @@ mod tests {
             assert!(
                 streams
                     .iter()
-                    .any(|(t, id)| *t == ffi::AVMEDIA_TYPE_VIDEO && *id == ffi::AV_CODEC_ID_H264),
+                    .any(|(t, id, _)| *t == ffi::AVMEDIA_TYPE_VIDEO && *id == ffi::AV_CODEC_ID_H264),
                 "missing H.264 video stream"
             );
             assert_eq!(vcount, pushed as usize, "demuxed packet count != pushed");
@@ -645,7 +685,8 @@ mod tests {
         let out = std::env::temp_dir().join("hako_session_av_test.mp4");
         let _ = std::fs::remove_file(&out);
 
-        let writer = SessionWriter::start(&out, &meta, Some(&ameta)).expect("start session");
+        let audio_tracks = [("All Audio".to_string(), ameta.clone())];
+        let writer = SessionWriter::start(&out, &meta, &audio_tracks).expect("start session");
 
         // Establish the session origin with the first video frame, then interleave
         // the rest of the video with all the audio (as separate threads would).
@@ -663,7 +704,7 @@ mod tests {
         let first = &vpackets[0];
         writer.push(first, base_ticks + first.pts * TICKS_PER_SECOND / fps as i64);
         for ap in &apackets {
-            writer.push_audio(ap);
+            writer.push_audio(0, ap);
         }
         for vp in &vpackets[1..] {
             writer.push(vp, base_ticks + vp.pts * TICKS_PER_SECOND / fps as i64);
@@ -682,14 +723,115 @@ mod tests {
             assert!(
                 streams
                     .iter()
-                    .any(|(t, id)| *t == ffi::AVMEDIA_TYPE_VIDEO && *id == ffi::AV_CODEC_ID_H264),
+                    .any(|(t, id, _)| *t == ffi::AVMEDIA_TYPE_VIDEO && *id == ffi::AV_CODEC_ID_H264),
                 "missing H.264 video stream"
             );
             assert!(
                 streams
                     .iter()
-                    .any(|(t, id)| *t == ffi::AVMEDIA_TYPE_AUDIO && *id == ffi::AV_CODEC_ID_AAC),
+                    .any(|(t, id, _)| *t == ffi::AVMEDIA_TYPE_AUDIO && *id == ffi::AV_CODEC_ID_AAC),
                 "missing AAC audio stream"
+            );
+        }
+        let _ = std::fs::remove_file(&out);
+    }
+
+    /// Stream synthetic video + **two** named AAC tracks (master + a stem) through
+    /// the writer, each pushed with its own track index, and confirm the finished
+    /// session has 3 streams with the right titles. Exercises the multi-track
+    /// live-interleave + per-stream PTS bookkeeping (Phase 4 session muxing).
+    #[test]
+    fn writes_session_with_two_audio_tracks() {
+        let gpus = device::enumerate_gpus().expect("enumerate gpus");
+        let adapter = device::default_capture_index(&gpus)
+            .map(|i| device::adapter_at(i).expect("adapter_at"));
+        let (d3d_device, ctx, _fl) = device::create_device(adapter.as_ref()).expect("create device");
+        let (w, h, fps) = (1280u32, 720u32, 60u32);
+
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: w,
+            Height: h,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let mut bgra: Option<ID3D11Texture2D> = None;
+        unsafe {
+            d3d_device
+                .CreateTexture2D(&desc, None, Some(&mut bgra))
+                .expect("create bgra");
+        }
+        let bgra = bgra.unwrap();
+        let conv = Converter::new(&d3d_device, &ctx, w, h).expect("converter");
+        let mut enc = Encoder::new_qsv(&d3d_device, &ctx, w, h, fps).expect("encoder");
+        let meta = ClipMeta {
+            width: w,
+            height: h,
+            fps,
+            extradata: enc.extradata(),
+        };
+
+        let (m_meta, m_pkts) = crate::core::audio::encode_silence_aac(1.5);
+        let (s_meta, s_pkts) = crate::core::audio::encode_silence_aac(1.5);
+        assert!(!m_pkts.is_empty() && !s_pkts.is_empty(), "no AAC packets");
+
+        let base_ticks = 0i64;
+        let out = std::env::temp_dir().join("hako_session_2track_test.mp4");
+        let _ = std::fs::remove_file(&out);
+
+        let audio_tracks = [
+            ("All Audio".to_string(), m_meta.clone()),
+            ("Microphone".to_string(), s_meta.clone()),
+        ];
+        let writer = SessionWriter::start(&out, &meta, &audio_tracks).expect("start session");
+
+        let mut vpackets = Vec::new();
+        for i in 0..90i64 {
+            let nv12 = conv.create_nv12_texture().expect("nv12");
+            conv.convert(&bgra, &nv12).expect("convert");
+            vpackets.extend(enc.encode(&nv12, i).expect("encode"));
+        }
+        vpackets.extend(enc.flush().expect("flush"));
+        assert!(!vpackets.is_empty());
+
+        // First video frame sets the origin, then interleave both audio tracks.
+        let first = &vpackets[0];
+        writer.push(first, base_ticks + first.pts * TICKS_PER_SECOND / fps as i64);
+        for ap in &m_pkts {
+            writer.push_audio(0, ap);
+        }
+        for ap in &s_pkts {
+            writer.push_audio(1, ap);
+        }
+        for vp in &vpackets[1..] {
+            writer.push(vp, base_ticks + vp.pts * TICKS_PER_SECOND / fps as i64);
+        }
+
+        writer.finish().expect("finish");
+        let (_vc, ac) = writer.counts();
+        assert!(ac > 0, "no audio packets written");
+
+        unsafe {
+            let (nb, streams, _vcount) = probe(&out);
+            println!("2-track session probe: {nb} stream(s), {streams:?}");
+            assert_eq!(nb, 3, "expected video + 2 audio streams");
+            let names: Vec<String> = streams
+                .iter()
+                .filter(|(t, _, _)| *t == ffi::AVMEDIA_TYPE_AUDIO)
+                .filter_map(|(_, _, title)| title.clone())
+                .collect();
+            assert!(
+                names.iter().any(|n| n == "All Audio"),
+                "missing 'All Audio' track, got {names:?}"
+            );
+            assert!(
+                names.iter().any(|n| n == "Microphone"),
+                "missing 'Microphone' track, got {names:?}"
             );
         }
         let _ = std::fs::remove_file(&out);

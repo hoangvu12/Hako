@@ -34,21 +34,29 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use rusty_ffmpeg::ffi;
+use windows::core::{Interface, GUID, PCWSTR};
+use windows::Win32::Foundation::PROPERTYKEY;
 use windows::Win32::Media::Audio::{
-    eCapture, eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDevice,
+    eCapture, eConsole, eRender, AudioSessionStateActive, EDataFlow, IAudioCaptureClient,
+    IAudioClient, IAudioSessionControl2, IAudioSessionManager2, IMMDevice, IMMDeviceCollection,
     IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY,
     AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK,
-    WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
+    DEVICE_STATE_ACTIVE, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
+};
+use windows::Win32::System::Com::StructuredStorage::{
+    PropVariantClear, PropVariantToStringAlloc, PROPVARIANT,
 };
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
-    COINIT_MULTITHREADED,
+    COINIT_MULTITHREADED, STGM_READ,
 };
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
+use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
 
 use crate::core::capture::ClipBuffer;
 use crate::core::clock::TICKS_PER_SECOND;
 use crate::core::encode::{av_err, EncodedPacket};
+use crate::settings::{AudioConfig, AUTO_DEVICE, GAME_SOURCE_ID};
 
 /// Mixed-track sample rate. 48 kHz is the WASAPI shared-mode engine default and
 /// the standard for AAC, so the common case needs no rate conversion.
@@ -88,6 +96,416 @@ pub struct AudioMeta {
 }
 
 // ---------------------------------------------------------------------------
+// Microphone selection + device enumeration
+// ---------------------------------------------------------------------------
+
+/// Which microphone the recorder mixes in alongside desktop audio. Parsed from
+/// the persisted `settings.mic_source` string.
+#[derive(Clone, Debug)]
+pub enum MicSource {
+    /// No microphone — desktop audio only.
+    Off,
+    /// The system default capture endpoint.
+    Auto,
+    /// A specific WASAPI capture endpoint, by its stable device id.
+    Device(String),
+}
+
+impl MicSource {
+    /// Map the persisted setting string onto a choice. Unknown/empty → `Off`.
+    pub fn from_setting(s: &str) -> MicSource {
+        match s {
+            "auto" => MicSource::Auto,
+            "" | "off" => MicSource::Off,
+            id => MicSource::Device(id.to_string()),
+        }
+    }
+}
+
+/// A selectable capture endpoint (microphone / line-in) for the recorder UI.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AudioInputDevice {
+    /// Stable WASAPI endpoint id — round-tripped back as `settings.mic_source`.
+    pub id: String,
+    /// Human-friendly name (e.g. "Microphone (USB Audio Device)").
+    pub name: String,
+}
+
+/// A selectable render endpoint (speakers / headphones) for the "PC Audio"
+/// multi-select in `all_pc_audio` mode. Same shape as [`AudioInputDevice`] but a
+/// distinct type so the frontend picker can't confuse capture vs render ids.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AudioOutputDevice {
+    /// Stable WASAPI render-endpoint id — stored in `AudioDeviceSel::id`.
+    pub id: String,
+    /// Human-friendly name (e.g. "Speakers (Realtek(R) Audio)").
+    pub name: String,
+}
+
+/// An app currently playing audio (an active WASAPI render session), for the
+/// `specific_apps` live source list. Mirrors Medal's `AudioSessionInfo`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AudioSession {
+    /// Owning process id.
+    pub pid: u32,
+    /// Executable name (e.g. "Discord.exe") — also the persisted source id.
+    pub process_name: String,
+    /// Session display name when the app sets one, else the process name.
+    pub display_name: String,
+    /// The app's icon as a `data:image/png;base64,...` URL (extracted from the
+    /// exe), or `None` if it couldn't be read — the UI then shows a generic icon.
+    pub icon: Option<String>,
+}
+
+/// `PKEY_Device_FriendlyName` {a45c254e-df1c-4efd-8020-67d146a850e0},14 —
+/// defined inline so we don't pull the FunctionDiscovery feature for one const.
+const PKEY_DEVICE_FRIENDLY_NAME: PROPERTYKEY = PROPERTYKEY {
+    fmtid: GUID::from_u128(0xa45c_254e_df1c_4efd_8020_67d1_46a8_50e0),
+    pid: 14,
+};
+
+/// Enumerate active audio **capture** endpoints for the "Microphone Source"
+/// picker. Self-contained COM init so it can be called straight from a Tauri
+/// command thread. Best-effort: skips endpoints whose name can't be read.
+pub fn enumerate_inputs() -> Vec<AudioInputDevice> {
+    enumerate_endpoints(eCapture, "Microphone")
+        .into_iter()
+        .map(|(id, name)| AudioInputDevice { id, name })
+        .collect()
+}
+
+/// Enumerate active audio **render** endpoints for the "PC Audio" multi-select
+/// (`all_pc_audio` mode). Mirrors [`enumerate_inputs`] with `eRender`.
+pub fn enumerate_outputs() -> Vec<AudioOutputDevice> {
+    enumerate_endpoints(eRender, "Speakers")
+        .into_iter()
+        .map(|(id, name)| AudioOutputDevice { id, name })
+        .collect()
+}
+
+/// Enumerate active endpoints of one data flow as `(id, friendly_name)` pairs.
+/// Self-contained COM init so it can be called straight from a Tauri command
+/// thread. Best-effort: skips endpoints whose id can't be read.
+fn enumerate_endpoints(flow: EDataFlow, fallback_name: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    unsafe {
+        // S_OK / S_FALSE (already initialized) → we own a ref to release; only a
+        // genuine error (e.g. RPC_E_CHANGED_MODE) means we must not uninit.
+        let inited = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+        if let Err(e) = collect_endpoints(flow, fallback_name, &mut out) {
+            tracing::warn!("enumerate audio endpoints failed: {e}");
+        }
+        if inited {
+            CoUninitialize();
+        }
+    }
+    out
+}
+
+unsafe fn collect_endpoints(
+    flow: EDataFlow,
+    fallback_name: &str,
+    out: &mut Vec<(String, String)>,
+) -> windows::core::Result<()> {
+    let enumerator: IMMDeviceEnumerator =
+        CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+    let collection: IMMDeviceCollection =
+        enumerator.EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE)?;
+    let count = collection.GetCount()?;
+    for i in 0..count {
+        let Ok(device) = collection.Item(i) else {
+            continue;
+        };
+        let Ok(id_pw) = device.GetId() else {
+            continue;
+        };
+        let id = id_pw.to_string().unwrap_or_default();
+        CoTaskMemFree(Some(id_pw.0 as *const _));
+        if id.is_empty() {
+            continue;
+        }
+        let name = read_friendly_name(&device).unwrap_or_else(|| fallback_name.to_string());
+        out.push((id, name));
+    }
+    Ok(())
+}
+
+/// Process names never offered as a `specific_apps` source: Windows audio
+/// plumbing the user can't meaningfully capture, plus Hako itself. (Matches
+/// Medal's `AudioSessionManager` blacklist; the game PID is handled separately
+/// as the dedicated "Game Audio" source.)
+const SESSION_BLACKLIST: &[&str] = &["svchost.exe", "audiodg.exe", "hako.exe"];
+
+/// Enumerate apps **currently playing audio** on the default render endpoint —
+/// the live "additional apps appear here when they play audio" list for
+/// `specific_apps` mode. Each active session is reported once per process id
+/// (deduped), with the executable name resolved via `sysinfo`.
+///
+/// Best-effort and self-contained (own COM init), like [`enumerate_inputs`]:
+/// any session we can't inspect is skipped. Icons (Medal sends base64 PNGs) are
+/// deferred — names ship first.
+pub fn enumerate_active_sessions() -> Vec<AudioSession> {
+    let mut out = Vec::new();
+    unsafe {
+        let inited = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+        if let Err(e) = collect_active_sessions(&mut out) {
+            tracing::warn!("enumerate active audio sessions failed: {e}");
+        }
+        if inited {
+            CoUninitialize();
+        }
+    }
+    out
+}
+
+unsafe fn collect_active_sessions(out: &mut Vec<AudioSession>) -> windows::core::Result<()> {
+    let enumerator: IMMDeviceEnumerator =
+        CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+    let device: IMMDevice = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
+    let manager: IAudioSessionManager2 = device.Activate(CLSCTX_ALL, None)?;
+    let sessions = manager.GetSessionEnumerator()?;
+    let count = sessions.GetCount()?;
+
+    // Resolve pids → exe names in one process scan (matches the cheap-ish full
+    // scan `valorant::service` already does for game detection).
+    let sys = sysinfo::System::new_all();
+
+    let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for i in 0..count {
+        let Ok(ctrl) = sessions.GetSession(i) else {
+            continue;
+        };
+        // IAudioSessionControl → IAudioSessionControl2 for the process id.
+        let Ok(ctrl2) = ctrl.cast::<IAudioSessionControl2>() else {
+            continue;
+        };
+        // Only sessions actively rendering audio (Medal's filter).
+        if !matches!(ctrl2.GetState(), Ok(s) if s == AudioSessionStateActive) {
+            continue;
+        }
+        let pid = ctrl2.GetProcessId().unwrap_or(0);
+        if pid == 0 || !seen.insert(pid) {
+            continue; // skip the system mix session (pid 0) and dupes
+        }
+        let process_name = sys
+            .process(sysinfo::Pid::from_u32(pid))
+            .and_then(|p| p.name().to_str().map(|s| s.to_string()))
+            .unwrap_or_default();
+        if process_name.is_empty()
+            || SESSION_BLACKLIST
+                .iter()
+                .any(|b| process_name.eq_ignore_ascii_case(b))
+        {
+            continue;
+        }
+        // Session display name is usually empty → fall back to the process name.
+        let display_name = read_session_display_name(&ctrl2)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| process_name.clone());
+        // Best-effort real app icon (cached by exe path so the 3 s UI poll
+        // doesn't re-extract). Falls back to a generic icon in the UI on None.
+        let icon = sys
+            .process(sysinfo::Pid::from_u32(pid))
+            .and_then(|p| p.exe().map(|e| e.to_path_buf()))
+            .and_then(|exe| cached_exe_icon(&exe));
+        out.push(AudioSession {
+            pid,
+            process_name,
+            display_name,
+            icon,
+        });
+    }
+    Ok(())
+}
+
+/// Read an audio session's display name (`IAudioSessionControl::GetDisplayName`),
+/// freeing the returned COM string. `None` if unset/unreadable.
+unsafe fn read_session_display_name(ctrl: &IAudioSessionControl2) -> Option<String> {
+    let pw = ctrl.GetDisplayName().ok()?;
+    let s = pw.to_string().ok();
+    CoTaskMemFree(Some(pw.0 as *const _));
+    s
+}
+
+/// Read an endpoint's `PKEY_Device_FriendlyName` as a `String`.
+unsafe fn read_friendly_name(device: &IMMDevice) -> Option<String> {
+    let store: IPropertyStore = device.OpenPropertyStore(STGM_READ).ok()?;
+    let mut pv: PROPVARIANT = store.GetValue(&PKEY_DEVICE_FRIENDLY_NAME).ok()?;
+    let name = PropVariantToStringAlloc(&pv).ok().and_then(|pw| {
+        let s = pw.to_string().ok();
+        CoTaskMemFree(Some(pw.0 as *const _));
+        s
+    });
+    let _ = PropVariantClear(&mut pv);
+    name.filter(|s| !s.is_empty())
+}
+
+// ---------------------------------------------------------------------------
+// App-icon extraction (audio-source list)
+// ---------------------------------------------------------------------------
+
+/// Cache of exe path → its icon `data:` URL (or `None` if it has none), so the
+/// UI's 3 s active-sessions poll doesn't re-extract icons every tick. Icons
+/// effectively never change for a given binary path.
+static ICON_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, Option<String>>>,
+> = std::sync::OnceLock::new();
+
+/// The exe's icon as a PNG `data:` URL, memoized by path. `None` if the file has
+/// no icon or extraction failed.
+fn cached_exe_icon(exe: &std::path::Path) -> Option<String> {
+    let cache = ICON_CACHE.get_or_init(Default::default);
+    if let Ok(map) = cache.lock() {
+        if let Some(hit) = map.get(exe) {
+            return hit.clone();
+        }
+    }
+    let icon = unsafe { extract_exe_icon_png(exe) };
+    if let Ok(mut map) = cache.lock() {
+        map.insert(exe.to_path_buf(), icon.clone());
+    }
+    icon
+}
+
+/// Extract `exe`'s associated icon and encode it as a `data:image/png;base64,…`
+/// URL. Best-effort: returns `None` on any failure. Uses `SHGetFileInfoW` to get
+/// the `HICON`, then GDI (`GetIconInfo`/`GetDIBits`) to read its 32-bit pixels.
+unsafe fn extract_exe_icon_png(exe: &std::path::Path) -> Option<String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
+    use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
+    use windows::Win32::UI::WindowsAndMessaging::DestroyIcon;
+
+    let wide: Vec<u16> = exe.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let mut shfi = SHFILEINFOW::default();
+    let ok = SHGetFileInfoW(
+        PCWSTR(wide.as_ptr()),
+        FILE_FLAGS_AND_ATTRIBUTES(0),
+        Some(&mut shfi),
+        std::mem::size_of::<SHFILEINFOW>() as u32,
+        SHGFI_ICON | SHGFI_LARGEICON,
+    );
+    if ok == 0 || shfi.hIcon.is_invalid() {
+        return None;
+    }
+    let png = hicon_to_png(shfi.hIcon);
+    let _ = DestroyIcon(shfi.hIcon);
+    let bytes = png?;
+    use base64::Engine;
+    Some(format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&bytes)
+    ))
+}
+
+/// Render an `HICON` to RGBA and encode it as PNG bytes. Reads the color bitmap
+/// as a top-down 32-bit DIB; when the icon carries no per-pixel alpha, derives
+/// transparency from its AND mask.
+unsafe fn hicon_to_png(hicon: windows::Win32::UI::WindowsAndMessaging::HICON) -> Option<Vec<u8>> {
+    use std::ffi::c_void;
+    use windows::Win32::Graphics::Gdi::{
+        DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO,
+        BITMAPINFOHEADER, DIB_RGB_COLORS, HGDIOBJ,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetIconInfo, ICONINFO};
+
+    let mut ii = ICONINFO::default();
+    GetIconInfo(hicon, &mut ii).ok()?;
+    let del = |h: windows::Win32::Graphics::Gdi::HBITMAP| {
+        if !h.is_invalid() {
+            let _ = DeleteObject(HGDIOBJ(h.0));
+        }
+    };
+
+    let mut bmp = BITMAP::default();
+    let got = GetObjectW(
+        HGDIOBJ(ii.hbmColor.0),
+        std::mem::size_of::<BITMAP>() as i32,
+        Some(&mut bmp as *mut _ as *mut c_void),
+    );
+    let (w, h) = (bmp.bmWidth, bmp.bmHeight);
+    if got == 0 || w <= 0 || h <= 0 || w > 512 || h > 512 {
+        del(ii.hbmColor);
+        del(ii.hbmMask);
+        return None;
+    }
+
+    // Top-down (negative height) 32-bit BGRA via GetDIBits.
+    let header = BITMAPINFOHEADER {
+        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+        biWidth: w,
+        biHeight: -h,
+        biPlanes: 1,
+        biBitCount: 32,
+        biCompression: 0, // BI_RGB
+        ..Default::default()
+    };
+    let mut bi = BITMAPINFO {
+        bmiHeader: header,
+        ..Default::default()
+    };
+    let n = (w * h * 4) as usize;
+    let mut buf = vec![0u8; n];
+    let hdc = GetDC(None);
+    let lines = GetDIBits(
+        hdc,
+        ii.hbmColor,
+        0,
+        h as u32,
+        Some(buf.as_mut_ptr() as *mut c_void),
+        &mut bi,
+        DIB_RGB_COLORS,
+    );
+
+    // BGRA → RGBA; if the color bitmap has no alpha at all, fall back to the mask.
+    let any_alpha = buf.chunks_exact(4).any(|px| px[3] != 0);
+    let mask = if lines != 0 && !any_alpha {
+        let mut mbuf = vec![0u8; n];
+        let mut mbi = BITMAPINFO {
+            bmiHeader: header,
+            ..Default::default()
+        };
+        let ml = GetDIBits(
+            hdc,
+            ii.hbmMask,
+            0,
+            h as u32,
+            Some(mbuf.as_mut_ptr() as *mut c_void),
+            &mut mbi,
+            DIB_RGB_COLORS,
+        );
+        (ml != 0).then_some(mbuf)
+    } else {
+        None
+    };
+    ReleaseDC(None, hdc);
+    del(ii.hbmColor);
+    del(ii.hbmMask);
+    if lines == 0 {
+        return None;
+    }
+
+    for (i, px) in buf.chunks_exact_mut(4).enumerate() {
+        px.swap(0, 2); // B,G,R,A → R,G,B,A
+        if !any_alpha {
+            // AND-mask: a non-zero (white) pixel is transparent.
+            let transparent = mask.as_ref().map(|m| m[i * 4] != 0).unwrap_or(false);
+            px[3] = if transparent { 0 } else { 255 };
+        }
+    }
+
+    let mut out = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut out, w as u32, h as u32);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut writer = enc.write_header().ok()?;
+        writer.write_image_data(&buf).ok()?;
+    }
+    Some(out)
+}
+
+// ---------------------------------------------------------------------------
 // Public handle
 // ---------------------------------------------------------------------------
 
@@ -98,19 +516,25 @@ pub struct AudioCapture {
 }
 
 impl AudioCapture {
-    /// Start desktop + mic capture, pushing AAC packets into `clip`'s audio ring
-    /// and publishing [`AudioMeta`] once the encoder opens. Returns `None` if no
-    /// usable capture device could be opened (caller proceeds video-only).
+    /// Start multi-source audio capture per `cfg`, pushing each output track's AAC
+    /// packets into the matching [`ClipBuffer`] audio track and publishing its
+    /// [`AudioMeta`] once the encoder opens. `game_pid` is the capture target's
+    /// process id (for the `specific_apps` "Game Audio" source). Returns `None`
+    /// if the thread couldn't be spawned (caller proceeds video-only).
     ///
     /// Never blocks the caller meaningfully: setup happens on the audio thread
     /// and failures are logged — audio is best-effort relative to the recorder.
-    pub fn start(clip: Arc<ClipBuffer>) -> Option<AudioCapture> {
+    pub fn start(
+        clip: Arc<ClipBuffer>,
+        cfg: AudioConfig,
+        game_pid: Option<u32>,
+    ) -> Option<AudioCapture> {
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
             let stop = stop.clone();
             std::thread::Builder::new()
                 .name("hako-audio".into())
-                .spawn(move || audio_thread(clip, stop))
+                .spawn(move || audio_thread(clip, stop, cfg, game_pid))
                 .ok()?
         };
         Some(AudioCapture {
@@ -134,16 +558,195 @@ impl Drop for AudioCapture {
 }
 
 // ---------------------------------------------------------------------------
+// Input → output-track planning (the multi-track model)
+// ---------------------------------------------------------------------------
+
+/// How to open one capture **input** (a WASAPI source), derived from
+/// [`AudioConfig`]. The plan's input order is deterministic from the config, so
+/// [`TrackSpec`] indices stay valid even if an input fails to open (it just
+/// contributes silence).
+enum InputSpec {
+    /// Loopback of a render endpoint: `None` = the default (Medal's `"Auto"`).
+    Loopback { id: Option<String> },
+    /// Microphone capture endpoint, optionally down-mixed to mono.
+    Mic { source: MicSource, mono: bool },
+    /// Per-process loopback of `pid` (and its child processes). `pid == 0` when
+    /// the target app isn't running — opens as silence until the editor cares.
+    Process { pid: u32, name: String },
+}
+
+/// One **output track** written to the clip: a named mix of input contributions
+/// (each `(input_index, relative_gain)`), encoded to its own AAC stream.
+struct TrackSpec {
+    name: String,
+    sources: Vec<(usize, f32)>,
+}
+
+/// The full capture plan: the inputs to open + the output tracks to write.
+struct AudioPlan {
+    inputs: Vec<InputSpec>,
+    tracks: Vec<TrackSpec>,
+}
+
+impl AudioPlan {
+    /// Track names in order — the layout [`ClipBuffer`] is built with so the
+    /// muxer/session can declare the streams. Pure function of the config.
+    fn track_names(&self) -> Vec<String> {
+        self.tracks.iter().map(|t| t.name.clone()).collect()
+    }
+}
+
+/// Resolve a `specific_apps` source id to a target process id: the capture
+/// target for [`GAME_SOURCE_ID`], else the first running process whose name
+/// matches `id`. `0` when nothing matches (the input opens as silence).
+fn resolve_app_pid(id: &str, game_pid: Option<u32>) -> u32 {
+    if id.eq_ignore_ascii_case(GAME_SOURCE_ID) {
+        return game_pid.unwrap_or(0);
+    }
+    let sys = sysinfo::System::new_all();
+    sys.processes()
+        .values()
+        .find(|p| {
+            p.name()
+                .to_str()
+                .map(|n| n.eq_ignore_ascii_case(id))
+                .unwrap_or(false)
+        })
+        .map(|p| p.pid().as_u32())
+        .unwrap_or(0)
+}
+
+/// Build the input→output-track plan from the persisted [`AudioConfig`].
+///
+/// Mirrors Medal's `RecordingSession.UpdateAudioConfig*`: every enabled source
+/// becomes an input; **track 0 is always the master "All Audio" mix** (so clip
+/// playback and back-compat are trivial); with `separate_tracks`, named stems
+/// follow — one "All PC Audio" + "Microphone" for `all_pc_audio`, or one per app
+/// + "Microphone" for `specific_apps`. Stems are raw (gain 1.0) so the editor
+/// can re-mix/mute them on export; only the master applies the configured
+/// volumes. Falls back to all-PC loopback when `specific_apps` is unsupported.
+fn plan(cfg: &AudioConfig, game_pid: Option<u32>) -> AudioPlan {
+    let master_gain = cfg.master_volume.min(100) as f32 / 100.0;
+    let mut inputs: Vec<InputSpec> = Vec::new();
+    // (input_index, master-mix gain, stem name) for each non-mic source.
+    let mut media: Vec<(usize, f32, String)> = Vec::new();
+
+    let specific = cfg.mode == "specific_apps" && is_process_loopback_supported();
+    if cfg.mode == "specific_apps" && !specific {
+        tracing::info!(
+            "specific-apps audio unsupported on this Windows build (<20348); \
+             falling back to all-PC loopback"
+        );
+    }
+
+    if specific {
+        for app in cfg.apps.iter().filter(|a| a.enabled) {
+            let pid = resolve_app_pid(&app.id, game_pid);
+            let idx = inputs.len();
+            inputs.push(InputSpec::Process {
+                pid,
+                name: app.name.clone(),
+            });
+            let gain = (app.volume.min(100) as f32 / 100.0) * master_gain;
+            media.push((idx, gain, app.name.clone()));
+        }
+    } else {
+        // all_pc_audio (or the specific-apps fallback): one loopback per enabled
+        // render endpoint, "auto" → the default endpoint.
+        for dev in cfg.pc_audio.iter().filter(|d| d.enabled) {
+            let id = (!dev.id.eq_ignore_ascii_case(AUTO_DEVICE)).then(|| dev.id.clone());
+            let idx = inputs.len();
+            inputs.push(InputSpec::Loopback { id });
+            let gain = (dev.volume.min(100) as f32 / 100.0) * master_gain;
+            media.push((idx, gain, dev.name.clone()));
+        }
+    }
+
+    // Microphone (both modes), mixed last.
+    let mic_source = MicSource::from_setting(&cfg.mic_source);
+    let mic_idx = if cfg.mic_enabled && !matches!(mic_source, MicSource::Off) {
+        let idx = inputs.len();
+        inputs.push(InputSpec::Mic {
+            source: mic_source,
+            mono: cfg.mic_mono,
+        });
+        Some(idx)
+    } else {
+        None
+    };
+    let mic_gain = cfg.mic_volume.min(100) as f32 / 100.0;
+
+    let mut tracks: Vec<TrackSpec> = Vec::new();
+    if inputs.is_empty() {
+        return AudioPlan { inputs, tracks };
+    }
+
+    // Track 0: the master mix (every media input at its volume + mic at its gain).
+    let mut master = TrackSpec {
+        name: "All Audio".into(),
+        sources: media.iter().map(|(i, g, _)| (*i, *g)).collect(),
+    };
+    if let Some(mi) = mic_idx {
+        master.sources.push((mi, mic_gain));
+    }
+    tracks.push(master);
+
+    if cfg.separate_tracks {
+        if specific {
+            // One raw stem per app source.
+            for (i, _, name) in &media {
+                tracks.push(TrackSpec {
+                    name: stem_name(name, "App Audio"),
+                    sources: vec![(*i, 1.0)],
+                });
+            }
+        } else {
+            // One combined "All PC Audio" stem from every loopback input.
+            tracks.push(TrackSpec {
+                name: "All PC Audio".into(),
+                sources: media.iter().map(|(i, _, _)| (*i, 1.0)).collect(),
+            });
+        }
+        if let Some(mi) = mic_idx {
+            tracks.push(TrackSpec {
+                name: "Microphone".into(),
+                sources: vec![(mi, 1.0)],
+            });
+        }
+    }
+
+    AudioPlan { inputs, tracks }
+}
+
+/// A stem track name, falling back to `default` when the source has no label.
+fn stem_name(name: &str, default: &str) -> String {
+    let n = name.trim();
+    if n.is_empty() {
+        default.to_string()
+    } else {
+        n.to_string()
+    }
+}
+
+/// The names of the output audio tracks that [`AudioConfig`] will produce, in
+/// order (track 0 = master "All Audio"). Empty when no source is enabled. Pure
+/// function of the config — used by the capture path to size [`ClipBuffer`]
+/// before the audio thread runs.
+pub fn planned_track_names(cfg: &AudioConfig, game_pid: Option<u32>) -> Vec<String> {
+    plan(cfg, game_pid).track_names()
+}
+
+// ---------------------------------------------------------------------------
 // Thread entry
 // ---------------------------------------------------------------------------
 
-fn audio_thread(clip: Arc<ClipBuffer>, stop: Arc<AtomicBool>) {
+fn audio_thread(clip: Arc<ClipBuffer>, stop: Arc<AtomicBool>, cfg: AudioConfig, game_pid: Option<u32>) {
     // Audio runs on its own COM apartment (MTA), independent of the capture
     // thread's WinRT init.
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     }
-    if let Err(e) = run_audio(&clip, &stop) {
+    if let Err(e) = run_audio(&clip, &stop, &cfg, game_pid) {
         tracing::warn!("audio capture disabled: {e}");
     }
     unsafe {
@@ -151,35 +754,81 @@ fn audio_thread(clip: Arc<ClipBuffer>, stop: Arc<AtomicBool>) {
     }
 }
 
-fn run_audio(clip: &Arc<ClipBuffer>, stop: &Arc<AtomicBool>) -> Result<(), String> {
+/// One output track at runtime: its mixer accumulator + AAC encoder. The audio
+/// thread feeds every input that references this track into `mixer`, then drains
+/// ready blocks through `encoder` into [`ClipBuffer`] audio track `index`.
+struct OutputTrack {
+    index: usize,
+    mixer: TrackMixer,
+    encoder: AacEncoder,
+}
+
+fn run_audio(
+    clip: &Arc<ClipBuffer>,
+    stop: &Arc<AtomicBool>,
+    cfg: &AudioConfig,
+    game_pid: Option<u32>,
+) -> Result<(), String> {
     unsafe {
+        let plan = plan(cfg, game_pid);
+        if plan.inputs.is_empty() || plan.tracks.is_empty() {
+            return Err("no audio sources enabled".into());
+        }
+
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
                 .map_err(|e| format!("MMDeviceEnumerator: {e}"))?;
 
-        // Desktop audio is the priority; the mic is optional.
-        let mut sources: Vec<Source> = Vec::new();
-        match Source::open_loopback(&enumerator) {
-            Ok(s) => sources.push(s),
-            Err(e) => tracing::warn!("desktop-audio loopback unavailable: {e}"),
+        // Open every planned input. Failures keep their slot (as `None`) so the
+        // output tracks' input indices stay valid — a missing input is silence.
+        let mut sources: Vec<Option<Source>> = Vec::with_capacity(plan.inputs.len());
+        for spec in &plan.inputs {
+            match open_input(spec, &enumerator) {
+                Ok(s) => sources.push(Some(s)),
+                Err(e) => {
+                    tracing::warn!("audio input unavailable (continuing without): {e}");
+                    sources.push(None);
+                }
+            }
         }
-        match Source::open_mic(&enumerator) {
-            Ok(s) => sources.push(s),
-            Err(e) => tracing::info!("microphone unavailable (continuing without): {e}"),
-        }
-        if sources.is_empty() {
+        if sources.iter().all(|s| s.is_none()) {
             return Err("no audio capture devices could be opened".into());
         }
 
-        let mut encoder = AacEncoder::new()?;
-        clip.set_audio_meta(AudioMeta {
-            sample_rate: MIX_RATE as u32,
-            channels: MIX_CHANNELS as u32,
-            extradata: encoder.extradata(),
-        });
-        let block = encoder.frame_size();
+        // Build the output tracks (one mixer + encoder each) and publish each
+        // track's AAC metadata. Encoders are device-independent, so this always
+        // succeeds once the first one does.
+        let mut tracks: Vec<OutputTrack> = Vec::with_capacity(plan.tracks.len());
+        for (idx, _spec) in plan.tracks.iter().enumerate() {
+            let encoder = AacEncoder::new()?;
+            let block = encoder.frame_size();
+            clip.set_audio_track_meta(
+                idx,
+                AudioMeta {
+                    sample_rate: MIX_RATE as u32,
+                    channels: MIX_CHANNELS as u32,
+                    extradata: encoder.extradata(),
+                },
+            );
+            tracks.push(OutputTrack {
+                index: idx,
+                mixer: TrackMixer::new(block),
+                encoder,
+            });
+        }
 
-        for s in &sources {
+        // Invert the track→inputs map into input→(track, gain) routing so each
+        // drained input fans out to every track that mixes it.
+        let mut routing: Vec<Vec<(usize, f32)>> = vec![Vec::new(); plan.inputs.len()];
+        for (t, spec) in plan.tracks.iter().enumerate() {
+            for &(input_idx, gain) in &spec.sources {
+                if let Some(r) = routing.get_mut(input_idx) {
+                    r.push((t, gain));
+                }
+            }
+        }
+
+        for s in sources.iter().flatten() {
             s.start()?;
         }
 
@@ -189,19 +838,30 @@ fn run_audio(clip: &Arc<ClipBuffer>, stop: &Arc<AtomicBool>) -> Result<(), Strin
             f.max(1)
         };
 
-        let mut mixer = Mixer::new(block);
+        let mut timeline = Timeline::new();
         let mut scratch = Vec::<f32>::new();
         let mut zero = Vec::<u8>::new();
 
         while !stop.load(Ordering::Acquire) {
             let mut got_any = false;
-            for src in &mut sources {
-                got_any |= src.drain(&mut mixer, qpc_freq, &mut scratch, &mut zero);
+            for i in 0..sources.len() {
+                let Some(src) = sources[i].as_mut() else {
+                    continue;
+                };
+                let routes = &routing[i];
+                got_any |= src.drain(&mut timeline, qpc_freq, &mut scratch, &mut zero, |at, s| {
+                    for &(t, gain) in routes {
+                        tracks[t].mixer.add_scaled(at, s, gain);
+                    }
+                });
             }
-            // Emit any blocks both sources have now covered.
-            for (samples, pts_ticks) in mixer.drain_ready(false) {
-                for p in encoder.encode_block(&samples, pts_ticks)? {
-                    clip.push_audio(p);
+            if let Some(epoch) = timeline.epoch() {
+                for track in tracks.iter_mut() {
+                    for (samples, pts_ticks) in track.mixer.drain_ready(false, epoch) {
+                        for p in track.encoder.encode_block(&samples, pts_ticks)? {
+                            clip.push_audio(track.index, p);
+                        }
+                    }
                 }
             }
             if !got_any {
@@ -209,19 +869,44 @@ fn run_audio(clip: &Arc<ClipBuffer>, stop: &Arc<AtomicBool>) -> Result<(), Strin
             }
         }
 
-        // Stop devices, flush the remaining mixed tail, then flush the encoder.
-        for s in &sources {
+        // Stop devices, flush each track's mixed tail, then flush its encoder.
+        for s in sources.iter().flatten() {
             let _ = s.audio_client.Stop();
         }
-        for (samples, pts_ticks) in mixer.drain_ready(true) {
-            for p in encoder.encode_block(&samples, pts_ticks)? {
-                clip.push_audio(p);
+        if let Some(epoch) = timeline.epoch() {
+            for track in tracks.iter_mut() {
+                for (samples, pts_ticks) in track.mixer.drain_ready(true, epoch) {
+                    for p in track.encoder.encode_block(&samples, pts_ticks)? {
+                        clip.push_audio(track.index, p);
+                    }
+                }
             }
         }
-        for p in encoder.flush()? {
-            clip.push_audio(p);
+        for track in tracks.iter_mut() {
+            for p in track.encoder.flush()? {
+                clip.push_audio(track.index, p);
+            }
         }
         Ok(())
+    }
+}
+
+/// Open one planned input as a [`Source`]. Each variant is best-effort; the
+/// caller turns an `Err` into a silent slot.
+unsafe fn open_input(spec: &InputSpec, enumerator: &IMMDeviceEnumerator) -> Result<Source, String> {
+    match spec {
+        InputSpec::Loopback { id: None } => Source::open_loopback(enumerator),
+        InputSpec::Loopback { id: Some(id) } => Source::open_loopback_by_id(enumerator, id),
+        InputSpec::Mic { source, mono } => {
+            let mut s = match source {
+                MicSource::Auto => Source::open_mic(enumerator)?,
+                MicSource::Device(id) => Source::open_mic_by_id(enumerator, id)?,
+                MicSource::Off => return Err("microphone source is off".into()),
+            };
+            s.mono = *mono;
+            Ok(s)
+        }
+        InputSpec::Process { pid, name } => Source::open_process_loopback(*pid, name),
     }
 }
 
@@ -249,6 +934,8 @@ struct Source {
     /// Next absolute 48 kHz sample index this source will write to the mix.
     next_idx: i64,
     started: bool,
+    /// Down-mix this source to mono before mixing (mic `MonoMicAudio`).
+    mono: bool,
     label: &'static str,
 }
 
@@ -260,10 +947,36 @@ impl Source {
         Source::activate(device, AUDCLNT_STREAMFLAGS_LOOPBACK, "desktop")
     }
 
+    /// Open loopback of a specific render endpoint by its WASAPI device id (the
+    /// "PC Audio" multi-select in `all_pc_audio` mode).
+    unsafe fn open_loopback_by_id(
+        enumerator: &IMMDeviceEnumerator,
+        id: &str,
+    ) -> Result<Source, String> {
+        let wide: Vec<u16> = id.encode_utf16().chain(std::iter::once(0)).collect();
+        let device: IMMDevice = enumerator
+            .GetDevice(PCWSTR(wide.as_ptr()))
+            .map_err(|e| format!("render endpoint by id: {e}"))?;
+        Source::activate(device, AUDCLNT_STREAMFLAGS_LOOPBACK, "desktop")
+    }
+
     unsafe fn open_mic(enumerator: &IMMDeviceEnumerator) -> Result<Source, String> {
         let device: IMMDevice = enumerator
             .GetDefaultAudioEndpoint(eCapture, eConsole)
             .map_err(|e| format!("default capture endpoint: {e}"))?;
+        Source::activate(device, 0, "mic")
+    }
+
+    /// Open a specific capture endpoint by its WASAPI device id (the value the
+    /// "Microphone Source" picker persists).
+    unsafe fn open_mic_by_id(
+        enumerator: &IMMDeviceEnumerator,
+        id: &str,
+    ) -> Result<Source, String> {
+        let wide: Vec<u16> = id.encode_utf16().chain(std::iter::once(0)).collect();
+        let device: IMMDevice = enumerator
+            .GetDevice(PCWSTR(wide.as_ptr()))
+            .map_err(|e| format!("capture endpoint by id: {e}"))?;
         Source::activate(device, 0, "mic")
     }
 
@@ -313,8 +1026,27 @@ impl Source {
             swr,
             next_idx: 0,
             started: false,
+            mono: false,
             label,
         })
+    }
+
+    /// Open **per-process loopback** of `pid` (and its child process tree) via the
+    /// virtual `Process_Loopback` device + `ActivateAudioInterfaceAsync`. Used by
+    /// `specific_apps` mode for Game Audio / Discord / browser, etc.
+    ///
+    /// Gated by the caller on [`is_process_loopback_supported`] (Windows build
+    /// ≥ 20348). The virtual device has no `GetMixFormat`, so we feed a fixed
+    /// 48 kHz stereo float `WAVEFORMATEX`; capture then drains exactly like a
+    /// normal loopback source.
+    unsafe fn open_process_loopback(pid: u32, name: &str) -> Result<Source, String> {
+        if !is_process_loopback_supported() {
+            return Err("process loopback needs Windows build ≥ 20348".into());
+        }
+        if pid == 0 {
+            return Err(format!("target process not running ({name})"));
+        }
+        process_loopback::open(pid, name)
     }
 
     unsafe fn start(&self) -> Result<(), String> {
@@ -323,14 +1055,18 @@ impl Source {
             .map_err(|e| format!("IAudioClient::Start ({}): {e}", self.label))
     }
 
-    /// Drain all currently-available packets into the mixer. Returns whether any
-    /// packet was processed (so the loop can sleep when both sources are idle).
+    /// Drain all currently-available packets, handing each resampled stereo run
+    /// to `sink(at_idx, samples)` so the caller can fan it into every output
+    /// track's mixer. Returns whether any packet was processed (so the loop can
+    /// sleep when all sources are idle). `timeline` is the shared QPC/epoch
+    /// anchor so every track lands samples on one 48 kHz timeline.
     unsafe fn drain(
         &mut self,
-        mixer: &mut Mixer,
+        timeline: &mut Timeline,
         qpc_freq: i64,
         scratch: &mut Vec<f32>,
         zero: &mut Vec<u8>,
+        mut sink: impl FnMut(i64, &[f32]),
     ) -> bool {
         let mut any = false;
         loop {
@@ -361,7 +1097,7 @@ impl Source {
             }
 
             if frames > 0 {
-                let tick = mixer.qpc_to_ticks(qpc_pos, qpc_freq);
+                let tick = timeline.qpc_to_ticks(qpc_pos, qpc_freq);
                 let silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0;
                 let discontinuity =
                     (flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32) != 0;
@@ -377,21 +1113,30 @@ impl Source {
                 } else {
                     self.resample(data, frames as i32, scratch);
                 }
+                // Optional mono fold (mic MonoMicAudio): average L/R into both.
+                if self.mono {
+                    for f in scratch.chunks_exact_mut(2) {
+                        let m = (f[0] + f[1]) * 0.5;
+                        f[0] = m;
+                        f[1] = m;
+                    }
+                }
                 let out_frames = (scratch.len() / 2) as i64;
 
                 // Place on the absolute timeline by QPC; resync on a real gap or
                 // a driver-flagged discontinuity, else keep contiguous (avoids
-                // pops from sub-millisecond jitter).
-                let expected = mixer.tick_to_idx(tick);
+                // pops from sub-millisecond jitter). Each track's mixer trims
+                // anything that lands before what it has already drained.
+                let expected = timeline.tick_to_idx(tick);
                 if !self.started
                     || discontinuity
                     || (expected - self.next_idx).abs() > GAP_SAMPLES
                 {
-                    self.next_idx = expected.max(mixer.mix_base);
+                    self.next_idx = expected;
                 }
                 self.started = true;
 
-                mixer.add(self.next_idx, scratch);
+                sink(self.next_idx, scratch);
                 self.next_idx += out_frames;
                 any = true;
             }
@@ -518,39 +1263,212 @@ unsafe fn build_resampler(fmt: &SrcFormat) -> Result<*mut ffi::SwrContext, Strin
     Ok(swr)
 }
 
+/// Whether Windows supports per-process loopback capture (the `specific_apps`
+/// recording mode). Process loopback needs **build ≥ 20348** (Win11 / Server
+/// 2022); on older builds the capture plan falls back to all-PC loopback, the
+/// same way Medal's GAO check disables game-audio-only capture.
+pub fn is_process_loopback_supported() -> bool {
+    // On Windows `sysinfo`'s kernel version is the OS build number (e.g. 22631).
+    sysinfo::System::kernel_version()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .map(|build| build >= 20348)
+        .unwrap_or(false)
+}
+
 // ---------------------------------------------------------------------------
-// Mixer: additive accumulator on an absolute 48 kHz sample timeline
+// Per-process loopback (specific_apps) via ActivateAudioInterfaceAsync
 // ---------------------------------------------------------------------------
 
-/// Accumulates resampled stereo samples from all sources on one timeline anchored
-/// at `epoch_ticks` (100 ns). `mix` holds interleaved L,R from absolute frame
-/// index `mix_base`; sources add into it, and full `block`-sized frames are
-/// drained out once both sources have caught up.
-struct Mixer {
-    mix: VecDeque<f32>,
-    mix_base: i64,
+/// Per-process loopback capture (Windows ≥ 20348). Activating the virtual
+/// `Process_Loopback` device is **asynchronous** — it requires a COM completion
+/// handler and a blocking wait — so it's isolated here; a failure can't touch
+/// the all-PC loopback path.
+mod process_loopback {
+    use super::{build_resampler, parse_format, Source, MIX_CHANNELS, MIX_RATE};
+    use windows::core::{implement, Interface, IUnknown, HRESULT, PCWSTR};
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Media::Audio::{
+        ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
+        IActivateAudioInterfaceCompletionHandler, IActivateAudioInterfaceCompletionHandler_Impl,
+        IAudioCaptureClient, IAudioClient, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK,
+        AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
+        AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
+        PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
+        WAVEFORMATEX,
+    };
+    use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
+    use windows::Win32::System::Com::BLOB;
+    use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
+    use windows::Win32::System::Variant::VT_BLOB;
+
+    /// `WAVE_FORMAT_IEEE_FLOAT` (the virtual device has no `GetMixFormat`, so we
+    /// hand it an explicit 48 kHz / 2ch / 32-bit float format).
+    const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
+    /// Max wait for the async activation to complete (ms). It's effectively
+    /// immediate; this is just a safety bound so a stuck activation can't hang
+    /// the audio thread's startup.
+    const ACTIVATE_TIMEOUT_MS: u32 = 2000;
+
+    /// COM completion handler for `ActivateAudioInterfaceAsync`: signals the
+    /// Win32 event so [`open`] can unblock and fetch the activation result.
+    #[implement(IActivateAudioInterfaceCompletionHandler)]
+    struct Handler {
+        event: HANDLE,
+    }
+
+    impl IActivateAudioInterfaceCompletionHandler_Impl for Handler_Impl {
+        fn ActivateCompleted(
+            &self,
+            _op: windows::core::Ref<'_, IActivateAudioInterfaceAsyncOperation>,
+        ) -> windows::core::Result<()> {
+            unsafe {
+                let _ = SetEvent(self.event);
+            }
+            Ok(())
+        }
+    }
+
+    /// Open per-process loopback of `pid` (and its child tree). Returns a
+    /// [`Source`] that drains exactly like a normal loopback source.
+    pub(super) unsafe fn open(pid: u32, name: &str) -> Result<Source, String> {
+        let event = CreateEventW(None, true, false, PCWSTR::null())
+            .map_err(|e| format!("CreateEvent (process loopback {name}): {e}"))?;
+        // Ensure the event is always closed, even on the error paths below.
+        let _guard = EventGuard(event);
+
+        let mut params = AUDIOCLIENT_ACTIVATION_PARAMS {
+            ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+            Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
+                ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
+                    TargetProcessId: pid,
+                    ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
+                },
+            },
+        };
+        // Wrap the params struct in a VT_BLOB PROPVARIANT (the activation API's
+        // documented contract). Write through an explicit deref of the
+        // `ManuallyDrop` union field (the default PROPVARIANT holds no value to
+        // drop, so no leak).
+        let mut pv = PROPVARIANT::default();
+        let inner = &mut *pv.Anonymous.Anonymous;
+        inner.vt = VT_BLOB;
+        inner.Anonymous.blob = BLOB {
+            cbSize: std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
+            pBlobData: &mut params as *mut _ as *mut u8,
+        };
+
+        let handler: IActivateAudioInterfaceCompletionHandler = Handler { event }.into();
+        let op: IActivateAudioInterfaceAsyncOperation = ActivateAudioInterfaceAsync(
+            VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
+            &IAudioClient::IID,
+            Some(&pv),
+            &handler,
+        )
+        .map_err(|e| format!("ActivateAudioInterfaceAsync ({name}): {e}"))?;
+
+        // Block until ActivateCompleted signals the event, then fetch the result.
+        WaitForSingleObject(event, ACTIVATE_TIMEOUT_MS);
+        let mut activate_hr = HRESULT(0);
+        let mut unknown: Option<IUnknown> = None;
+        op.GetActivateResult(&mut activate_hr, &mut unknown)
+            .map_err(|e| format!("GetActivateResult ({name}): {e}"))?;
+        activate_hr
+            .ok()
+            .map_err(|e| format!("process loopback activation failed ({name}): {e}"))?;
+        let audio_client: IAudioClient = unknown
+            .ok_or_else(|| format!("process loopback returned no interface ({name})"))?
+            .cast()
+            .map_err(|e| format!("cast IAudioClient ({name}): {e}"))?;
+
+        // Fixed 48 kHz / 2ch / 32-bit float format — there's no mix format to
+        // query on the virtual device.
+        let block_align: u16 = (MIX_CHANNELS as u16) * 4;
+        let wfx = WAVEFORMATEX {
+            wFormatTag: WAVE_FORMAT_IEEE_FLOAT,
+            nChannels: MIX_CHANNELS as u16,
+            nSamplesPerSec: MIX_RATE as u32,
+            nAvgBytesPerSec: MIX_RATE as u32 * block_align as u32,
+            nBlockAlign: block_align,
+            wBitsPerSample: 32,
+            cbSize: 0,
+        };
+        // Shared loopback, polled like the other sources (no event callback). A
+        // ~20 ms engine buffer is plenty for our 5 ms poll cadence.
+        const REFTIMES_20MS: i64 = 200_000; // 20 ms in 100 ns units
+        audio_client
+            .Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_LOOPBACK,
+                REFTIMES_20MS,
+                0,
+                &wfx,
+                None,
+            )
+            .map_err(|e| format!("Initialize process loopback ({name}): {e}"))?;
+
+        let capture: IAudioCaptureClient = audio_client
+            .GetService()
+            .map_err(|e| format!("GetService(IAudioCaptureClient) ({name}): {e}"))?;
+
+        let fmt = parse_format(&wfx);
+        let swr =
+            build_resampler(&fmt).map_err(|e| format!("resampler (process loopback {name}): {e}"))?;
+
+        Ok(Source {
+            audio_client,
+            capture,
+            fmt,
+            swr,
+            next_idx: 0,
+            started: false,
+            mono: false,
+            label: "process",
+        })
+    }
+
+    /// Closes the activation event when [`open`] returns (success or error).
+    struct EventGuard(HANDLE);
+    impl Drop for EventGuard {
+        fn drop(&mut self) {
+            if !self.0.is_invalid() {
+                unsafe {
+                    let _ = CloseHandle(self.0);
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Timeline + per-track mixer on an absolute 48 kHz sample timeline
+// ---------------------------------------------------------------------------
+
+/// The shared 48 kHz sample timeline: QPC-unit calibration + the epoch anchor.
+///
+/// One `Timeline` is shared across all output-track mixers so every track (and
+/// the video) places samples on the *same* axis — tracks stay sample-aligned
+/// with each other and the existing video clock. (Previously this state lived
+/// inside the single `Mixer`; splitting it out is what lets there be N mixers.)
+struct Timeline {
     /// QPC time (100 ns ticks) of absolute frame index 0. Set by the first
     /// packet of any source.
     epoch_ticks: Option<i64>,
     /// Detected conversion from raw `QPCPosition` to 100 ns ticks (see
     /// [`detect_qpc_scale`]). `None` until the first packet calibrates it.
     qpc_is_100ns: Option<bool>,
-    /// Highest absolute index any source has written up to — the mixer never
-    /// emits past this minus latency, so late sources still get mixed in.
-    high_water: i64,
-    block: usize,
 }
 
-impl Mixer {
-    fn new(block: usize) -> Mixer {
-        Mixer {
-            mix: VecDeque::new(),
-            mix_base: 0,
+impl Timeline {
+    fn new() -> Timeline {
+        Timeline {
             epoch_ticks: None,
             qpc_is_100ns: None,
-            high_water: 0,
-            block: block.max(1),
         }
+    }
+
+    /// The epoch tick once anchored (the 100 ns time of frame index 0).
+    fn epoch(&self) -> Option<i64> {
+        self.epoch_ticks
     }
 
     /// Convert a raw `QPCPosition` to 100 ns ticks, calibrating the unit on first
@@ -573,10 +1491,35 @@ impl Mixer {
         let epoch = *self.epoch_ticks.get_or_insert(tick);
         ((tick - epoch) as i128 * MIX_RATE as i128 / TICKS_PER_SECOND as i128) as i64
     }
+}
+
+/// Additive accumulator for **one** output track on the shared [`Timeline`].
+/// `mix` holds interleaved L,R from absolute frame index `mix_base`; the inputs
+/// routed to this track add (gain-scaled) into it, and full `block`-sized frames
+/// drain out once the inputs have caught up.
+struct TrackMixer {
+    mix: VecDeque<f32>,
+    mix_base: i64,
+    /// Highest absolute index any input has written into this track — the mixer
+    /// never emits past this minus latency, so late inputs still get mixed in.
+    high_water: i64,
+    block: usize,
+}
+
+impl TrackMixer {
+    fn new(block: usize) -> TrackMixer {
+        TrackMixer {
+            mix: VecDeque::new(),
+            mix_base: 0,
+            high_water: 0,
+            block: block.max(1),
+        }
+    }
 
     /// Additively mix `samples` (interleaved stereo f32) starting at absolute
-    /// frame index `at`.
-    fn add(&mut self, at: i64, samples: &[f32]) {
+    /// frame index `at`, each sample scaled by `gain` (the input's relative
+    /// volume into this track).
+    fn add_scaled(&mut self, at: i64, samples: &[f32], gain: f32) {
         if samples.is_empty() {
             return;
         }
@@ -598,24 +1541,20 @@ impl Mixer {
         for i in skip..n {
             let di = (start + (i - skip)) * 2;
             if let Some(v) = self.mix.get_mut(di) {
-                *v += samples[i * 2];
+                *v += samples[i * 2] * gain;
             }
             if let Some(v) = self.mix.get_mut(di + 1) {
-                *v += samples[i * 2 + 1];
+                *v += samples[i * 2 + 1] * gain;
             }
         }
         self.high_water = self.high_water.max(at + (n - skip) as i64);
     }
 
-    /// Pull out every full `block`-frame chunk that both sources have caught up
+    /// Pull out every full `block`-frame chunk this track's inputs have caught up
     /// past (or all remaining when `final_flush`). Each chunk is paired with the
-    /// 100 ns tick of its first sample for muxing.
-    fn drain_ready(&mut self, final_flush: bool) -> Vec<(Vec<f32>, i64)> {
+    /// 100 ns tick of its first sample (off the shared `epoch`) for muxing.
+    fn drain_ready(&mut self, final_flush: bool, epoch: i64) -> Vec<(Vec<f32>, i64)> {
         let mut out = Vec::new();
-        let epoch = match self.epoch_ticks {
-            Some(e) => e,
-            None => return out,
-        };
         let limit = if final_flush {
             self.high_water
         } else {
@@ -850,6 +1789,35 @@ impl Drop for AacEncoder {
     }
 }
 
+/// Encode an interleaved-stereo **48 kHz f32** buffer to AAC packets, with PTS in
+/// 100 ns ticks starting at 0. Used by the editor export re-mux
+/// ([`crate::library::remux`]) to write a freshly-mixed master track from the
+/// clip's decoded stems. The final partial block is padded with silence.
+/// Returns the stream meta (ASC `extradata`) + the encoded packets.
+pub fn encode_pcm_to_aac(samples: &[f32]) -> Result<(AudioMeta, Vec<EncodedPacket>), String> {
+    let mut enc = AacEncoder::new()?;
+    let meta = AudioMeta {
+        sample_rate: MIX_RATE as u32,
+        channels: MIX_CHANNELS as u32,
+        extradata: enc.extradata(),
+    };
+    let block = enc.frame_size();
+    let total_frames = samples.len() / 2;
+    let mut packets = Vec::new();
+    let mut i = 0usize;
+    while i < total_frames {
+        let from = i * 2;
+        let to = ((i + block).min(total_frames)) * 2;
+        let mut chunk = samples[from..to].to_vec();
+        chunk.resize(block * 2, 0.0); // pad the trailing partial block with silence
+        let pts_ticks = i as i64 * TICKS_PER_SECOND / MIX_RATE as i64;
+        packets.extend(enc.encode_block(&chunk, pts_ticks)?);
+        i += block;
+    }
+    packets.extend(enc.flush()?);
+    Ok((meta, packets))
+}
+
 /// Test helper: encode `secs` of silence to real AAC packets (ticks starting at
 /// 0). Deterministic and device-free, so the muxer's audio path can be tested
 /// headlessly. Used by `mux.rs` tests.
@@ -969,7 +1937,10 @@ mod tests {
                     f.max(1)
                 };
 
-                let mut mixer = Mixer::new(block);
+                // One shared timeline + a single output-track mixer (every source
+                // at unity gain) — the single-track configuration.
+                let mut timeline = Timeline::new();
+                let mut mixer = TrackMixer::new(block);
                 let mut scratch = Vec::new();
                 let mut zero = Vec::new();
                 let mut packets: Vec<EncodedPacket> = Vec::new();
@@ -978,10 +1949,14 @@ mod tests {
                 while start.elapsed().as_secs_f64() < 4.0 {
                     let mut any = false;
                     for src in &mut sources {
-                        any |= src.drain(&mut mixer, qpc_freq, &mut scratch, &mut zero);
+                        any |= src.drain(&mut timeline, qpc_freq, &mut scratch, &mut zero, |at, s| {
+                            mixer.add_scaled(at, s, 1.0)
+                        });
                     }
-                    for (samples, pts) in mixer.drain_ready(false) {
-                        packets.extend(encoder.encode_block(&samples, pts)?);
+                    if let Some(epoch) = timeline.epoch() {
+                        for (samples, pts) in mixer.drain_ready(false, epoch) {
+                            packets.extend(encoder.encode_block(&samples, pts)?);
+                        }
                     }
                     if !any {
                         std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
@@ -990,8 +1965,10 @@ mod tests {
                 for s in &sources {
                     let _ = s.audio_client.Stop();
                 }
-                for (samples, pts) in mixer.drain_ready(true) {
-                    packets.extend(encoder.encode_block(&samples, pts)?);
+                if let Some(epoch) = timeline.epoch() {
+                    for (samples, pts) in mixer.drain_ready(true, epoch) {
+                        packets.extend(encoder.encode_block(&samples, pts)?);
+                    }
                 }
                 packets.extend(encoder.flush()?);
 

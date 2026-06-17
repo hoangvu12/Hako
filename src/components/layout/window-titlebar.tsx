@@ -1,27 +1,30 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "@tanstack/react-router";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import {
-  ArrowLeft,
-  ArrowRight,
-  GameController,
-  Minus,
-  Square,
-  X,
-} from "@phosphor-icons/react";
+import { ArrowLeft, ArrowRight, Minus, Square, X } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
 import { Separator } from "@/components/ui/separator";
-import { useRecorderStatus } from "@/hooks/use-recorder";
+import { useSettings } from "@/hooks/use-settings";
+import { RecorderStatusPopover } from "@/components/layout/recorder-status-popover";
 
 /** Shared style for the min/maximize/close caption buttons. */
 const CONTROL_CLS =
-  "flex h-8 w-10 items-center justify-center rounded-md transition-colors hover:bg-secondary hover:text-foreground";
+  "flex h-8 w-10 items-center justify-center rounded-md text-foreground/70 transition-colors hover:bg-secondary hover:text-foreground";
 
 /** A keycap-style chip used for the hotkey hints. */
 function Kbd({ children }: { children: React.ReactNode }) {
   return (
-    <span className="rounded bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-secondary-foreground">
+    <span className="rounded bg-background/60 px-1.5 py-0.5 text-[10px] font-semibold text-foreground">
+      {children}
+    </span>
+  );
+}
+
+/** A visible, button-like pill used for the static hotkey hints. */
+function HotkeyPill({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="pointer-events-none flex h-8 items-center gap-1.5 rounded-lg border border-border bg-secondary/50 px-3 text-xs font-medium text-foreground">
       {children}
     </span>
   );
@@ -60,8 +63,8 @@ async function windowAction(action: "minimize" | "toggleMaximize" | "close") {
 
 export function WindowTitlebar() {
   const router = useRouter();
-  const { data } = useRecorderStatus();
-  const detected = data?.valorant_detected ?? false;
+  const { data: settings } = useSettings();
+  const saveHotkey = settings?.save_hotkey ?? "F9";
 
   // Mirror the OS window's maximized state so the control swaps maximize/restore.
   const [maximized, setMaximized] = useState(false);
@@ -93,7 +96,7 @@ export function WindowTitlebar() {
       className="flex h-12 shrink-0 items-center justify-between border-b border-panel-border bg-panel px-4"
     >
       {/* Left: history, game status, hotkey hints */}
-      <div data-tauri-drag-region className="flex items-center gap-4">
+      <div data-tauri-drag-region className="flex items-center gap-3">
         <div className="flex items-center gap-1 text-muted-foreground">
           <button
             type="button"
@@ -115,46 +118,21 @@ export function WindowTitlebar() {
 
         <Separator orientation="vertical" className="h-4" />
 
-        <div className="pointer-events-none flex items-center gap-2.5">
-          {detected ? (
-            <>
-              <span className="relative flex size-2">
-                <span className="absolute inline-flex size-full animate-ping rounded-full bg-success/70" />
-                <span className="relative inline-flex size-2 rounded-full bg-success" />
-              </span>
-              <div className="flex flex-col leading-tight">
-                <span className="text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
-                  Now Clipping
-                </span>
-                <span className="text-sm font-semibold text-foreground">
-                  Valorant
-                </span>
-              </div>
-            </>
-          ) : (
-            <div className="flex items-center gap-2 text-sm font-medium text-foreground/60">
-              <GameController className="size-4" weight="regular" />
-              Waiting For Game
-            </div>
-          )}
-        </div>
-
-        <Separator orientation="vertical" className="ml-1 h-4" />
-
-        <div className="pointer-events-none ml-1 flex items-center gap-4 text-xs text-muted-foreground">
-          <span className="flex items-center gap-1.5">
-            <Kbd>F9</Kbd>
+        <div className="flex items-center gap-2">
+          <RecorderStatusPopover />
+          <HotkeyPill>
+            <Kbd>{saveHotkey}</Kbd>
             <span>Clip 30s</span>
-          </span>
-          <span className="flex items-center gap-1.5">
+          </HotkeyPill>
+          <HotkeyPill>
             <Kbd>ALT</Kbd>
             <Kbd>F7</Kbd>
             <span>Long Recording</span>
-          </span>
-          <span className="flex items-center gap-1.5">
+          </HotkeyPill>
+          <HotkeyPill>
             <span>Auto Clip</span>
-            <span className="font-medium text-foreground">ON</span>
-          </span>
+            <span className="font-semibold text-success">ON</span>
+          </HotkeyPill>
         </div>
       </div>
 

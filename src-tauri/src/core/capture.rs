@@ -47,10 +47,12 @@ use windows::Win32::System::WinRT::Direct3D11::{
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
 use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowTextLengthW, GetWindowTextW, IsIconic, IsWindowVisible,
+    EnumWindows, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
+    IsWindowVisible,
 };
 
-use crate::core::audio::{AudioCapture, AudioMeta};
+use crate::core::audio::{self, AudioCapture, AudioMeta};
+use crate::settings::AudioConfig;
 use crate::core::buffer::{AudioRing, BufferStats, PacketRing};
 use crate::core::clock::{MasterClock, TICKS_PER_SECOND};
 use crate::core::convert::Converter;
@@ -127,14 +129,24 @@ pub struct SavedClip {
 /// which slices the ring and stream-copies it to MP4 (`mux.rs`). The encoder's
 /// dimensions/fps/extradata aren't known until the encode thread opens it, so
 /// `meta` is a `OnceLock` set exactly once.
+/// One output audio track's RAM ring + AAC metadata. Track 0 is always the
+/// master "All Audio" mix (back-compat + clip playback); tracks 1..N are the
+/// per-source stems when "Separate audio tracks" is on. Filled by the audio
+/// thread via [`ClipBuffer::push_audio`]; sliced per track on save.
+pub struct AudioTrack {
+    /// Track label, written as the MP4 stream `title` (Phase 4).
+    pub name: String,
+    ring: Mutex<AudioRing>,
+    meta: OnceLock<AudioMeta>,
+}
+
 pub struct ClipBuffer {
     ring: Mutex<PacketRing>,
     meta: OnceLock<ClipMeta>,
-    /// Compressed AAC ring (desktop + mic mix), filled by the audio thread.
-    /// Empty/untouched when audio is disabled.
-    audio_ring: Mutex<AudioRing>,
-    /// AAC stream metadata, published once when the audio encoder opens.
-    audio_meta: OnceLock<AudioMeta>,
+    /// Per-track compressed AAC rings (filled by the audio thread). Empty when
+    /// audio is disabled; track 0 is the master mix. Layout (count + names) is
+    /// fixed at construction so the muxer/session can declare the streams.
+    audio_tracks: Vec<AudioTrack>,
     /// Wall-clock tick (100 ns) of the first captured video frame — the anchor
     /// that ties video PTS (1/fps units) to absolute audio PTS for muxing.
     video_base: OnceLock<i64>,
@@ -145,12 +157,21 @@ pub struct ClipBuffer {
 }
 
 impl ClipBuffer {
-    fn new(fps: u32, retention_secs: u32) -> Arc<Self> {
+    /// New clip buffer. `audio_track_names` fixes the audio-track layout (one
+    /// AAC ring per name, track 0 = master); empty ⇒ video-only.
+    fn new(fps: u32, retention_secs: u32, audio_track_names: Vec<String>) -> Arc<Self> {
+        let audio_tracks = audio_track_names
+            .into_iter()
+            .map(|name| AudioTrack {
+                name,
+                ring: Mutex::new(AudioRing::new(retention_secs)),
+                meta: OnceLock::new(),
+            })
+            .collect();
         Arc::new(ClipBuffer {
             ring: Mutex::new(PacketRing::new(fps, retention_secs)),
             meta: OnceLock::new(),
-            audio_ring: Mutex::new(AudioRing::new(retention_secs)),
-            audio_meta: OnceLock::new(),
+            audio_tracks,
             video_base: OnceLock::new(),
             session: Mutex::new(None),
         })
@@ -179,14 +200,19 @@ impl ClipBuffer {
         }
     }
 
-    /// Append a freshly encoded AAC packet (called on the audio thread). Tees to
-    /// the session writer (audio PTS is already absolute ticks) when recording.
-    pub fn push_audio(&self, pkt: EncodedPacket) {
+    /// Append a freshly encoded AAC packet for output track `track_idx` (called
+    /// on the audio thread). Every track is teed to the Mode-B session writer (so
+    /// Valorant auto-clips are multi-track too), routed to the matching session
+    /// stream by index, and also stored in its own per-track ring for the save
+    /// path.
+    pub fn push_audio(&self, track_idx: usize, pkt: EncodedPacket) {
         if let Some(session) = self.active_session() {
-            session.push_audio(&pkt);
+            session.push_audio(track_idx, &pkt);
         }
-        if let Ok(mut r) = self.audio_ring.lock() {
-            r.push(pkt);
+        if let Some(track) = self.audio_tracks.get(track_idx) {
+            if let Ok(mut r) = track.ring.lock() {
+                r.push(pkt);
+            }
         }
     }
 
@@ -208,9 +234,28 @@ impl ClipBuffer {
         self.meta.get().cloned()
     }
 
-    /// The AAC stream metadata, once the audio encoder has opened.
+    /// The **master** track's AAC stream metadata, once its encoder has opened.
     pub fn audio_meta(&self) -> Option<AudioMeta> {
-        self.audio_meta.get().cloned()
+        self.audio_tracks
+            .first()
+            .and_then(|t| t.meta.get().cloned())
+    }
+
+    /// Every output track's `(name, AudioMeta)` whose encoder has published its
+    /// metadata, in track order (0 = master). Used to declare all of the Mode-B
+    /// session writer's audio streams up front. Tracks without published meta are
+    /// skipped; in practice every encoder opens at audio-thread start, before a
+    /// match installs the session writer, so all planned tracks are present.
+    pub fn audio_track_metas(&self) -> Vec<(String, AudioMeta)> {
+        self.audio_tracks
+            .iter()
+            .filter_map(|t| t.meta.get().map(|m| (t.name.clone(), m.clone())))
+            .collect()
+    }
+
+    /// Number of audio tracks (0 ⇒ video-only).
+    pub fn audio_track_count(&self) -> usize {
+        self.audio_tracks.len()
     }
 
     /// Publish the muxing metadata (once, when the encoder is ready).
@@ -218,9 +263,12 @@ impl ClipBuffer {
         let _ = self.meta.set(meta);
     }
 
-    /// Publish the AAC stream metadata (once, when the audio encoder opens).
-    pub fn set_audio_meta(&self, meta: AudioMeta) {
-        let _ = self.audio_meta.set(meta);
+    /// Publish output track `idx`'s AAC stream metadata (once, when its encoder
+    /// opens). No-op for an out-of-range index.
+    pub fn set_audio_track_meta(&self, idx: usize, meta: AudioMeta) {
+        if let Some(track) = self.audio_tracks.get(idx) {
+            let _ = track.meta.set(meta);
+        }
     }
 
     /// Record the wall-clock tick of the first video frame (once).
@@ -253,34 +301,50 @@ impl ClipBuffer {
             .fold((i64::MAX, i64::MIN), |(lo, hi), p| (lo.min(p.pts), hi.max(p.pts)));
         let span_pts = (hi - lo).max(0) + 1; // +1 for the last frame's own duration
 
-        // Audio: slice the AAC ring covering this clip's wall-clock window. The
-        // video clip starts at the wall-clock tick of its first packet, derived
-        // from the shared video base anchor (PTS is in 1/fps units off it).
+        // Audio: slice EVERY output track's AAC ring over the same wall-clock
+        // window. The video clip starts at the wall-clock tick of its first
+        // packet, derived from the shared video base anchor (PTS is in 1/fps
+        // units off it). Track 0 (master mix) comes first; with "Separate audio
+        // tracks" on, tracks 1..N are the per-source stems — each becomes its own
+        // named MP4 audio stream via `write_clip`.
         let fps = meta.fps.max(1) as i64;
-        let audio_meta = self.audio_meta.get();
         let video_base = self.video_base.get().copied();
-        let audio_packets = match (audio_meta, video_base) {
-            (Some(_), Some(base)) => {
-                let start_ticks = base + lo * TICKS_PER_SECOND / fps;
-                let end_ticks = base + hi * TICKS_PER_SECOND / fps;
-                self.audio_ring
+        let mut track_slices: Vec<(usize, Vec<EncodedPacket>)> = Vec::new();
+        if let Some(base) = video_base {
+            let start_ticks = base + lo * TICKS_PER_SECOND / fps;
+            let end_ticks = base + hi * TICKS_PER_SECOND / fps;
+            for (i, track) in self.audio_tracks.iter().enumerate() {
+                if track.meta.get().is_none() {
+                    continue; // encoder for this stem never opened — skip
+                }
+                let pkts = track
+                    .ring
                     .lock()
                     .ok()
                     .map(|r| r.slice_ticks(start_ticks, end_ticks))
-                    .unwrap_or_default()
+                    .unwrap_or_default();
+                if !pkts.is_empty() {
+                    track_slices.push((i, pkts));
+                }
             }
-            _ => Vec::new(),
-        };
-        let audio = match (audio_meta, video_base) {
-            (Some(am), Some(base)) if !audio_packets.is_empty() => Some(AudioClip {
-                meta: am,
-                packets: &audio_packets,
-                clip_start_ticks: base + lo * TICKS_PER_SECOND / fps,
-            }),
-            _ => None,
-        };
+        }
+        let clip_start_ticks = video_base
+            .map(|base| base + lo * TICKS_PER_SECOND / fps)
+            .unwrap_or(0);
+        let audio: Vec<AudioClip> = track_slices
+            .iter()
+            .filter_map(|(i, pkts)| {
+                let track = &self.audio_tracks[*i];
+                track.meta.get().map(|m| AudioClip {
+                    meta: m,
+                    name: track.name.as_str(),
+                    packets: pkts,
+                    clip_start_ticks,
+                })
+            })
+            .collect();
 
-        mux::write_clip(out, meta, &packets, audio)?;
+        mux::write_clip(out, meta, &packets, &audio)?;
         Ok(SavedClip {
             path: out.to_path_buf(),
             width: meta.width,
@@ -373,6 +437,18 @@ pub fn find_valorant_window() -> Option<i64> {
     (found != 0).then_some(found)
 }
 
+/// The process id that owns `hwnd_raw` (for the `specific_apps` "Game Audio"
+/// source — the capture target's PID). `None` for an invalid window.
+pub fn pid_for_hwnd(hwnd_raw: i64) -> Option<u32> {
+    let mut pid: u32 = 0;
+    // SAFETY: GetWindowThreadProcessId just reads window ownership; a stale HWND
+    // yields pid 0.
+    unsafe {
+        GetWindowThreadProcessId(HWND(hwnd_raw as *mut c_void), Some(&mut pid));
+    }
+    (pid != 0).then_some(pid)
+}
+
 /// Whether a window is minimized (iconic). A minimized game — common with
 /// exclusive fullscreen when alt-tabbed — usually stops presenting frames, so
 /// the graphics hook can't capture it; the auto-capture skips it until it's back
@@ -431,14 +507,18 @@ pub fn start(
     target_fps: u32,
     adapter_index: Option<u32>,
     buffer_secs: u32,
-    capture_audio: bool,
+    audio: AudioConfig,
 ) -> std::result::Result<RunningCapture, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let shared = Arc::new(Shared::default());
     let target_fps = target_fps.clamp(1, 480);
+    // The capture target's PID feeds the `specific_apps` "Game Audio" source; the
+    // planned track names fix the clip buffer's audio-track layout up front.
+    let game_pid = pid_for_hwnd(hwnd_raw);
+    let track_names = audio::planned_track_names(&audio, game_pid);
     // Created here (fps is known) so the handle survives on RunningCapture; the
     // encode thread fills its ring + publishes `meta` (dimensions known later).
-    let clip = ClipBuffer::new(target_fps, buffer_secs.clamp(5, 600));
+    let clip = ClipBuffer::new(target_fps, buffer_secs.clamp(5, 600), track_names);
 
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<std::result::Result<(), String>>();
     let thread = {
@@ -449,7 +529,7 @@ pub fn start(
             .name("hako-capture".into())
             .spawn(move || {
                 capture_thread(
-                    app, hwnd_raw, target_fps, adapter_index, capture_audio, stop, shared, clip,
+                    app, hwnd_raw, target_fps, adapter_index, audio, game_pid, stop, shared, clip,
                     ready_tx,
                 )
             })
@@ -475,7 +555,8 @@ fn capture_thread(
     hwnd_raw: i64,
     target_fps: u32,
     adapter_index: Option<u32>,
-    capture_audio: bool,
+    audio: AudioConfig,
+    game_pid: Option<u32>,
     stop: Arc<AtomicBool>,
     shared: Arc<Shared>,
     clip: Arc<ClipBuffer>,
@@ -491,7 +572,8 @@ fn capture_thread(
         hwnd_raw,
         target_fps,
         adapter_index,
-        capture_audio,
+        audio,
+        game_pid,
         &stop,
         &shared,
         clip,
@@ -546,7 +628,8 @@ fn run_pipeline(
     hwnd_raw: i64,
     target_fps: u32,
     adapter_index: Option<u32>,
-    capture_audio: bool,
+    audio: AudioConfig,
+    game_pid: Option<u32>,
     _stop: &Arc<AtomicBool>,
     shared: &Arc<Shared>,
     clip: Arc<ClipBuffer>,
@@ -630,10 +713,11 @@ fn run_pipeline(
     };
 
     // Start audio capture (best-effort) once the clip buffer exists; it pushes
-    // AAC into the same ClipBuffer the save path reads. A None means no usable
-    // device — the clip is simply video-only.
-    let audio = if capture_audio {
-        match AudioCapture::start(clip.clone()) {
+    // each output track's AAC into the same ClipBuffer the save path reads. A
+    // None means no usable device — the clip is simply video-only. Skip entirely
+    // when the config has no enabled source (no audio tracks planned).
+    let audio = if clip.audio_track_count() > 0 {
+        match AudioCapture::start(clip.clone(), audio, game_pid) {
             Some(a) => Some(a),
             None => {
                 tracing::warn!("audio capture requested but could not start; recording video only");
@@ -684,12 +768,14 @@ pub fn start_hook(
     target_fps: u32,
     adapter_index: Option<u32>,
     buffer_secs: u32,
-    capture_audio: bool,
+    audio: AudioConfig,
 ) -> std::result::Result<RunningCapture, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let shared = Arc::new(Shared::default());
     let target_fps = target_fps.clamp(1, 480);
-    let clip = ClipBuffer::new(target_fps, buffer_secs.clamp(5, 600));
+    let game_pid = pid_for_hwnd(hwnd_raw);
+    let track_names = audio::planned_track_names(&audio, game_pid);
+    let clip = ClipBuffer::new(target_fps, buffer_secs.clamp(5, 600), track_names);
 
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<std::result::Result<(), String>>();
     let thread = {
@@ -700,7 +786,7 @@ pub fn start_hook(
             .name("hako-capture-hook".into())
             .spawn(move || {
                 hook_capture_thread(
-                    app, hwnd_raw, target_fps, adapter_index, capture_audio, stop, shared, clip,
+                    app, hwnd_raw, target_fps, adapter_index, audio, game_pid, stop, shared, clip,
                     ready_tx,
                 )
             })
@@ -726,7 +812,8 @@ fn hook_capture_thread(
     hwnd_raw: i64,
     target_fps: u32,
     adapter_index: Option<u32>,
-    capture_audio: bool,
+    audio: AudioConfig,
+    game_pid: Option<u32>,
     stop: Arc<AtomicBool>,
     shared: Arc<Shared>,
     clip: Arc<ClipBuffer>,
@@ -736,7 +823,8 @@ fn hook_capture_thread(
         hwnd_raw,
         target_fps,
         adapter_index,
-        capture_audio,
+        audio,
+        game_pid,
         &stop,
         &shared,
         clip,
@@ -782,7 +870,8 @@ fn run_hook_pipeline(
     hwnd_raw: i64,
     target_fps: u32,
     adapter_index: Option<u32>,
-    capture_audio: bool,
+    audio: AudioConfig,
+    game_pid: Option<u32>,
     stop: &Arc<AtomicBool>,
     shared: &Arc<Shared>,
     clip: Arc<ClipBuffer>,
@@ -911,8 +1000,8 @@ fn run_hook_pipeline(
             .map_err(|e| format!("spawn hook source thread: {e}"))?
     };
 
-    let audio = if capture_audio {
-        match AudioCapture::start(clip.clone()) {
+    let audio = if clip.audio_track_count() > 0 {
+        match AudioCapture::start(clip.clone(), audio, game_pid) {
             Some(a) => Some(a),
             None => {
                 tracing::warn!("audio capture requested but could not start; recording video only");
@@ -1577,7 +1666,7 @@ mod tests {
             let free_pool = Arc::new(Mutex::new(pool_vec));
             let (filled_tx, filled_rx) = sync_channel::<(ID3D11Texture2D, i64)>(STAGING_POOL);
             let (rdy_tx, rdy_rx) = std::sync::mpsc::channel();
-            let clip = ClipBuffer::new(60, 30);
+            let clip = ClipBuffer::new(60, 30, Vec::new());
             let enc = {
                 let device = d3d_device.clone();
                 let context = context.clone();

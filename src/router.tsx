@@ -38,6 +38,10 @@ const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/settings",
   component: SettingsPage,
+  // `?section=` deep-links a settings nav section (e.g. the recorder popover's
+  // "Audio" summary jumps straight to Recording Audio).
+  validateSearch: (search: Record<string, unknown>): { section?: string } =>
+    typeof search.section === "string" ? { section: search.section } : {},
 });
 
 const valorantRoute = createRoute({

@@ -540,7 +540,7 @@ mod tests {
         };
         let mp4 = std::env::temp_dir().join("hako_thumb_src.mp4");
         let _ = std::fs::remove_file(&mp4);
-        mux::write_clip(&mp4, &meta, &ring.slice_last(1), None).expect("mux");
+        mux::write_clip(&mp4, &meta, &ring.slice_last(1), &[]).expect("mux");
 
         let jpg = std::env::temp_dir().join("hako_thumb.jpg");
         let _ = std::fs::remove_file(&jpg);
@@ -598,7 +598,7 @@ mod tests {
         let meta = mux::ClipMeta { width: w, height: h, fps, extradata: enc.extradata() };
         let mp4 = std::env::temp_dir().join("hako_strip_src.mp4");
         let _ = std::fs::remove_file(&mp4);
-        mux::write_clip(&mp4, &meta, &ring.slice_last(1), None).expect("mux");
+        mux::write_clip(&mp4, &meta, &ring.slice_last(1), &[]).expect("mux");
 
         let jpg = std::env::temp_dir().join("hako_strip.jpg");
         let _ = std::fs::remove_file(&jpg);

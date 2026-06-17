@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useSearch } from "@tanstack/react-router";
 import {
   Scissors,
   SlidersHorizontal,
@@ -7,6 +8,7 @@ import {
   Pulse,
   MagnifyingGlass,
   Warning,
+  SpeakerHigh,
   type Icon,
 } from "@phosphor-icons/react";
 
@@ -21,10 +23,27 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { RecordingStatus } from "@/components/settings/recording-status";
+import { RecordingAudio } from "@/components/settings/recording-audio";
 import { useSettings, useUpdateSettings } from "@/hooks/use-settings";
-import type { EventToggles, Settings } from "@/lib/api";
+import {
+  effectiveAudioConfig,
+  type AudioConfig,
+  type EventToggles,
+  type Settings,
+} from "@/lib/api";
 
-type SectionKey = "clip" | "quality" | "auto" | "storage" | "status";
+type SectionKey = "clip" | "quality" | "audio" | "auto" | "storage" | "status";
+
+const SECTION_KEYS = new Set<SectionKey>([
+  "clip",
+  "quality",
+  "audio",
+  "auto",
+  "storage",
+  "status",
+]);
+const isSectionKey = (v: unknown): v is SectionKey =>
+  typeof v === "string" && SECTION_KEYS.has(v as SectionKey);
 
 const NAV: {
   group: string;
@@ -35,6 +54,7 @@ const NAV: {
     items: [
       { key: "clip", label: "Clip Settings", icon: Scissors },
       { key: "quality", label: "Quality", icon: SlidersHorizontal },
+      { key: "audio", label: "Recording Audio", icon: SpeakerHigh },
       { key: "auto", label: "Auto Clipping", icon: Crosshair },
     ],
   },
@@ -120,14 +140,23 @@ function Row({
 export default function SettingsPage() {
   const { data } = useSettings();
   const update = useUpdateSettings();
+  const search = useSearch({ from: "/settings" });
   const [draft, setDraft] = useState<Settings | null>(null);
-  const [active, setActive] = useState<SectionKey>("clip");
+  const [active, setActive] = useState<SectionKey>(
+    isSectionKey(search.section) ? search.section : "clip"
+  );
   const [navQuery, setNavQuery] = useState("");
 
   // Initialise the draft once; instant-apply edits keep it in sync afterwards.
   useEffect(() => {
     if (data && !draft) setDraft(data);
   }, [data, draft]);
+
+  // Deep-link: jump to a section when navigated with `?section=` (e.g. from the
+  // recorder popover) — including while the page is already mounted.
+  useEffect(() => {
+    if (isSectionKey(search.section)) setActive(search.section);
+  }, [search.section]);
 
   if (!draft) {
     return (
@@ -342,15 +371,6 @@ export default function SettingsPage() {
                     <span className="text-sm text-muted-foreground">Mbps</span>
                   </div>
                 </Row>
-                <Row
-                  label="Capture audio"
-                  hint="Record system + mic audio alongside video."
-                >
-                  <Switch
-                    checked={draft.capture_audio}
-                    onCheckedChange={(v) => set("capture_audio", v)}
-                  />
-                </Row>
               </Panel>
 
               <Panel title="Capture mode">
@@ -384,6 +404,20 @@ export default function SettingsPage() {
                   </span>
                 </div>
               )}
+            </>
+          )}
+
+          {active === "audio" && (
+            <>
+              <SectionHero
+                icon={SpeakerHigh}
+                title="Recording Audio"
+                subtitle="Choose which sources are recorded, set their volumes, and split them onto separate tracks."
+              />
+              <RecordingAudio
+                audio={effectiveAudioConfig(draft)}
+                onChange={(audio: AudioConfig) => set("audio", audio)}
+              />
             </>
           )}
 

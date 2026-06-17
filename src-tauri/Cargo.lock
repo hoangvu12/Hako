@@ -1319,6 +1319,7 @@ name = "hako"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "png 0.17.16",
  "reqwest 0.12.28",
  "rusqlite",
  "rusty_ffmpeg",
@@ -1333,6 +1334,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "windows 0.61.3",
+ "windows-core 0.61.2",
 ]
 
 [[package]]

@@ -123,6 +123,34 @@ pub fn list_windows() -> Vec<WindowTarget> {
     capture::list_windows()
 }
 
+/// Active microphone / capture endpoints for the "Microphone Source" picker.
+#[tauri::command]
+pub fn list_audio_inputs() -> Vec<crate::core::audio::AudioInputDevice> {
+    crate::core::audio::enumerate_inputs()
+}
+
+/// Active render endpoints (speakers / headphones) for the "PC Audio"
+/// multi-select in `all_pc_audio` mode.
+#[tauri::command]
+pub fn list_audio_outputs() -> Vec<crate::core::audio::AudioOutputDevice> {
+    crate::core::audio::enumerate_outputs()
+}
+
+/// Apps currently playing audio — the live source list for `specific_apps` mode
+/// ("additional apps appear here when they play audio"). Polled by the UI.
+#[tauri::command]
+pub fn list_active_audio_sessions() -> Vec<crate::core::audio::AudioSession> {
+    crate::core::audio::enumerate_active_sessions()
+}
+
+/// Whether Windows per-process loopback (Windows build ≥ 20348) is available, so
+/// the UI can gate the `specific_apps` recording mode and fall back to
+/// `all_pc_audio` when it isn't supported.
+#[tauri::command]
+pub fn process_loopback_supported() -> bool {
+    crate::core::audio::is_process_loopback_supported()
+}
+
 /// Start WGC capture of the given window (HWND as integer) at `target_fps`.
 #[tauri::command]
 pub fn start_capture(
@@ -146,10 +174,17 @@ pub fn start_capture_with(
 ) -> Result<(), String> {
     let settings = app.state::<SettingsState>();
     let state = app.state::<CaptureState>();
-    // Defaults (fps, buffer length, audio, backend) come from saved settings.
-    let (cfg_fps, buffer_secs, capture_audio, use_hook) = {
+    // Defaults (fps, buffer length, audio config, backend) come from saved
+    // settings. `effective_audio()` yields the Medal-style per-source config,
+    // synthesizing one from the legacy fields for pre-feature configs.
+    let (cfg_fps, buffer_secs, audio_cfg, use_hook) = {
         let s = settings.0.lock().map_err(|_| "settings poisoned")?;
-        (s.target_fps, s.buffer_seconds, s.capture_audio, s.uses_hook_capture())
+        (
+            s.target_fps,
+            s.buffer_seconds,
+            s.effective_audio(),
+            s.uses_hook_capture(),
+        )
     };
     let mut guard = state.0.lock().map_err(|_| "capture state poisoned")?;
     if guard.is_some() {
@@ -159,9 +194,9 @@ pub fn start_capture_with(
     // `hook` = opt-in graphics-hook injection (beats the DWM cap, anti-cheat
     // risk); anything else = WGC (default, Vanguard-safe). See `core::hook`.
     let running = if use_hook {
-        capture::start_hook(app.clone(), hwnd, fps, adapter_index, buffer_secs, capture_audio)?
+        capture::start_hook(app.clone(), hwnd, fps, adapter_index, buffer_secs, audio_cfg)?
     } else {
-        capture::start(app.clone(), hwnd, fps, adapter_index, buffer_secs, capture_audio)?
+        capture::start(app.clone(), hwnd, fps, adapter_index, buffer_secs, audio_cfg)?
     };
     *guard = Some(running);
     Ok(())
@@ -432,6 +467,112 @@ pub fn trim_clip(
                 lib.get(id)?.ok_or("clip vanished after trim")?
             };
             tracing::info!("trimmed clip {id} → overwrite {}", record.path);
+            Ok(record)
+        }
+    }
+}
+
+/// The audio tracks in a clip (count + names), for the editor's per-track
+/// mute/solo/volume controls. Audio track 0 is the master "All Audio" mix;
+/// 1..N are the stems. A clip with ≤1 track shows no per-track UI.
+#[tauri::command]
+pub fn clip_audio_tracks(
+    library: State<LibraryState>,
+    id: i64,
+) -> Result<Vec<crate::library::remux::AudioTrackInfo>, String> {
+    let rec = {
+        let lib = library.0.lock().map_err(|_| "library poisoned")?;
+        lib.get(id)?.ok_or("clip not found")?
+    };
+    crate::library::remux::probe_audio_tracks(&PathBuf::from(&rec.path))
+}
+
+/// One selected stem from the editor: its audio-track index + 0–100 volume.
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+pub struct TrackVolume {
+    pub index: u32,
+    pub volume: f32,
+}
+
+/// Export a clip to `[start, end)` with its audio being the chosen `tracks`
+/// (stems) mixed at their volumes — the editor's per-track mute/solo/volume
+/// applied on export (browsers can't switch MP4 audio tracks live). Empty
+/// `tracks` ⇒ video-only; one stem at full volume ⇒ loss-less stream copy;
+/// otherwise the stems are decoded, mixed, and re-encoded to one master track.
+/// `Copy` writes a new library clip; `Overwrite` replaces the original.
+#[tauri::command]
+pub fn remux_with_tracks(
+    app: AppHandle,
+    library: State<LibraryState>,
+    id: i64,
+    start: f64,
+    end: f64,
+    tracks: Vec<TrackVolume>,
+    mode: TrimMode,
+) -> Result<ClipRecord, String> {
+    let rec = {
+        let lib = library.0.lock().map_err(|_| "library poisoned")?;
+        lib.get(id)?.ok_or("clip not found")?
+    };
+    let input = PathBuf::from(&rec.path);
+    let sel: Vec<crate::library::remux::TrackSel> = tracks
+        .iter()
+        .map(|t| crate::library::remux::TrackSel {
+            index: t.index,
+            gain: (t.volume.max(0.0)) / 100.0,
+        })
+        .collect();
+
+    match mode {
+        TrimMode::Copy => {
+            let out = clip_output_path(&app)?;
+            let res =
+                crate::library::remux::remux_with_tracks(&input, &out, start, end, &sel)?;
+            let thumb = generate_thumbnail(&app, &out);
+            let filmstrip = generate_filmstrip(&app, &out, res.duration_secs);
+            let size_bytes = std::fs::metadata(&out).map(|m| m.len() as i64).unwrap_or(0);
+            let new = NewClip {
+                path: out.to_string_lossy().to_string(),
+                title: format!("{} (export)", rec.title),
+                event: rec.event.clone(),
+                duration_secs: res.duration_secs,
+                width: res.width,
+                height: res.height,
+                size_bytes,
+                thumb_path: thumb,
+                filmstrip_path: filmstrip,
+            };
+            let record = {
+                let lib = library.0.lock().map_err(|_| "library poisoned")?;
+                let id = lib.insert(&new)?;
+                lib.get(id)?.ok_or("inserted clip vanished")?
+            };
+            let _ = app.emit(crate::events::CLIP_CREATED, &record);
+            tracing::info!("remuxed clip {id} → copy {}", record.path);
+            Ok(record)
+        }
+        TrimMode::Overwrite => {
+            let tmp = clip_output_path(&app)?;
+            let res =
+                crate::library::remux::remux_with_tracks(&input, &tmp, start, end, &sel)?;
+            replace_file_retrying(&tmp, &input)?;
+            let thumb = generate_thumbnail(&app, &input);
+            let filmstrip = generate_filmstrip(&app, &input, res.duration_secs);
+            let size_bytes = std::fs::metadata(&input).map(|m| m.len() as i64).unwrap_or(0);
+            let record = {
+                let lib = library.0.lock().map_err(|_| "library poisoned")?;
+                lib.update_media(
+                    id,
+                    res.duration_secs,
+                    res.width,
+                    res.height,
+                    size_bytes,
+                    thumb.as_deref(),
+                    filmstrip.as_deref(),
+                )?;
+                lib.get(id)?.ok_or("clip vanished after remux")?
+            };
+            tracing::info!("remuxed clip {id} → overwrite {}", record.path);
             Ok(record)
         }
     }

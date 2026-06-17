@@ -184,10 +184,12 @@ async fn poll_presence() -> Option<(PrivatePresence, String)> {
 fn start_match(app: &AppHandle, puuid: &str, presence: &PrivatePresence) -> Option<ActiveMatch> {
     let clip = capture_clip(app)?;
     let meta = clip.clip_meta()?; // encoder not open yet ⇒ can't record
-    let audio_meta = clip.audio_meta();
+    // All published audio tracks (track 0 = master mix, 1..N = stems) so the
+    // session — and the auto-clips cut from it — are multi-track too.
+    let audio_tracks = clip.audio_track_metas();
 
     let session_path = std::env::temp_dir().join(format!("hako_session_{}.mp4", unix_millis()));
-    let writer = match SessionWriter::start(&session_path, &meta, audio_meta.as_ref()) {
+    let writer = match SessionWriter::start(&session_path, &meta, &audio_tracks) {
         Ok(w) => Arc::new(w),
         Err(e) => {
             tracing::warn!("auto-clip: could not open session writer: {e}");

@@ -2,14 +2,17 @@ import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import {
+  clipAudioTracks,
   clipsList,
   deleteClip,
   Events,
+  remuxWithTracks,
   renameClip,
   saveClip,
   trimClip,
   type ClipRecord,
   type TrimMode,
+  type TrackVolume,
 } from "@/lib/api";
 
 const CLIPS_KEY = ["clips"];
@@ -64,6 +67,32 @@ export function useTrimClip() {
       dropAudio: boolean;
       mode: TrimMode;
     }) => trimClip(args),
+    onSuccess: () => qc.invalidateQueries({ queryKey: CLIPS_KEY }),
+  });
+}
+
+/** A clip's audio tracks (count + names) — drives the editor's per-track UI. */
+export function useClipAudioTracks(id: number | undefined) {
+  return useQuery({
+    queryKey: ["clip-audio-tracks", id],
+    queryFn: () => clipAudioTracks(id as number),
+    enabled: id != null,
+    staleTime: Infinity,
+    retry: false,
+  });
+}
+
+/** Export with a per-track audio mix applied (see `remuxWithTracks`). */
+export function useRemuxClip() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: {
+      id: number;
+      start: number;
+      end: number;
+      tracks: TrackVolume[];
+      mode: TrimMode;
+    }) => remuxWithTracks(args),
     onSuccess: () => qc.invalidateQueries({ queryKey: CLIPS_KEY }),
   });
 }

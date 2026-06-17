@@ -26,11 +26,23 @@ import {
 import { cn } from "@/lib/utils";
 import {
   useClips,
+  useClipAudioTracks,
   useDeleteClip,
+  useRemuxClip,
   useRenameClip,
   useTrimClip,
 } from "@/hooks/use-library";
-import type { ClipRecord, TrimMode } from "@/lib/api";
+import { Slider } from "@/components/ui/slider";
+import type { AudioTrackInfo, ClipRecord, TrackVolume, TrimMode } from "@/lib/api";
+
+/** Per-stem editor state. Solo overrides mute across the stem set. */
+interface TrackCtl {
+  muted: boolean;
+  solo: boolean;
+  /** 0–100. */
+  volume: number;
+}
+const DEFAULT_CTL: TrackCtl = { muted: false, solo: false, volume: 100 };
 
 const SPEEDS = [1, 1.5, 2, 0.5] as const;
 const MIN_TRIM = 0.3; // shortest selectable range, seconds
@@ -83,6 +95,7 @@ export function ClipViewer({ clipId }: { clipId: string }) {
   const del = useDeleteClip();
   const rename = useRenameClip();
   const trim = useTrimClip();
+  const remux = useRemuxClip();
 
   const list = clips ?? [];
   const index = list.findIndex((c) => String(c.id) === clipId);
@@ -107,14 +120,36 @@ export function ClipViewer({ clipId }: { clipId: string }) {
     });
   }, [clip, next, prev, del, goto, close]);
 
-  // Run a trim; on "copy" jump to the freshly-created clip.
-  const handleTrim = React.useCallback(
-    async (args: { start: number; end: number; dropAudio: boolean; mode: TrimMode }) => {
+  // Run the export; on "copy" jump to the freshly-created clip. When `tracks`
+  // is provided (a per-track audio mix), re-mux; otherwise it's a loss-less
+  // stream-copy trim that keeps every existing audio track.
+  const handleExport = React.useCallback(
+    async (args: {
+      start: number;
+      end: number;
+      dropAudio: boolean;
+      tracks: TrackVolume[] | null;
+      mode: TrimMode;
+    }) => {
       if (!clip) return;
-      const rec = await trim.mutateAsync({ id: clip.id, ...args });
+      const rec = args.tracks
+        ? await remux.mutateAsync({
+            id: clip.id,
+            start: args.start,
+            end: args.end,
+            tracks: args.tracks,
+            mode: args.mode,
+          })
+        : await trim.mutateAsync({
+            id: clip.id,
+            start: args.start,
+            end: args.end,
+            dropAudio: args.dropAudio,
+            mode: args.mode,
+          });
       if (args.mode === "copy") goto(rec);
     },
-    [clip, trim, goto],
+    [clip, trim, remux, goto],
   );
 
   return (
@@ -152,9 +187,11 @@ export function ClipViewer({ clipId }: { clipId: string }) {
           onRename={(title) =>
             title && title !== clip.title && rename.mutate({ id: clip.id, title })
           }
-          onTrim={handleTrim}
-          trimPending={trim.isPending}
-          trimError={trim.error ? String(trim.error) : null}
+          onExport={handleExport}
+          exportPending={trim.isPending || remux.isPending}
+          exportError={
+            trim.error || remux.error ? String(trim.error ?? remux.error) : null
+          }
         />
       )}
     </div>
@@ -170,9 +207,9 @@ function ViewerStage({
   onClose,
   onDelete,
   onRename,
-  onTrim,
-  trimPending,
-  trimError,
+  onExport,
+  exportPending,
+  exportError,
 }: {
   clip: ClipRecord;
   hasPrev: boolean;
@@ -182,14 +219,15 @@ function ViewerStage({
   onClose: () => void;
   onDelete: () => void;
   onRename: (title: string) => void;
-  onTrim: (args: {
+  onExport: (args: {
     start: number;
     end: number;
     dropAudio: boolean;
+    tracks: TrackVolume[] | null;
     mode: TrimMode;
   }) => Promise<void>;
-  trimPending: boolean;
-  trimError: string | null;
+  exportPending: boolean;
+  exportError: string | null;
 }) {
   const stageRef = React.useRef<HTMLDivElement>(null);
   const videoRef = React.useRef<HTMLVideoElement>(null);
@@ -223,6 +261,43 @@ function ViewerStage({
   const [audioEnabled, setAudioEnabled] = React.useState(true);
   const [drag, setDrag] = React.useState<null | "seek" | "start" | "end">(null);
   const [saveOpen, setSaveOpen] = React.useState(false);
+
+  // Multi-track audio: stems are the audio tracks past the master (index 0).
+  // When a clip has stems the editor offers per-track mute/solo/volume, applied
+  // on export via a re-mux (browsers can't switch MP4 audio tracks live).
+  const { data: audioTracks } = useClipAudioTracks(clip.id);
+  const stems = React.useMemo<AudioTrackInfo[]>(
+    () => (audioTracks ?? []).filter((t) => t.index >= 1),
+    [audioTracks],
+  );
+  const hasStems = stems.length > 0;
+  const [trackCtl, setTrackCtl] = React.useState<Record<number, TrackCtl>>({});
+  const ctlOf = React.useCallback(
+    (idx: number): TrackCtl => trackCtl[idx] ?? DEFAULT_CTL,
+    [trackCtl],
+  );
+  const patchTrack = React.useCallback(
+    (idx: number, patch: Partial<TrackCtl>) =>
+      setTrackCtl((prev) => ({
+        ...prev,
+        [idx]: { ...(prev[idx] ?? DEFAULT_CTL), ...patch },
+      })),
+    [],
+  );
+
+  const soloActive = stems.some((s) => ctlOf(s.index).solo);
+  // A stem is audible when soloed (if any solo is active) or simply un-muted.
+  const audibleStems = stems.filter((s) =>
+    soloActive ? ctlOf(s.index).solo : !ctlOf(s.index).muted,
+  );
+  // The mix differs from the recorded master only when a stem is muted/soloed
+  // or its volume moved — otherwise we keep the loss-less stream copy.
+  const tracksEdited =
+    hasStems &&
+    stems.some((s) => {
+      const c = trackCtl[s.index];
+      return c && (c.muted || c.solo || c.volume !== 100);
+    });
 
   // Reflect muted/volume/speed onto the element (React doesn't track these).
   React.useEffect(() => {
@@ -406,7 +481,7 @@ function ViewerStage({
   const trimmed = clip.event != null;
   const selDuration = trimEnd - trimStart;
   const edited =
-    trimStart > 0.05 || trimEnd < duration - 0.05 || !audioEnabled;
+    trimStart > 0.05 || trimEnd < duration - 0.05 || !audioEnabled || tracksEdited;
 
   return (
     <div className="relative z-10 flex min-w-0 flex-1">
@@ -648,6 +723,7 @@ function ViewerStage({
                     setTrimStart(0);
                     setTrimEnd(duration);
                     setAudioEnabled(true);
+                    setTrackCtl({});
                   }}
                   className="flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
                 >
@@ -666,6 +742,18 @@ function ViewerStage({
                 Save
               </button>
             </div>
+
+            {/* Per-track audio mixer (multi-track clips only) */}
+            {hasStems && audioEnabled ? (
+              <TrackMixerPanel
+                stems={stems}
+                ctlOf={ctlOf}
+                soloActive={soloActive}
+                onMute={(idx) => patchTrack(idx, { muted: !ctlOf(idx).muted })}
+                onSolo={(idx) => patchTrack(idx, { solo: !ctlOf(idx).solo })}
+                onVolume={(idx, v) => patchTrack(idx, { volume: v })}
+              />
+            ) : null}
 
             {/* Navigation hint */}
             <p className="mt-3 text-center text-xs text-muted-foreground/70">
@@ -740,9 +828,21 @@ function ViewerStage({
         <SaveDialog
           title={clip.title}
           selDuration={selDuration}
-          audioEnabled={audioEnabled}
-          pending={trimPending}
-          error={trimError}
+          audioSummary={
+            !audioEnabled
+              ? "audio removed"
+              : tracksEdited
+                ? audibleStems.length === 0
+                  ? "all tracks muted"
+                  : `${audibleStems.length} of ${stems.length} audio track${
+                      stems.length === 1 ? "" : "s"
+                    } mixed`
+                : hasStems
+                  ? "all audio tracks kept"
+                  : "audio kept"
+          }
+          pending={exportPending}
+          error={exportError}
           onCancel={() => setSaveOpen(false)}
           onChoose={async (mode) => {
             // Overwriting replaces the file the webview has open — release it
@@ -753,8 +853,20 @@ function ViewerStage({
               v.removeAttribute("src");
               v.load();
             }
+            // A per-track mix re-muxes; otherwise it's a loss-less trim that
+            // keeps every existing audio track.
+            const tracks: TrackVolume[] | null =
+              audioEnabled && hasStems && tracksEdited
+                ? audibleStems.map((s) => ({ index: s.index, volume: ctlOf(s.index).volume }))
+                : null;
             try {
-              await onTrim({ start: trimStart, end: trimEnd, dropAudio: !audioEnabled, mode });
+              await onExport({
+                start: trimStart,
+                end: trimEnd,
+                dropAudio: !audioEnabled,
+                tracks,
+                mode,
+              });
               setSaveOpen(false);
               // On success an overwrite bumps size_bytes → the stage remounts
               // and reloads on its own; nothing else to do here.
@@ -852,10 +964,107 @@ function TrimHandle({
   );
 }
 
+/**
+ * Per-track mute/solo/volume for a multi-track clip's stems. The recorded clip
+ * carries a master mix (track 0, what the player uses) plus raw stems; these
+ * controls choose how the stems are re-mixed into the exported master. Solo
+ * overrides mute: if any stem is soloed, only soloed stems are audible.
+ */
+function TrackMixerPanel({
+  stems,
+  ctlOf,
+  soloActive,
+  onMute,
+  onSolo,
+  onVolume,
+}: {
+  stems: AudioTrackInfo[];
+  ctlOf: (idx: number) => TrackCtl;
+  soloActive: boolean;
+  onMute: (idx: number) => void;
+  onSolo: (idx: number) => void;
+  onVolume: (idx: number, v: number) => void;
+}) {
+  return (
+    <div className="mx-4 mt-4 rounded-lg border border-border/60 bg-card/30 px-4 py-3">
+      <div className="mb-2.5 flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <SpeakerSimpleHigh weight="fill" className="size-4" />
+        Audio tracks
+        <span className="font-normal text-muted-foreground/70">
+          · mix what you export
+        </span>
+      </div>
+      <div className="flex flex-col gap-2.5">
+        {stems.map((s) => {
+          const c = ctlOf(s.index);
+          const audible = soloActive ? c.solo : !c.muted;
+          return (
+            <div key={s.index} className="flex items-center gap-3">
+              <span
+                className={cn(
+                  "w-36 shrink-0 truncate text-sm",
+                  audible ? "text-foreground" : "text-muted-foreground/60",
+                )}
+                title={s.name}
+              >
+                {s.name}
+              </span>
+              <button
+                type="button"
+                onClick={() => onMute(s.index)}
+                aria-label={c.muted ? "Unmute track" : "Mute track"}
+                title={c.muted ? "Unmute" : "Mute"}
+                className={cn(
+                  "flex size-8 items-center justify-center rounded-md border transition-colors",
+                  c.muted
+                    ? "border-destructive/40 bg-destructive/10 text-destructive"
+                    : "border-border/70 bg-card/50 text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {c.muted ? (
+                  <SpeakerSimpleX weight="fill" className="size-4" />
+                ) : (
+                  <SpeakerSimpleHigh weight="fill" className="size-4" />
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => onSolo(s.index)}
+                aria-label={c.solo ? "Unsolo track" : "Solo track"}
+                title="Solo"
+                className={cn(
+                  "flex size-8 items-center justify-center rounded-md border text-xs font-bold transition-colors",
+                  c.solo
+                    ? "border-primary/50 bg-primary/15 text-primary-text"
+                    : "border-border/70 bg-card/50 text-muted-foreground hover:text-foreground",
+                )}
+              >
+                S
+              </button>
+              <Slider
+                min={0}
+                max={100}
+                value={[c.volume]}
+                onValueChange={([v]) => onVolume(s.index, v)}
+                disabled={!audible}
+                aria-label={`${s.name} volume`}
+                className="max-w-[14rem] flex-1"
+              />
+              <span className="w-9 text-right font-mono text-xs tabular-nums text-muted-foreground">
+                {c.volume}%
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function SaveDialog({
   title,
   selDuration,
-  audioEnabled,
+  audioSummary,
   pending,
   error,
   onCancel,
@@ -863,7 +1072,7 @@ function SaveDialog({
 }: {
   title: string;
   selDuration: number;
-  audioEnabled: boolean;
+  audioSummary: string;
   pending: boolean;
   error: string | null;
   onCancel: () => void;
@@ -880,8 +1089,8 @@ function SaveDialog({
       <div className="relative z-10 w-[380px] rounded-2xl border border-border bg-popover p-6 shadow-2xl">
         <h3 className="text-base font-semibold">Save trim</h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          {fmtClock(selDuration)} selected · audio {audioEnabled ? "kept" : "removed"}.
-          Choose how to save “{title || "Untitled"}”.
+          {fmtClock(selDuration)} selected · {audioSummary}. Choose how to save “
+          {title || "Untitled"}”.
         </p>
 
         {error ? (

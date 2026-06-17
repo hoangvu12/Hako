@@ -38,6 +38,14 @@ sysinfo = "0.33"
 # Clip library: bundled SQLite so there's no system dependency on Windows.
 rusqlite = { version = "0.32", features = ["bundled"] }
 
+# Encode extracted app icons (HICON → RGBA) to PNG for the audio-source list.
+png = "0.17"
+
+# `windows_core` as a direct dep so the `#[implement]` macro (used for the
+# per-process-loopback COM completion handler) resolves the crate by name, at the
+# same 0.61 version as `windows` (the graph also carries an older 0.57 via Tauri).
+windows-core = "0.61"
+
 # Windows GPU / capture stack. Version aligned with Tauri's windows-rs.
 [dependencies.windows]
 version = "0.61"
@@ -56,11 +64,19 @@ features = [
     "Win32_System_WinRT_Direct3D11",
     "Win32_System_WinRT_Graphics_Capture",
     "Win32_UI_WindowsAndMessaging",
+    # App-icon extraction for the audio-source list: SHGetFileInfoW (Shell) +
+    # HICON → DIB pixels (GDI).
+    "Win32_UI_Shell",
+    "Win32_Graphics_Gdi",
     # Audio: WASAPI loopback (desktop) + mic capture, COM, QPC clock.
     "Win32_Media_Audio",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    # PROPVARIANT VT_BLOB tag for the process-loopback activation params.
+    "Win32_System_Variant",
     "Win32_System_Performance",
+    # Audio capture-endpoint enumeration: read the device friendly-name property.
+    "Win32_UI_Shell_PropertiesSystem",
     # Graphics-hook (game-capture) host orchestration: open the DLL's events /
     # mutexes / file mappings, hold the keepalive mutex, run the log pipe.
     "Win32_System_Threading",
