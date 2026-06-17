@@ -3,11 +3,12 @@ import { Outlet } from "@tanstack/react-router";
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { WindowTitlebar } from "@/components/layout/window-titlebar";
 import { useRecorderEventBridge } from "@/hooks/use-recorder";
-import { useClips } from "@/hooks/use-library";
+import { useClipEventBridge, useClips } from "@/hooks/use-library";
 
 export function AppLayout() {
   // Wire Rust -> webview push updates into the query cache once, at the root.
   useRecorderEventBridge();
+  useClipEventBridge();
 
   const { data: clips } = useClips();
   const usedMb = Math.round(

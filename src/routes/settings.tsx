@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { createLazyRoute, useSearch } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Scissors,
   SlidersHorizontal,
@@ -390,6 +390,7 @@ export const Route = createLazyRoute("/settings")({
 function SettingsPage() {
   const { data } = useSettings();
   const update = useUpdateSettings();
+  const qc = useQueryClient();
   // GPU list for the "Selected GPU" dropdown. Cheap, cached; failure just leaves
   // the dropdown with the Auto option.
   const { data: gpus } = useQuery({
@@ -411,6 +412,15 @@ function SettingsPage() {
   useEffect(() => {
     if (data && !draft) setDraft(data);
   }, [data, draft]);
+
+  // A failed save rolls the cache back to the last persisted settings; mirror
+  // that into the draft so the UI stops showing the value that didn't save.
+  // Keyed on the error edge (not `data`) so it can't clobber in-flight edits.
+  useEffect(() => {
+    if (!update.error) return;
+    const persisted = qc.getQueryData<Settings>(["settings"]);
+    if (persisted) setDraft(persisted);
+  }, [update.error, qc]);
 
   // Deep-link: jump to a section when navigated with `?section=` (e.g. from the
   // recorder popover) — including while the page is already mounted.
