@@ -2,10 +2,10 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  redirect,
 } from "@tanstack/react-router";
 
 import { AppLayout } from "@/components/app-layout";
-import DashboardPage from "@/routes/dashboard";
 import ClipsPage from "@/routes/clips";
 import ClipDetailPage from "@/routes/clip-detail";
 import SettingsPage from "@/routes/settings";
@@ -13,10 +13,13 @@ import ValorantPage from "@/routes/valorant";
 
 const rootRoute = createRootRoute({ component: AppLayout });
 
+// Clips is the home of the app — "/" just lands there.
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  component: DashboardPage,
+  beforeLoad: () => {
+    throw redirect({ to: "/clips" });
+  },
 });
 
 const clipsRoute = createRoute({
