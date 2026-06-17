@@ -80,6 +80,45 @@ const EVENT_LABELS: { key: keyof EventToggles; label: string; hint: string }[] =
     { key: "assist", label: "Assist", hint: "Assisted eliminations" },
   ];
 
+// The replay buffer keeps ~`buffer_seconds` of *compressed* video in RAM at the
+// bitrate ceiling (mirrors the Rust `PacketRing`, which stores encoded packets
+// sized by bitrate × time). Audio tracks add only a few MB, so they're ignored
+// here. This is the app's dominant, directly-tunable RAM cost.
+function estBufferBytes(bitrateMbps: number, bufferSeconds: number): number {
+  return ((bitrateMbps * 1_000_000) / 8) * bufferSeconds;
+}
+function fmtBytes(bytes: number): string {
+  if (bytes >= 1 << 30) return `${(bytes / (1 << 30)).toFixed(1)} GB`;
+  return `${Math.round(bytes / (1 << 20))} MB`;
+}
+// Past this the buffer dominates a typical 8–16 GB machine; nudge the user.
+const RAM_WARN_BYTES = 2 * (1 << 30);
+
+/** RAM readout for the replay buffer, with an amber nudge once it gets large. */
+function BufferRamHint({
+  bitrateMbps,
+  bufferSeconds,
+}: {
+  bitrateMbps: number;
+  bufferSeconds: number;
+}) {
+  const bytes = estBufferBytes(bitrateMbps, bufferSeconds);
+  const heavy = bytes >= RAM_WARN_BYTES;
+  return (
+    <p
+      className={cn(
+        "flex items-center gap-1.5 px-1 text-xs",
+        heavy ? "text-warning" : "text-muted-foreground"
+      )}
+    >
+      {heavy ? <Warning weight="fill" className="size-3.5 shrink-0" /> : null}
+      Replay buffer holds ~{fmtBytes(bytes)} in RAM ({bufferSeconds}s × {bitrateMbps}{" "}
+      Mbps)
+      {heavy ? " — lower the bitrate or buffer length to use less." : "."}
+    </p>
+  );
+}
+
 function SectionHero({
   icon: Icon,
   title,
@@ -265,7 +304,9 @@ function SettingsPage() {
                 </Row>
                 <Row
                   label="Replay buffer"
-                  hint="Seconds of gameplay kept in RAM, ready to save."
+                  hint={`Seconds of gameplay kept in RAM (~${fmtBytes(
+                    estBufferBytes(draft.bitrate_mbps, draft.buffer_seconds)
+                  )} at ${draft.bitrate_mbps} Mbps).`}
                 >
                   <Select
                     value={String(draft.buffer_seconds)}
@@ -381,6 +422,13 @@ function SettingsPage() {
                   </div>
                 </Row>
               </Panel>
+
+              {/* The bitrate ceiling drives the replay-buffer RAM (bitrate × the
+                  buffer length set in Clip Settings); surface it here. */}
+              <BufferRamHint
+                bitrateMbps={draft.bitrate_mbps}
+                bufferSeconds={draft.buffer_seconds}
+              />
 
               <Panel title="Capture mode">
                 <Row

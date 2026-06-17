@@ -1,6 +1,12 @@
 // Prevent an extra console window on Windows in release.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// Fast multithreaded allocator for the whole process (see Cargo.toml note). The
+// capture/encode/mux/audio paths allocate frequently across threads; mimalloc
+// beats the default Windows heap on that pattern.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod commands;
 mod events;
 mod media;
@@ -72,15 +78,57 @@ fn main() {
             tracing::info!("Hako core started");
             Ok(())
         })
-        // Window close → hide to tray; the recorder threads keep running.
+        // Window close → hide to tray; the recorder threads keep running. While
+        // hidden during a match the UI doesn't need to render, so drop WebView2 to
+        // a low memory target to free its renderer RAM (restored on show).
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
+                set_webview_memory_low(window.app_handle(), true);
             }
         })
         .run(tauri::generate_context!())
         .expect("error while running Hako");
+}
+
+/// Set the WebView2 memory-usage target for the main window: `Low` while hidden
+/// to tray (the engine drops caches / swaps renderer memory out, freeing system
+/// RAM during gameplay), `Normal` when shown again. Scripts keep running either
+/// way, so live event listeners and the query cache stay warm. No-op if the
+/// window or the WebView2 19+ interface isn't available (older runtimes).
+fn set_webview_memory_low(app: &tauri::AppHandle, low: bool) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let _ = window.with_webview(move |webview| {
+        #[cfg(windows)]
+        {
+            use webview2_com::Microsoft::Web::WebView2::Win32::{
+                ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
+                COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+            };
+            use windows::core::Interface;
+
+            // SAFETY: runs on the UI thread that owns the WebView2 controller; the
+            // COM calls are all best-effort and ignore failure.
+            unsafe {
+                let controller = webview.controller();
+                if let Ok(core) = controller.CoreWebView2() {
+                    if let Ok(core19) = core.cast::<ICoreWebView2_19>() {
+                        let level = if low {
+                            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
+                        } else {
+                            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
+                        };
+                        let _ = core19.SetMemoryUsageTargetLevel(level);
+                    }
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = (webview, low);
+    });
 }
 
 /// System tray with show / hide / quit. Built in code so it shares the
@@ -102,6 +150,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.hide();
                 }
+                set_webview_memory_low(app, true);
             }
             // Quit fully stops the recorder (separate from hide-to-tray).
             "quit" => app.exit(0),
@@ -221,5 +270,7 @@ fn show_main(app: &tauri::AppHandle) {
         let _ = w.unminimize();
         let _ = w.set_focus();
     }
+    // Back to full memory now that the UI is visible again.
+    set_webview_memory_low(app, false);
 }
 

@@ -41,6 +41,17 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # Encode extracted app icons (HICON → RGBA) to PNG for the audio-source list.
 png = "0.17"
 
+# Fast multithreaded allocator. The default Windows process heap is a bottleneck
+# under the pipeline's allocation churn (per-packet Vecs, mux WriteOps, audio
+# scratch, thumbnail decode); mimalloc as the global allocator cuts that latency.
+mimalloc = "0.1"
+
+# WebView2 COM interfaces, used to drop the UI's renderer to a low memory target
+# while the window is hidden to tray during gameplay (`ICoreWebView2_19::
+# SetMemoryUsageTargetLevel`). Direct dep so the interface types resolve at the
+# same version Tauri's wry already links.
+webview2-com = "0.38"
+
 # `windows_core` as a direct dep so the `#[implement]` macro (used for the
 # per-process-loopback COM completion handler) resolves the crate by name, at the
 # same 0.61 version as `windows` (the graph also carries an older 0.57 via Tauri).
@@ -93,6 +104,9 @@ incremental = true
 [profile.release]
 codegen-units = 1
 lto = true
-opt-level = "s"
+# Performance-first: optimize for speed (the real-time capture/encode/mux and
+# audio/thumbnail CPU paths), not size. `lto`/`codegen-units=1`/`panic=abort`
+# already minimize bloat; the binary grows modestly in exchange for faster code.
+opt-level = 3
 panic = "abort"
 strip = true
