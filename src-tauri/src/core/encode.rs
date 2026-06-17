@@ -221,7 +221,10 @@ pub struct Encoder {
     fps: u32,
 }
 
-/// Hardware encode backend, chosen from the capture adapter's vendor.
+/// Hardware encode backend, chosen from the **encode** adapter's vendor (which
+/// equals the capture adapter's on the single-device fast path, but differs on a
+/// cross-adapter setup — e.g. capture on the Intel iGPU, encode on the NVIDIA
+/// dGPU; see `device::resolve_adapters`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Backend {
     /// `h264_nvenc` — NVIDIA. Consumes our `AV_PIX_FMT_D3D11` NV12 texture
@@ -293,11 +296,16 @@ pub enum VideoCodec {
     Av1,
 }
 
-/// Codec + bitrate selection, threaded from settings down to the encode thread.
+/// Codec + bitrate + output-resolution selection, threaded from settings down to
+/// the encode thread.
 #[derive(Debug, Clone, Copy)]
 pub struct EncodeSettings {
     pub codec: VideoCodec,
     pub bitrate_mbps: u32,
+    /// Output-resolution target box (width, height), or `None` for native (no
+    /// scaling). The encode thread fits the captured frame into this box by
+    /// height and never upscales (see [`crate::settings::Settings::resolution_dims`]).
+    pub target_res: Option<(u32, u32)>,
 }
 
 impl VideoCodec {
@@ -340,9 +348,13 @@ impl VideoCodec {
 }
 
 impl Encoder {
-    /// Build the hardware encoder matching the **capture adapter's vendor** ×
-    /// requested `codec`: NVIDIA → `*_nvenc`, Intel → `*_qsv`. Both encode on the
-    /// *same* device the frame was captured/converted on (no cross-adapter copy).
+    /// Build the hardware encoder matching the **encode adapter's vendor** ×
+    /// requested `codec`: NVIDIA → `*_nvenc`, Intel → `*_qsv`. `device`/`context`
+    /// are the **encode** device — the same device the frame was captured/converted
+    /// on for the single-device fast path (no cross-adapter copy), or the separate
+    /// encode-GPU device on a cross-adapter setup (see `device::resolve_adapters`).
+    /// The vendor MUST be the encode adapter's, not the capture adapter's — that's
+    /// what selects NVENC vs QSV correctly when they differ.
     ///
     /// `codec` falls back toward H.264 if its encoder isn't present in this FFmpeg
     /// build or won't open on this GPU (e.g. AV1 NVENC needs RTX 40-series); the
@@ -978,7 +990,7 @@ mod tests {
         }
         let bgra = bgra.unwrap();
 
-        let conv = Converter::new(&d3d_device, &ctx, w, h).expect("converter");
+        let conv = Converter::new(&d3d_device, &ctx, w, h, w, h).expect("converter");
 
         let mut enc = match Encoder::new_qsv(&d3d_device, &ctx, w, h, fps) {
             Ok(e) => e,
@@ -1092,7 +1104,7 @@ mod tests {
         }
         let bgra = bgra.unwrap();
 
-        let conv = Converter::new(&d3d_device, &ctx, w, h).expect("converter");
+        let conv = Converter::new(&d3d_device, &ctx, w, h, w, h).expect("converter");
         let mut enc = match Encoder::new_nvenc(&d3d_device, &ctx, w, h, fps) {
             Ok(e) => e,
             Err(e) => panic!("Encoder::new_nvenc failed: {e}"),

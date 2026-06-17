@@ -648,10 +648,12 @@ fn run_pipeline(
         Some(i) => Some(i),
         None => device::default_capture_index(&gpus),
     };
-    // Vendor of the capture adapter decides the HW encoder (NVENC vs QSV vs AMF).
+    // Encode adapter == capture adapter on the single-device fast path (Phase 1:
+    // dual-device plumbing without cross-adapter yet). The encoder takes the
+    // ENCODE adapter's vendor; here they coincide. Logged so a cross-adapter setup
+    // is visible once later phases let `encode_idx` diverge from `capture_idx`.
     let vendor = index
-        .and_then(|i| gpus.iter().find(|g| g.index == i))
-        .map(|g| g.vendor)
+        .map(|i| device::vendor_at(&gpus, i))
         .unwrap_or(device::Vendor::Other);
     let adapter = match index {
         Some(i) => Some(device::adapter_at(i).map_err(|e| format!("adapter_at({i}): {e:?}"))?),
@@ -659,6 +661,13 @@ fn run_pipeline(
     };
     let (d3d_device, context, _fl) =
         device::create_device(adapter.as_ref()).map_err(|e| format!("create device: {e:?}"))?;
+    tracing::info!(
+        capture_adapter = ?index,
+        encode_adapter = ?index,
+        cross_adapter = false,
+        encode_vendor = vendor.label(),
+        "wgc capture: resolved adapters (single-device fast path)"
+    );
 
     let hwnd = HWND(hwnd_raw as *mut c_void);
     let item = create_item_for_window(hwnd).map_err(|e| format!("capture item: {e:?}"))?;
@@ -685,8 +694,12 @@ fn run_pipeline(
     // shared clip buffer (Mode A).
     let (enc_ready_tx, enc_ready_rx) = std::sync::mpsc::channel::<std::result::Result<(), String>>();
     let encode_thread = {
-        let device = d3d_device.clone();
-        let context = context.clone();
+        let capture_device = d3d_device.clone();
+        let capture_context = context.clone();
+        // Single-device fast path: the encode device IS the capture device, so the
+        // converter's NV12 textures feed the encoder with no cross-adapter copy.
+        let encode_device = d3d_device.clone();
+        let encode_context = context.clone();
         let shared = shared.clone();
         let free_pool = free_pool.clone();
         let clip = clip.clone();
@@ -694,8 +707,8 @@ fn run_pipeline(
             .name("hako-encode".into())
             .spawn(move || {
                 encode_thread(
-                    device, context, vendor, width, height, target_fps, enc_cfg, filled_rx,
-                    free_pool, shared, clip, enc_ready_tx,
+                    capture_device, capture_context, encode_device, encode_context, vendor, width,
+                    height, target_fps, enc_cfg, filled_rx, free_pool, shared, clip, enc_ready_tx,
                 )
             })
             .map_err(|e| format!("spawn encode thread: {e}"))?
@@ -899,9 +912,10 @@ fn run_hook_pipeline(
     let index = adapter_index
         .or_else(|| gpus.iter().find(|g| g.preferred).map(|g| g.index))
         .or_else(|| device::default_capture_index(&gpus));
+    // Encode == capture on this (single-device) path too; the encoder takes the
+    // encode adapter's vendor (here, the same adapter the hook renders/copies on).
     let vendor = index
-        .and_then(|i| gpus.iter().find(|g| g.index == i))
-        .map(|g| g.vendor)
+        .map(|i| device::vendor_at(&gpus, i))
         .unwrap_or(device::Vendor::Other);
     let adapter = match index {
         Some(i) => Some(device::adapter_at(i).map_err(|e| format!("adapter_at({i}): {e:?}"))?),
@@ -909,6 +923,13 @@ fn run_hook_pipeline(
     };
     let (d3d_device, context, _fl) =
         device::create_device(adapter.as_ref()).map_err(|e| format!("create device: {e:?}"))?;
+    tracing::info!(
+        capture_adapter = ?index,
+        encode_adapter = ?index,
+        cross_adapter = false,
+        encode_vendor = vendor.label(),
+        "hook capture: resolved adapters (single-device fast path)"
+    );
 
     // Inject + bring the hook up (steps 1–9). Frames flow after this.
     let hwnd = HWND(hwnd_raw as *mut c_void);
@@ -965,8 +986,10 @@ fn run_hook_pipeline(
     // Reuse the exact same encode thread as the WGC path.
     let (enc_ready_tx, enc_ready_rx) = std::sync::mpsc::channel::<std::result::Result<(), String>>();
     let encode_thread = {
-        let device = d3d_device.clone();
-        let context = context.clone();
+        let capture_device = d3d_device.clone();
+        let capture_context = context.clone();
+        let encode_device = d3d_device.clone();
+        let encode_context = context.clone();
         let shared = shared.clone();
         let free_pool = free_pool.clone();
         let clip = clip.clone();
@@ -974,8 +997,8 @@ fn run_hook_pipeline(
             .name("hako-encode".into())
             .spawn(move || {
                 encode_thread(
-                    device, context, vendor, width, height, target_fps, enc_cfg, filled_rx,
-                    free_pool, shared, clip, enc_ready_tx,
+                    capture_device, capture_context, encode_device, encode_context, vendor, width,
+                    height, target_fps, enc_cfg, filled_rx, free_pool, shared, clip, enc_ready_tx,
                 )
             })
             .map_err(|e| format!("spawn encode thread: {e}"))?
@@ -1339,12 +1362,41 @@ fn setup_wgc(
     Ok((pool, session, token))
 }
 
+/// Output (encode) dimensions for a captured `src_w`x`src_h` frame given an
+/// optional resolution target box. Fits the source into the box **by height and
+/// never upscales** (Medal's `MatchHeight`), preserving aspect ratio; both
+/// results are even (NV12 is 4:2:0). A `None` target — or one at least as tall as
+/// the source — yields the source size unchanged (native capture).
+fn scaled_output(src_w: u32, src_h: u32, target: Option<(u32, u32)>) -> (u32, u32) {
+    let even = |v: u32| (v & !1).max(2);
+    match target {
+        Some((_, target_h)) if src_h > 0 && target_h < src_h => {
+            let factor = target_h as f64 / src_h as f64;
+            let w = (src_w as f64 * factor).round() as u32;
+            let h = (src_h as f64 * factor).round() as u32;
+            (even(w), even(h))
+        }
+        _ => (even(src_w), even(src_h)),
+    }
+}
+
 /// Encode thread: owns the Converter, Encoder, and NV12 ring.
 /// Receives staging BGRA textures, converts to NV12, encodes, recycles staging.
+///
+/// Takes the capture device (for the `Converter`, which reads the capture-side
+/// BGRA staging textures) and the encode device + vendor (for the `Encoder`)
+/// separately — the dual-device groundwork for cross-adapter encode. On the
+/// single-device fast path the caller passes the *same* device for both, so the
+/// NV12 textures the converter produces are consumed directly by the encoder with
+/// no cross-adapter copy (today's behavior, unchanged). A later phase makes the
+/// devices differ and inserts the shared keyed-mutex NV12 hand-off between them.
+#[allow(clippy::too_many_arguments)]
 fn encode_thread(
-    device: ID3D11Device,
-    context: ID3D11DeviceContext,
-    vendor: device::Vendor,
+    capture_device: ID3D11Device,
+    capture_context: ID3D11DeviceContext,
+    encode_device: ID3D11Device,
+    encode_context: ID3D11DeviceContext,
+    encode_vendor: device::Vendor,
     width: u32,
     height: u32,
     fps: u32,
@@ -1359,21 +1411,34 @@ fn encode_thread(
     // pins the CPU, or the bounded hand-off channel backs up and WGC drops frames.
     crate::core::boost_current_thread_priority("encode");
 
-    let converter = match Converter::new(&device, &context, width, height) {
+    // Output (encode) size: native capture size, or downscaled to the configured
+    // resolution target. The converter scales BGRA(native) → NV12(out) in its
+    // existing GPU pass, so everything downstream (encoder, NV12 ring, clip meta)
+    // works at the output size.
+    let (out_w, out_h) = scaled_output(width, height, enc_cfg.target_res);
+    if (out_w, out_h) != (width, height) {
+        tracing::info!("scaling capture {width}x{height} -> {out_w}x{out_h}");
+    }
+
+    // The converter runs on the CAPTURE device (it reads the capture-side BGRA
+    // staging textures via VideoProcessorBlt and writes NV12).
+    let converter = match Converter::new(&capture_device, &capture_context, width, height, out_w, out_h) {
         Ok(c) => c,
         Err(e) => {
             let _ = ready_tx.send(Err(format!("converter init: {e:?}")));
             return;
         }
     };
+    // The encoder runs on the ENCODE device with the ENCODE adapter's vendor
+    // (== capture on the single-device fast path).
     let mut encoder = match Encoder::new(
-        &device,
-        &context,
-        vendor,
+        &encode_device,
+        &encode_context,
+        encode_vendor,
         enc_cfg.codec,
         enc_cfg.bitrate_mbps,
-        width,
-        height,
+        out_w,
+        out_h,
         fps,
     ) {
         Ok(e) => e,
@@ -1384,10 +1449,11 @@ fn encode_thread(
     };
     // Publish muxing metadata now that the encoder (and its codec-config
     // extradata) exists, so the save path can write clips (mux.rs). codec_id comes
-    // from the encoder, which may have fallen back from the requested codec.
+    // from the encoder, which may have fallen back from the requested codec. Size
+    // is the encoded (output) size, not the captured one.
     clip.set_meta(ClipMeta {
-        width,
-        height,
+        width: out_w,
+        height: out_h,
         fps,
         codec_id: encoder.codec().av_codec_id(),
         extradata: encoder.extradata(),
@@ -1592,6 +1658,23 @@ fn create_item_for_window(hwnd: HWND) -> WinResult<GraphicsCaptureItem> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn scaled_output_fits_by_height_and_never_upscales() {
+        // Native (no target) is unchanged, just even-rounded.
+        assert_eq!(scaled_output(1920, 1080, None), (1920, 1080));
+        assert_eq!(scaled_output(1921, 1081, None), (1920, 1080));
+        // 1440p source, 720p target → halved, aspect preserved.
+        assert_eq!(scaled_output(2560, 1440, Some((1280, 720))), (1280, 720));
+        // 16:9 1080p source into a 720p box.
+        assert_eq!(scaled_output(1920, 1080, Some((1280, 720))), (1280, 720));
+        // Ultrawide keeps aspect (width follows the height scale, may exceed box).
+        assert_eq!(scaled_output(3440, 1440, Some((1280, 720))), (1720, 720));
+        // Target taller than source → no upscale, stays native.
+        assert_eq!(scaled_output(1280, 720, Some((1920, 1080))), (1280, 720));
+        // Equal height → unchanged.
+        assert_eq!(scaled_output(1280, 720, Some((1280, 720))), (1280, 720));
+    }
+
     /// Exercises the WGC path (interop → device → frame pool → FrameArrived →
     /// D3D11 texture extraction) against real on-screen windows. No encode
     /// pipeline here (`handoff = None`) — that's covered by the encode tests.
@@ -1704,11 +1787,12 @@ mod tests {
                 let enc_cfg = EncodeSettings {
                     codec: crate::core::encode::VideoCodec::H264,
                     bitrate_mbps: 20,
+                    target_res: None,
                 };
                 std::thread::spawn(move || {
                     encode_thread(
-                        device, context, vendor, width, height, 60, enc_cfg, filled_rx, free_pool,
-                        shared, clip, rdy_tx,
+                        device.clone(), context.clone(), device, context, vendor, width, height,
+                        60, enc_cfg, filled_rx, free_pool, shared, clip, rdy_tx,
                     )
                 })
             };

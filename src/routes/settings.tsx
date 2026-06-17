@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { createLazyRoute, useSearch } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import {
   Scissors,
   SlidersHorizontal,
@@ -9,6 +10,7 @@ import {
   MagnifyingGlass,
   Warning,
   SpeakerHigh,
+  Check,
   type Icon,
 } from "@phosphor-icons/react";
 
@@ -27,6 +29,7 @@ import { RecordingAudio } from "@/components/settings/recording-audio";
 import { useSettings, useUpdateSettings } from "@/hooks/use-settings";
 import {
   effectiveAudioConfig,
+  getGpuInfo,
   type AudioConfig,
   type EventToggles,
   type Settings,
@@ -79,6 +82,103 @@ const EVENT_LABELS: { key: keyof EventToggles; label: string; hint: string }[] =
     { key: "death", label: "Death", hint: "Your deaths" },
     { key: "assist", label: "Assist", hint: "Assisted eliminations" },
   ];
+
+// Quality presets (Medal-style). A preset is just a named bundle of the
+// concrete knobs; selecting one writes resolution/fps/bitrate, after which those
+// fields are the source of truth. Codec/encoder/GPU are independent of the
+// preset (separate dropdowns), so they're not touched here. Bitrates mirror
+// Medal's ResolutionHandler table. "custom" is implicit (no card entry).
+type PresetKey = "low" | "standard" | "high";
+const PRESETS: {
+  key: PresetKey;
+  label: string;
+  blurb: string;
+  line: string;
+  resolution: string;
+  fps: number;
+  bitrate: number;
+}[] = [
+  {
+    key: "low",
+    label: "Low Quality",
+    blurb: "Lower-end PCs & faster uploads",
+    line: "360p · 24 FPS",
+    resolution: "360p",
+    fps: 24,
+    bitrate: 3,
+  },
+  {
+    key: "standard",
+    label: "Standard",
+    blurb: "Performance & fast sharing",
+    line: "720p · 60 FPS",
+    resolution: "720p",
+    fps: 60,
+    bitrate: 10,
+  },
+  {
+    key: "high",
+    label: "High Quality",
+    blurb: "Higher quality & slower uploads",
+    line: "1080p · 60 FPS",
+    resolution: "1080p",
+    fps: 60,
+    bitrate: 15,
+  },
+];
+
+// Resolution targets for the Custom panel. "native" = no scaling (capture at the
+// game's own size); the rest match the backend's `resolution_dims()` table.
+const RESOLUTIONS: { value: string; label: string }[] = [
+  { value: "native", label: "Native (no scaling)" },
+  { value: "360p", label: "360p" },
+  { value: "480p", label: "480p" },
+  { value: "720p", label: "HD (720p)" },
+  { value: "1080p", label: "Full HD (1080p)" },
+  { value: "1440p", label: "QHD (1440p)" },
+  { value: "2160p", label: "UHD 4K (2160p)" },
+];
+
+const FPS_OPTIONS = [24, 30, 60, 120, 144, 240];
+const BITRATE_OPTIONS = [3, 5, 8, 10, 15, 20, 30, 50];
+
+/** One selectable quality-preset card (Low / Standard / High / Custom). */
+function PresetCard({
+  title,
+  blurb,
+  line,
+  selected,
+  onSelect,
+}: {
+  title: string;
+  blurb: string;
+  line?: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={cn(
+        "relative flex flex-col rounded-lg border p-3 text-left transition-colors",
+        selected
+          ? "border-primary bg-primary/10"
+          : "border-border/70 bg-card/40 hover:border-border hover:bg-accent/40"
+      )}
+    >
+      {selected && (
+        <Check
+          weight="bold"
+          className="absolute top-2.5 right-2.5 size-4 text-primary-text"
+        />
+      )}
+      <span className="text-sm font-semibold">{title}</span>
+      <span className="mt-1 text-xs text-muted-foreground">{blurb}</span>
+      {line && <span className="mt-2 text-xs font-medium">{line}</span>}
+    </button>
+  );
+}
 
 // The replay buffer keeps ~`buffer_seconds` of *compressed* video in RAM at the
 // bitrate ceiling (mirrors the Rust `PacketRing`, which stores encoded packets
@@ -185,6 +285,14 @@ export const Route = createLazyRoute("/settings")({
 function SettingsPage() {
   const { data } = useSettings();
   const update = useUpdateSettings();
+  // GPU list for the "Selected GPU" dropdown. Cheap, cached; failure just leaves
+  // the dropdown with the Auto option.
+  const { data: gpus } = useQuery({
+    queryKey: ["gpu-info"],
+    queryFn: getGpuInfo,
+    staleTime: 60_000,
+    retry: false,
+  });
   const search = useSearch({ from: "/settings" });
   const [draft, setDraft] = useState<Settings | null>(null);
   const [active, setActive] = useState<SectionKey>(
@@ -220,6 +328,15 @@ function SettingsPage() {
   const setLocal = <K extends keyof Settings>(key: K, value: Settings[K]) =>
     setDraft({ ...draft, [key]: value });
   const commit = () => update.mutate(draft);
+  // Apply a preset: highlight its card and write its concrete knobs at once.
+  const applyPreset = (p: (typeof PRESETS)[number]) =>
+    persist({
+      ...draft,
+      quality_preset: p.key,
+      resolution: p.resolution,
+      target_fps: p.fps,
+      bitrate_mbps: p.bitrate,
+    });
   const toggleEvent = (key: keyof EventToggles) =>
     persist({ ...draft, events: { ...draft.events, [key]: !draft.events[key] } });
 
@@ -367,26 +484,124 @@ function SettingsPage() {
               <SectionHero
                 icon={SlidersHorizontal}
                 title="Quality"
-                subtitle="Capture stays at native resolution — tune frame rate, codec, and bitrate."
+                subtitle="Manage your recording resolution, frames per second, bitrate and more."
               />
-              <Panel title="Encoder">
-                <Row
-                  label="Target FPS"
-                  hint="Frames per second to capture and encode."
-                >
+              <Panel title="Recording Quality">
+                <p className="pb-4 text-xs text-muted-foreground">
+                  Higher settings use more resources. If you have issues, try a
+                  lower one.
+                </p>
+                {/* Preset cards: Low / Standard / High / Custom. */}
+                <div className="grid grid-cols-2 gap-3 pb-4">
+                  {PRESETS.map((p) => (
+                    <PresetCard
+                      key={p.key}
+                      title={p.label}
+                      blurb={p.blurb}
+                      line={p.line}
+                      selected={draft.quality_preset === p.key}
+                      onSelect={() => applyPreset(p)}
+                    />
+                  ))}
+                  <PresetCard
+                    title="Custom"
+                    blurb="Customize your own settings"
+                    selected={draft.quality_preset === "custom"}
+                    onSelect={() => set("quality_preset", "custom")}
+                  />
+                </div>
+
+                {/* Custom-only knobs — for a preset these are implied by the card. */}
+                {draft.quality_preset === "custom" && (
+                  <>
+                    <Row label="Resolution" hint="Output size; capture is downscaled to fit (never upscaled).">
+                      <Select
+                        value={draft.resolution}
+                        onValueChange={(v) => set("resolution", v)}
+                      >
+                        <SelectTrigger size="sm" className="w-44">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {RESOLUTIONS.map((r) => (
+                            <SelectItem key={r.value} value={r.value}>
+                              {r.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </Row>
+                    <Row label="FPS" hint="Frames per second to capture and encode.">
+                      <Select
+                        value={String(draft.target_fps)}
+                        onValueChange={(v) => set("target_fps", Number(v))}
+                      >
+                        <SelectTrigger size="sm" className="w-24">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {FPS_OPTIONS.map((f) => (
+                            <SelectItem key={f} value={String(f)}>
+                              {f}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </Row>
+                    <Row label="Bitrate" hint="Encoding ceiling.">
+                      <Select
+                        value={String(draft.bitrate_mbps)}
+                        onValueChange={(v) => set("bitrate_mbps", Number(v))}
+                      >
+                        <SelectTrigger size="sm" className="w-24">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {BITRATE_OPTIONS.map((b) => (
+                            <SelectItem key={b} value={String(b)}>
+                              {b}M
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </Row>
+                  </>
+                )}
+
+                {/* Video Encoder / Selected GPU / Codec — independent of preset. */}
+                <Row label="Video Encoder" hint="Hardware (GPU) encoding. CPU encoding is coming soon.">
                   <Select
-                    value={String(draft.target_fps)}
-                    onValueChange={(v) => set("target_fps", Number(v))}
+                    value={draft.video_encoder === "cpu" ? "cpu" : "gpu"}
+                    onValueChange={(v) => set("video_encoder", v)}
                   >
-                    <SelectTrigger size="sm" className="w-24">
+                    <SelectTrigger size="sm" className="w-28">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {[30, 60, 120, 144, 240].map((f) => (
-                        <SelectItem key={f} value={String(f)}>
-                          {f}
-                        </SelectItem>
-                      ))}
+                      <SelectItem value="gpu">GPU</SelectItem>
+                      <SelectItem value="cpu" disabled>
+                        CPU (soon)
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Row>
+                <Row label="Selected GPU" hint="Which adapter captures and encodes.">
+                  <Select
+                    value={String(draft.gpu_adapter)}
+                    onValueChange={(v) => set("gpu_adapter", Number(v))}
+                  >
+                    <SelectTrigger size="sm" className="w-44">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="-1">Auto</SelectItem>
+                      {(gpus?.adapters ?? [])
+                        .filter((g) => !g.is_software)
+                        .map((g) => (
+                          <SelectItem key={g.index} value={String(g.index)}>
+                            {g.name}
+                          </SelectItem>
+                        ))}
                     </SelectContent>
                   </Select>
                 </Row>
@@ -407,21 +622,20 @@ function SettingsPage() {
                     </SelectContent>
                   </Select>
                 </Row>
-                <Row label="Bitrate" hint="Encoding ceiling.">
-                  <div className="flex items-center gap-2">
-                    <Input
-                      type="number"
-                      className="h-9 w-20 text-right"
-                      value={draft.bitrate_mbps}
-                      onChange={(e) =>
-                        setLocal("bitrate_mbps", Number(e.target.value))
-                      }
-                      onBlur={commit}
-                    />
-                    <span className="text-sm text-muted-foreground">Mbps</span>
-                  </div>
-                </Row>
               </Panel>
+
+              {/* Medal-style nudge: above the desktop-composition rate, WGC capture
+                  can't actually deliver the frames, so clips look choppy. */}
+              {draft.target_fps > 60 && draft.capture_mode !== "hook" && (
+                <div className="flex gap-2 rounded-lg border border-warning/40 bg-warning/10 p-3 text-xs text-warning">
+                  <Warning className="size-4 shrink-0" weight="fill" />
+                  <span>
+                    {draft.target_fps} FPS is above the ~60&nbsp;FPS desktop-composition
+                    cap. Unless you enable game-hook capture (below), WGC can't deliver
+                    that many frames and clips may look choppy.
+                  </span>
+                </div>
+              )}
 
               {/* The bitrate ceiling drives the replay-buffer RAM (bitrate × the
                   buffer length set in Clip Settings); surface it here. */}

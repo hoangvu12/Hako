@@ -68,6 +68,16 @@ export interface GpuReport {
   device_ok: boolean;
   feature_level: string | null;
   error: string | null;
+  /** Resolved WGC capture adapter (display owner) for the current setting. */
+  capture_adapter: number | null;
+  /** Resolved encode adapter (== capture on the zero-copy fast path). */
+  encode_adapter: number | null;
+  /** True when encode differs from capture (cross-adapter NV12 hand-off needed). */
+  cross_adapter: boolean;
+  /** Whether the cross-adapter capability probe passed (true on the fast path). */
+  cross_adapter_ok: boolean;
+  /** Why the cross-adapter probe failed, if it did. */
+  cross_adapter_reason: string | null;
 }
 
 /** Enumerate GPUs and validate the shared D3D11 device. */
@@ -422,6 +432,23 @@ export interface Settings {
    * cap but carries anti-cheat / ban risk).
    */
   capture_mode: string;
+  /**
+   * Which quality preset card is highlighted: "low" | "standard" | "high" |
+   * "custom". Cosmetic — selecting a preset writes the concrete knobs
+   * (resolution / target_fps / bitrate_mbps / codec), which are the source of
+   * truth. "custom" leaves the knobs editable.
+   */
+  quality_preset: string;
+  /**
+   * Output resolution cap: "native" (no scaling) or a named target ("360p" |
+   * "480p" | "720p" | "1080p" | "1440p" | "2160p"). When set, capture is
+   * downscaled on-GPU to fit the target by height, never upscaling.
+   */
+  resolution: string;
+  /** GPU to capture/encode on: -1 = Auto (display adapter), else adapter index. */
+  gpu_adapter: number;
+  /** Video encoder backend: "gpu" (hardware NVENC/QSV). Only GPU is implemented. */
+  video_encoder: string;
 }
 
 /** Read persisted settings. */

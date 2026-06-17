@@ -739,7 +739,7 @@ mod tests {
                 .expect("create bgra");
         }
         let bgra = bgra.unwrap();
-        let conv = Converter::new(&d3d_device, &ctx, w, h).expect("converter");
+        let conv = Converter::new(&d3d_device, &ctx, w, h, w, h).expect("converter");
         let mut enc = Encoder::new_qsv(&d3d_device, &ctx, w, h, fps).expect("encoder");
 
         let meta = ClipMeta {
@@ -844,7 +844,7 @@ mod tests {
                 .expect("create bgra");
         }
         let bgra = bgra.unwrap();
-        let conv = Converter::new(&d3d_device, &ctx, w, h).expect("converter");
+        let conv = Converter::new(&d3d_device, &ctx, w, h, w, h).expect("converter");
         let mut enc = Encoder::new_qsv(&d3d_device, &ctx, w, h, fps).expect("encoder");
         let meta = ClipMeta {
             width: w,
@@ -946,7 +946,7 @@ mod tests {
                 .expect("create bgra");
         }
         let bgra = bgra.unwrap();
-        let conv = Converter::new(&d3d_device, &ctx, w, h).expect("converter");
+        let conv = Converter::new(&d3d_device, &ctx, w, h, w, h).expect("converter");
         let mut enc = Encoder::new_qsv(&d3d_device, &ctx, w, h, fps).expect("encoder");
         let meta = ClipMeta {
             width: w,

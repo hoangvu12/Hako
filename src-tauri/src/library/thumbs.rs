@@ -532,7 +532,7 @@ mod tests {
         let mut bgra: Option<ID3D11Texture2D> = None;
         unsafe { dev.CreateTexture2D(&desc, None, Some(&mut bgra)).expect("bgra") };
         let bgra = bgra.unwrap();
-        let conv = Converter::new(&dev, &ctx, w, h).expect("conv");
+        let conv = Converter::new(&dev, &ctx, w, h, w, h).expect("conv");
         let mut enc = Encoder::new_qsv(&dev, &ctx, w, h, fps).expect("enc");
         let mut ring = PacketRing::new(fps, 30);
         for i in 0..30i64 {
@@ -595,7 +595,7 @@ mod tests {
         let mut bgra: Option<ID3D11Texture2D> = None;
         unsafe { dev.CreateTexture2D(&desc, None, Some(&mut bgra)).expect("bgra") };
         let bgra = bgra.unwrap();
-        let conv = Converter::new(&dev, &ctx, w, h).expect("conv");
+        let conv = Converter::new(&dev, &ctx, w, h, w, h).expect("conv");
         let mut enc = Encoder::new_qsv(&dev, &ctx, w, h, fps).expect("enc");
         // ~2s so multiple keyframes (1s GOP) exist for the strip to sample.
         let mut ring = PacketRing::new(fps, 30);

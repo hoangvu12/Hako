@@ -71,12 +71,29 @@ pub struct GpuReport {
     pub device_ok: bool,
     pub feature_level: Option<String>,
     pub error: Option<String>,
+    /// Resolved WGC capture adapter for the current "Selected GPU" setting
+    /// (display owner). `None` if no usable adapter was found.
+    pub capture_adapter: Option<u32>,
+    /// Resolved encode adapter for the current setting (== `capture_adapter` on
+    /// the zero-copy fast path; a different discrete GPU when cross-adapter).
+    pub encode_adapter: Option<u32>,
+    /// True when the resolved encode adapter differs from the capture adapter, so
+    /// a cross-adapter NV12 hand-off would be needed (Medal-style discrete NVENC).
+    pub cross_adapter: bool,
+    /// Whether the cross-adapter capability probe passed (a shared keyed-mutex
+    /// NV12 texture round-trips capture→encode device). Always true on the
+    /// non-cross fast path; false → the pipeline would fall back to single-device.
+    pub cross_adapter_ok: bool,
+    /// Why the cross-adapter probe failed (so the UI can explain it), else `None`.
+    pub cross_adapter_reason: Option<String>,
 }
 
 /// Enumerate GPUs and validate that we can open a D3D11 device on the
-/// preferred adapter (the foundation of the zero-copy pipeline).
+/// preferred adapter (the foundation of the zero-copy pipeline). Also resolves
+/// the (capture, encode) adapter pair for the current "Selected GPU" setting and
+/// runs the cross-adapter capability probe (Phase 0 of cross-adapter encode).
 #[tauri::command]
-pub fn gpu_info() -> GpuReport {
+pub fn gpu_info(settings: State<SettingsState>) -> GpuReport {
     let adapters = match device::enumerate_gpus() {
         Ok(a) => a,
         Err(e) => {
@@ -86,6 +103,11 @@ pub fn gpu_info() -> GpuReport {
                 device_ok: false,
                 feature_level: None,
                 error: Some(format!("DXGI enumeration failed: {e}")),
+                capture_adapter: None,
+                encode_adapter: None,
+                cross_adapter: false,
+                cross_adapter_ok: true,
+                cross_adapter_reason: None,
             };
         }
     };
@@ -102,12 +124,36 @@ pub fn gpu_info() -> GpuReport {
         None => (false, None, Some("no hardware encoder-capable adapter found".into())),
     };
 
+    // Resolve the (capture, encode) pair for the saved "Selected GPU" choice and
+    // probe the cross-adapter hand-off (a no-op for the single-device fast path).
+    let requested_encode = settings.0.lock().ok().and_then(|s| s.gpu_adapter_index());
+    let plan = device::resolve_adapters(&adapters, requested_encode);
+    let (capture_adapter, encode_adapter, cross_adapter, cross_adapter_ok, cross_adapter_reason) =
+        match plan {
+            Some(p) => {
+                let probe = device::probe_cross_adapter(&p);
+                (
+                    Some(p.capture_idx),
+                    Some(p.encode_idx),
+                    p.cross,
+                    probe.ok,
+                    probe.reason,
+                )
+            }
+            None => (None, None, false, true, None),
+        };
+
     GpuReport {
         adapters,
         selected_encoder,
         device_ok,
         feature_level,
         error,
+        capture_adapter,
+        encode_adapter,
+        cross_adapter,
+        cross_adapter_ok,
+        cross_adapter_reason,
     }
 }
 
@@ -177,7 +223,7 @@ pub fn start_capture_with(
     // Defaults (fps, buffer length, audio config, backend) come from saved
     // settings. `effective_audio()` yields the Medal-style per-source config,
     // synthesizing one from the legacy fields for pre-feature configs.
-    let (cfg_fps, buffer_secs, audio_cfg, use_hook, enc_cfg) = {
+    let (cfg_fps, buffer_secs, audio_cfg, use_hook, enc_cfg, cfg_adapter) = {
         let s = settings.0.lock().map_err(|_| "settings poisoned")?;
         (
             s.target_fps,
@@ -187,7 +233,9 @@ pub fn start_capture_with(
             encode::EncodeSettings {
                 codec: encode::VideoCodec::from_setting(&s.codec),
                 bitrate_mbps: s.bitrate_mbps,
+                target_res: s.resolution_dims(),
             },
+            s.gpu_adapter_index(),
         )
     };
     let mut guard = state.0.lock().map_err(|_| "capture state poisoned")?;
@@ -195,6 +243,9 @@ pub fn start_capture_with(
         return Err("capture already running".into());
     }
     let fps = target_fps.unwrap_or(cfg_fps);
+    // Explicit adapter from the caller wins; otherwise use the saved "Selected GPU"
+    // (Auto → None, i.e. the display-owning adapter).
+    let adapter_index = adapter_index.or(cfg_adapter);
     // `hook` = opt-in graphics-hook injection (beats the DWM cap, anti-cheat
     // risk); anything else = WGC (default, Vanguard-safe). See `core::hook`.
     let running = if use_hook {

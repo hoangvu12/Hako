@@ -38,14 +38,25 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_NV12, DXGI_RATIONAL, DXGI_SAMPLE_DESC,
 };
 
-/// BGRA → NV12 color converter bound to one shared D3D11 device at a fixed
-/// resolution. Reused for every frame; recreate on a resolution change.
+/// BGRA → NV12 color converter bound to one shared D3D11 device at fixed input
+/// and output resolutions. Reused for every frame; recreate on a resolution
+/// change. When the output dimensions are smaller than the input, the
+/// `VideoProcessorBlt` downscales as part of the same GPU pass (it stretches the
+/// full input surface onto the full output surface), so resolution scaling is
+/// free and stays entirely on the GPU.
 pub struct Converter {
     device: ID3D11Device,
     video_device: ID3D11VideoDevice,
     video_context: ID3D11VideoContext,
     enumerator: ID3D11VideoProcessorEnumerator,
     processor: ID3D11VideoProcessor,
+    /// Input (captured) frame size — the size of the BGRA textures fed to
+    /// [`Converter::convert`].
+    in_width: u32,
+    in_height: u32,
+    /// Output (NV12) frame size — the size of textures from
+    /// [`Converter::create_nv12_texture`] and what the encoder is built for. Equal
+    /// to the input size when not scaling.
     width: u32,
     height: u32,
     /// Cached VideoProcessor views, keyed by the texture's COM pointer. Both the
@@ -58,19 +69,26 @@ pub struct Converter {
 }
 
 impl Converter {
-    /// Build a video processor for `width`x`height` BGRA → NV12 on `device`.
+    /// Build a video processor converting `in_width`x`in_height` BGRA →
+    /// `out_width`x`out_height` NV12 on `device`. When the output is smaller than
+    /// the input the processor downscales in the same pass (see the type docs);
+    /// pass equal in/out sizes for a pure color conversion (no scaling).
     ///
     /// `device` must have been created with `D3D11_CREATE_DEVICE_VIDEO_SUPPORT`
-    /// (our `device::create_device` does). NV12 is 4:2:0, so both dimensions are
+    /// (our `device::create_device` does). NV12 is 4:2:0, so all dimensions are
     /// rounded down to even values.
     pub fn new(
         device: &ID3D11Device,
         context: &ID3D11DeviceContext,
-        width: u32,
-        height: u32,
+        in_width: u32,
+        in_height: u32,
+        out_width: u32,
+        out_height: u32,
     ) -> Result<Self> {
-        let width = width & !1;
-        let height = height & !1;
+        let in_width = in_width & !1;
+        let in_height = in_height & !1;
+        let width = out_width & !1;
+        let height = out_height & !1;
 
         let video_device: ID3D11VideoDevice = device.cast()?;
         let video_context: ID3D11VideoContext = context.cast()?;
@@ -78,8 +96,8 @@ impl Converter {
         let content_desc = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
             InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
             InputFrameRate: DXGI_RATIONAL { Numerator: 0, Denominator: 0 },
-            InputWidth: width,
-            InputHeight: height,
+            InputWidth: in_width,
+            InputHeight: in_height,
             OutputFrameRate: DXGI_RATIONAL { Numerator: 0, Denominator: 0 },
             OutputWidth: width,
             OutputHeight: height,
@@ -112,6 +130,8 @@ impl Converter {
             video_context,
             enumerator,
             processor,
+            in_width,
+            in_height,
             width,
             height,
             input_views: RefCell::new(HashMap::new()),
@@ -293,9 +313,49 @@ mod tests {
         }
         let bgra = bgra.unwrap();
 
-        let conv = Converter::new(&device, &context, w, h).expect("converter");
+        let conv = Converter::new(&device, &context, w, h, w, h).expect("converter");
         let nv12 = conv.create_nv12_texture().expect("nv12 tex");
         conv.convert(&bgra, &nv12).expect("convert");
         println!("converted {}x{} BGRA -> NV12 OK", conv.width(), conv.height());
+    }
+
+    /// Downscale path: 1440p BGRA input → 720p NV12 output in one VideoProcessorBlt.
+    /// Verifies the converter accepts differing in/out sizes and the NV12 texture
+    /// it hands back is the (smaller) output size.
+    #[test]
+    fn scales_bgra_to_smaller_nv12() {
+        let gpus = device::enumerate_gpus().expect("enumerate gpus");
+        let adapter = device::default_capture_index(&gpus)
+            .map(|i| device::adapter_at(i).expect("adapter_at"));
+        let (device, context, _fl) =
+            device::create_device(adapter.as_ref()).expect("create device");
+        let (in_w, in_h) = (2560u32, 1440u32);
+        let (out_w, out_h) = (1280u32, 720u32);
+
+        let src_desc = D3D11_TEXTURE2D_DESC {
+            Width: in_w,
+            Height: in_h,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let mut bgra: Option<ID3D11Texture2D> = None;
+        unsafe {
+            device
+                .CreateTexture2D(&src_desc, None, Some(&mut bgra))
+                .expect("create bgra");
+        }
+        let bgra = bgra.unwrap();
+
+        let conv = Converter::new(&device, &context, in_w, in_h, out_w, out_h).expect("converter");
+        assert_eq!((conv.width(), conv.height()), (out_w, out_h));
+        let nv12 = conv.create_nv12_texture().expect("nv12 tex");
+        conv.convert(&bgra, &nv12).expect("convert+scale");
+        println!("scaled {in_w}x{in_h} BGRA -> {out_w}x{out_h} NV12 OK");
     }
 }

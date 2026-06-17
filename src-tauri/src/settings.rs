@@ -56,6 +56,26 @@ pub struct Settings {
     /// cap at the cost of anti-cheat risk — see `core::hook`). Anything other than
     /// `hook` is treated as `wgc`.
     pub capture_mode: String,
+    /// Which Medal-style quality preset the UI shows as selected: `low` |
+    /// `standard` | `high` | `custom`. Purely cosmetic — the concrete knobs
+    /// (`resolution`, `target_fps`, `bitrate_mbps`, `codec`) are the source of
+    /// truth; selecting a preset just writes those. Defaults to `custom` so
+    /// pre-feature configs (which set the knobs directly) aren't mislabeled.
+    pub quality_preset: String,
+    /// Output resolution cap: `native` (no scaling — the historical behavior) or
+    /// a named target (`360p` | `480p` | `720p` | `1080p` | `1440p` | `2160p`).
+    /// When a target is set, the captured frame is downscaled on-GPU to fit the
+    /// target box **by height, never upscaling** (see [`Settings::resolution_dims`]
+    /// and the encode thread in `core::capture`).
+    pub resolution: String,
+    /// Which GPU to capture/encode on: `-1` = Auto (the display-owning adapter),
+    /// else a DXGI adapter index (see `core::device` / `gpu_info`). Used as the
+    /// fallback adapter when `start_capture` isn't given an explicit one.
+    pub gpu_adapter: i32,
+    /// Video encoder backend the UI shows: currently only `gpu` (hardware
+    /// NVENC/QSV) is implemented; persisted so the dropdown round-trips and a
+    /// future `cpu` (software x264/x265) path can slot in without a migration.
+    pub video_encoder: String,
 }
 
 impl Default for Settings {
@@ -74,6 +94,10 @@ impl Default for Settings {
             events: EventToggles::default(),
             storage_dir: None,
             capture_mode: "wgc".into(),
+            quality_preset: "custom".into(),
+            resolution: "native".into(),
+            gpu_adapter: -1,
+            video_encoder: "gpu".into(),
         }
     }
 }
@@ -195,6 +219,29 @@ impl Settings {
     /// True when the user opted into the graphics-hook injection capture path.
     pub fn uses_hook_capture(&self) -> bool {
         self.capture_mode.eq_ignore_ascii_case("hook")
+    }
+
+    /// The output-resolution target box for [`Settings::resolution`], or `None`
+    /// for native capture (no scaling). The encode thread fits the captured frame
+    /// into this box by height, never upscaling — so this is a *cap*, not a forced
+    /// size. The (width, height) pairs mirror Medal's `ResolutionHandler` table.
+    pub fn resolution_dims(&self) -> Option<(u32, u32)> {
+        match self.resolution.trim().to_ascii_lowercase().as_str() {
+            "360p" => Some((640, 360)),
+            "480p" => Some((854, 480)),
+            "720p" => Some((1280, 720)),
+            "1080p" => Some((1920, 1080)),
+            "1440p" => Some((2560, 1440)),
+            "2160p" => Some((3840, 2160)),
+            // "native" and any unknown value → no scaling (capture at source size).
+            _ => None,
+        }
+    }
+
+    /// The fallback capture/encode adapter index for this config: `None` when
+    /// `gpu_adapter` is Auto (`< 0`), else the DXGI adapter index.
+    pub fn gpu_adapter_index(&self) -> Option<u32> {
+        (self.gpu_adapter >= 0).then_some(self.gpu_adapter as u32)
     }
 
     /// The effective [`AudioConfig`] for capture: the explicit `audio` config if

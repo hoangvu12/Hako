@@ -398,7 +398,7 @@ mod tests {
         }
         let bgra = bgra.unwrap();
 
-        let conv = Converter::new(&d3d_device, &ctx, w, h).expect("converter");
+        let conv = Converter::new(&d3d_device, &ctx, w, h, w, h).expect("converter");
         let mut enc = Encoder::new_qsv(&d3d_device, &ctx, w, h, fps).expect("encoder");
 
         // Encode ~1.5 s so the ring holds more than one GOP (keyint = 1 s).
@@ -523,7 +523,7 @@ mod tests {
                 .expect("create bgra");
         }
         let bgra = bgra.unwrap();
-        let conv = Converter::new(&d3d_device, &ctx, w, h).expect("converter");
+        let conv = Converter::new(&d3d_device, &ctx, w, h, w, h).expect("converter");
         let mut enc = Encoder::new_qsv(&d3d_device, &ctx, w, h, fps).expect("encoder");
 
         let mut ring = PacketRing::new(fps, 30);
@@ -610,7 +610,7 @@ mod tests {
                 .expect("create bgra");
         }
         let bgra = bgra.unwrap();
-        let conv = Converter::new(&d3d_device, &ctx, w, h).expect("converter");
+        let conv = Converter::new(&d3d_device, &ctx, w, h, w, h).expect("converter");
         let mut enc = Encoder::new_qsv(&d3d_device, &ctx, w, h, fps).expect("encoder");
 
         let mut ring = PacketRing::new(fps, 30);
