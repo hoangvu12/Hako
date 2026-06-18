@@ -320,7 +320,8 @@ function ViewerStage({
   // Top-bar mute/volume is the monitor level (preview-only; not in the export mix).
   const masterMonitorGain = muted ? 0 : volume;
   const { active: liveMix } = useTrackMixer({
-    src,
+    clipId: clip.id,
+    fileSize: clip.size_bytes,
     stems,
     videoRef,
     stemGains,

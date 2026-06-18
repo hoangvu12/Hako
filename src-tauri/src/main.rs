@@ -79,6 +79,7 @@ fn main() {
             commands::rename_clip,
             commands::trim_clip,
             commands::clip_audio_tracks,
+            commands::read_clip_range,
             commands::remux_with_tracks,
             commands::get_settings,
             commands::update_settings,

@@ -2,12 +2,12 @@ import * as React from "react";
 import {
   ALL_FORMATS,
   AudioBufferSink,
+  CustomSource,
   Input,
-  UrlSource,
   type InputAudioTrack,
 } from "mediabunny";
 
-import type { AudioTrackInfo } from "@/lib/api";
+import { readClipRange, type AudioTrackInfo } from "@/lib/api";
 
 /**
  * Live per-stem audio mixing for the clip editor.
@@ -35,8 +35,11 @@ const DRIFT_MAX = 0.05;
 const GAIN_RAMP = 0.012;
 
 export interface UseTrackMixerArgs {
-  /** The range-served clip URL the `<video>` also loads (mediabunny decodes it). */
-  src: string;
+  /** Clip id — stem bytes are pulled over IPC (mediabunny can't fetch the
+   *  `hakoclip://` scheme; see `readClipRange`). */
+  clipId: number;
+  /** Clip file size in bytes — the `CustomSource`'s `getSize`. */
+  fileSize: number;
   /** Audio stems (index ≥ 1); empty ⇒ mixer disabled, native audio kept. */
   stems: AudioTrackInfo[];
   videoRef: React.RefObject<HTMLVideoElement | null>;
@@ -105,7 +108,8 @@ async function decodeStem(
 }
 
 export function useTrackMixer({
-  src,
+  clipId,
+  fileSize,
   stems,
   videoRef,
   stemGains,
@@ -186,7 +190,17 @@ export function useTrackMixer({
 
     (async () => {
       try {
-        input = new Input({ source: new UrlSource(src), formats: ALL_FORMATS });
+        input = new Input({
+          // mediabunny can't `fetch()` the `hakoclip://` scheme (WebView2 blocks
+          // cross-scheme fetch by CORS), so stem bytes come over IPC. `end` is
+          // exclusive; the backend clamps it to the file size.
+          source: new CustomSource({
+            read: (start, end) =>
+              readClipRange(clipId, start, end).then((b) => new Uint8Array(b)),
+            getSize: () => fileSize,
+          }),
+          formats: ALL_FORMATS,
+        });
         const audioTracks = await input.getAudioTracks();
         if (cancelled) return;
 
@@ -220,9 +234,10 @@ export function useTrackMixer({
         await ctx.resume().catch(() => {});
         setActive(true);
         if (v && !v.paused) resync(v.currentTime);
-      } catch {
-        // Decode/fetch failed → leave `active` false: the caller keeps native
+      } catch (err) {
+        // Decode/read failed → leave `active` false: the caller keeps native
         // <video> audio (track 0), the same fallback as a no-stems clip.
+        console.warn("[track-mixer] live decode failed; keeping native audio", err);
         if (ctx) ctx.close().catch(() => {});
         ctx = null;
       }
@@ -243,7 +258,7 @@ export function useTrackMixer({
       (built?.ctx ?? ctx)?.close().catch(() => {});
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [src, stemKey, hasStems]);
+  }, [clipId, fileSize, stemKey, hasStems]);
 
   // --- Live gain updates (cheap; no resync needed — gains are AudioParams). ---
   React.useEffect(() => {

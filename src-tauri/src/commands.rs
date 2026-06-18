@@ -608,6 +608,37 @@ pub fn clip_audio_tracks(
     crate::library::remux::probe_audio_tracks(&PathBuf::from(&rec.path))
 }
 
+/// Read a byte range `[start, end)` of a clip file for the editor's live
+/// per-stem audio mixer. mediabunny decodes the stems in the webview, but it
+/// can't `fetch()` the `hakoclip://` streaming scheme — WebView2 blocks
+/// cross-origin fetch to a custom scheme by CORS (the `<video>` element is
+/// exempt, which is why playback and export work but the mixer's decode didn't).
+/// So the stem bytes are pulled over IPC via mediabunny's `CustomSource`.
+/// Returns the raw slice as an `ArrayBuffer`; `end` is clamped to the file size.
+#[tauri::command]
+pub async fn read_clip_range(
+    library: State<'_, LibraryState>,
+    id: i64,
+    start: u64,
+    end: u64,
+) -> Result<tauri::ipc::Response, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let rec = {
+        let lib = library.0.lock().map_err(|_| "library poisoned")?;
+        lib.get(id)?.ok_or("clip not found")?
+    };
+    let mut file = std::fs::File::open(&rec.path).map_err(|e| e.to_string())?;
+    let size = file.metadata().map_err(|e| e.to_string())?.len();
+    let end = end.min(size);
+    let start = start.min(end);
+    let mut buf = vec![0u8; (end - start) as usize];
+    if !buf.is_empty() {
+        file.seek(SeekFrom::Start(start)).map_err(|e| e.to_string())?;
+        file.read_exact(&mut buf).map_err(|e| e.to_string())?;
+    }
+    Ok(tauri::ipc::Response::new(buf))
+}
+
 /// One selected stem from the editor: its audio-track index + 0–100 volume.
 #[derive(Debug, Clone, Copy, serde::Deserialize)]
 pub struct TrackVolume {

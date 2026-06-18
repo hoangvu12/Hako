@@ -295,6 +295,21 @@ export async function clipAudioTracks(id: number): Promise<AudioTrackInfo[]> {
   return invoke<AudioTrackInfo[]>("clip_audio_tracks", { id });
 }
 
+/**
+ * Read a byte range `[start, end)` of a clip file as an `ArrayBuffer`. Backs the
+ * editor's live per-stem mixer: mediabunny decodes the stems in the webview via
+ * a `CustomSource` that pulls bytes over IPC, because it can't `fetch()` the
+ * `hakoclip://` streaming scheme (WebView2 blocks cross-scheme fetch by CORS;
+ * the `<video>` element is exempt). `end` is clamped to the file size in Rust.
+ */
+export async function readClipRange(
+  id: number,
+  start: number,
+  end: number,
+): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>("read_clip_range", { id, start, end });
+}
+
 /** A stem selected for export, with its 0–100 volume (mirrors `TrackVolume`). */
 export interface TrackVolume {
   index: number;
