@@ -81,11 +81,17 @@ pub struct PresencesResponse {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Presence {
+    #[serde(default, deserialize_with = "null_default")]
     pub puuid: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub product: String,
     /// base64-encoded JSON ([`PrivatePresence`]) — present for the VALORANT product.
-    #[serde(default)]
+    /// Other Riot products a friend is running (e.g. League) can send
+    /// `private: null`; `null_default` collapses that to `""`. Plain
+    /// `#[serde(default)]` only covers a *missing* key — a present-but-`null`
+    /// value hard-fails, and since the whole `/chat/v4/presences` array decodes
+    /// at once, one such entry would silently kill match detection for everyone.
+    #[serde(default, deserialize_with = "null_default")]
     pub private: String,
 }
 
