@@ -30,11 +30,16 @@ import {
   type AudioAppSel,
 } from "@/lib/api";
 
-/** Processes never worth offering as an app source (system mixers + Hako). */
+/**
+ * Processes never offered as a generic app source: system mixers + Hako, plus
+ * the Valorant game process itself — it's already represented by the dedicated
+ * "Game Audio" row, so listing it here would duplicate the game.
+ */
 const SESSION_BLACKLIST = new Set([
   "svchost.exe",
   "audiodg.exe",
   "hako.exe",
+  "valorant-win64-shipping.exe",
 ]);
 
 function Panel({

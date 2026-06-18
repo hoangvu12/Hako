@@ -56,7 +56,7 @@ use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
 use crate::core::capture::ClipBuffer;
 use crate::core::clock::TICKS_PER_SECOND;
 use crate::core::encode::{av_err, EncodedPacket};
-use crate::settings::{AudioConfig, AUTO_DEVICE, GAME_SOURCE_ID};
+use crate::settings::{AudioAppSel, AudioConfig, AUTO_DEVICE, GAME_SOURCE_ID};
 
 /// Mixed-track sample rate. 48 kHz is the WASAPI shared-mode engine default and
 /// the standard for AAC, so the common case needs no rate conversion.
@@ -601,7 +601,14 @@ impl AudioPlan {
 /// matches `id`. `0` when nothing matches (the input opens as silence).
 fn resolve_app_pid(id: &str, game_pid: Option<u32>) -> u32 {
     if id.eq_ignore_ascii_case(GAME_SOURCE_ID) {
-        return game_pid.unwrap_or(0);
+        let pid = game_pid.unwrap_or(0);
+        if pid == 0 {
+            tracing::warn!(
+                "Game Audio source has no target PID (game window not resolved); \
+                 it will record as silence"
+            );
+        }
+        return pid;
     }
     let sys = sysinfo::System::new_all();
     sys.processes()
@@ -640,7 +647,25 @@ fn plan(cfg: &AudioConfig, game_pid: Option<u32>) -> AudioPlan {
     }
 
     if specific {
-        for app in cfg.apps.iter().filter(|a| a.enabled) {
+        // The UI shows "Game Audio" enabled by default — it's the headline source
+        // and renders checked from a fallback even when no "game" entry has ever
+        // been persisted (see `recording-audio.tsx`). Mirror that here: if there's
+        // no explicit game entry, synthesize an enabled one so a config that never
+        // toggled Game Audio still captures it. An explicit disabled "game" entry
+        // (user turned it off) is respected.
+        let mut apps: Vec<AudioAppSel> = cfg.apps.clone();
+        if !apps.iter().any(|a| a.id.eq_ignore_ascii_case(GAME_SOURCE_ID)) {
+            apps.insert(
+                0,
+                AudioAppSel {
+                    id: GAME_SOURCE_ID.into(),
+                    name: "Game Audio".into(),
+                    enabled: true,
+                    volume: 100,
+                },
+            );
+        }
+        for app in apps.iter().filter(|a| a.enabled) {
             let pid = resolve_app_pid(&app.id, game_pid);
             let idx = inputs.len();
             inputs.push(InputSpec::Process {
