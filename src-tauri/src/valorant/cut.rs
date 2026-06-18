@@ -58,6 +58,10 @@ pub struct CutInput {
     pub session_path: PathBuf,
     /// Wall-clock ↔ session-PTS map built while recording.
     pub timeline: TimelineIndex,
+    /// Session-PTS `[start, end]` spans recorded while capture was frozen (game
+    /// minimized / stale swapchain). Clips that overlap these beyond a threshold
+    /// are skipped so we never ship a dead, frozen auto-clip.
+    pub frozen_spans: Vec<(i64, i64)>,
     /// Round-start anchors from the log tail.
     pub anchors: Vec<RoundAnchor>,
     pub fps: u32,
@@ -223,6 +227,7 @@ async fn run(input: &CutInput) -> Result<(), String> {
     );
 
     let mut cut = 0usize;
+    let mut skipped_frozen = 0usize;
     for (s, e) in merged {
         // Re-clamp the merged span and pick the strongest event kind inside it.
         let end = e.min(s + max_len_pts);
@@ -230,6 +235,21 @@ async fn run(input: &CutInput) -> Result<(), String> {
         let start_sec = s as f64 / fps as f64;
         let end_sec = end as f64 / fps as f64;
         if end_sec <= start_sec {
+            continue;
+        }
+
+        // Skip a clip whose window was mostly frozen (game minimized / stale
+        // swapchain) — it would be a dead, single-frame clip. Both the window and
+        // the spans are in session-PTS (1/fps) units, so they compare directly.
+        let span_pts = end - s;
+        let frozen_pts = frozen_overlap(&input.frozen_spans, s, end);
+        if span_pts > 0 && frozen_pts * 2 > span_pts {
+            tracing::warn!(
+                "auto-clip: skipping {start_sec:.1}-{end_sec:.1}s — {}% frozen \
+                 (game minimized/not presenting during the match)",
+                (frozen_pts * 100 / span_pts).min(100)
+            );
+            skipped_frozen += 1;
             continue;
         }
 
@@ -268,7 +288,31 @@ async fn run(input: &CutInput) -> Result<(), String> {
         }
     }
     tracing::info!("auto-clip: wrote {cut} clip(s) to the library");
+    if skipped_frozen > 0 {
+        // Surface it honestly: the user alt-tabbed / switched display mode and the
+        // injection-path capture froze, so some highlights had no live footage.
+        let msg = if cut == 0 {
+            format!(
+                "Skipped {skipped_frozen} clip(s) — Valorant was minimized or not \
+                 rendering for the match, so there was no live gameplay to clip."
+            )
+        } else {
+            format!("Skipped {skipped_frozen} clip(s) — the game was minimized during those moments.")
+        };
+        tracing::warn!("auto-clip: {msg}");
+        let _ = input.app.emit(events::RECORDER_ERROR, &msg);
+    }
     Ok(())
+}
+
+/// Total overlap (session PTS) between clip window `[s, end)` and the frozen
+/// spans. The spans are non-overlapping and ascending, so this is a simple sum of
+/// per-span intersections.
+fn frozen_overlap(spans: &[(i64, i64)], s: i64, end: i64) -> i64 {
+    spans
+        .iter()
+        .map(|&(a, b)| (end.min(b) - s.max(a)).max(0))
+        .sum()
 }
 
 /// Fetch `match-details`, retrying while Riot finalizes the match (6 × 20 s).

@@ -62,6 +62,18 @@ const AV_INPUT_BUFFER_PADDING_SIZE: usize = 64;
 /// replay). ~256 MB ≈ ~100 s at 20 Mbps of slack to absorb disk bursts.
 const MAX_QUEUED_BYTES: usize = 256 * 1024 * 1024;
 
+/// What the session writer hands back on [`finish`](SessionWriter::finish): the
+/// wall-clock↔PTS timeline plus the session-PTS spans that were recorded while
+/// capture was frozen (game minimized or a stale swapchain). The post-match cut
+/// pipeline uses the spans to skip clips that would be mostly a dead, frozen
+/// frame (Part C of the frozen-capture plan).
+#[derive(Clone, Default)]
+pub struct SessionOutput {
+    pub timeline: TimelineIndex,
+    /// `[start_pts, end_pts]` spans in session `1/fps` units that were frozen.
+    pub frozen_spans: Vec<(i64, i64)>,
+}
+
 /// A unit of work for the session writer thread: one already-encoded packet
 /// (compressed bytes are *moved* in, so the hot threads never touch disk).
 enum WriterMsg {
@@ -70,6 +82,9 @@ enum WriterMsg {
         pts: i64,
         keyframe: bool,
         wallclock_ticks: i64,
+        /// Whether capture was frozen (minimized / stale swapchain) for this frame,
+        /// read off the shared liveness flag at encode time. Drives `frozen_spans`.
+        frozen: bool,
     },
     Audio {
         track_idx: usize,
@@ -93,10 +108,10 @@ pub struct SessionWriter {
     /// Channel to the writer thread; `take`n on [`finish`](Self::finish) to close
     /// the channel so the thread drains, finalizes, and exits.
     tx: Mutex<Option<Sender<WriterMsg>>>,
-    /// Writer thread handle; joined on finish to recover the timeline / error.
-    thread: Mutex<Option<JoinHandle<Result<TimelineIndex, String>>>>,
+    /// Writer thread handle; joined on finish to recover the output / error.
+    thread: Mutex<Option<JoinHandle<Result<SessionOutput, String>>>>,
     /// Cached finish result, so [`finish`](Self::finish) is idempotent.
-    result: Mutex<Option<Result<TimelineIndex, String>>>,
+    result: Mutex<Option<Result<SessionOutput, String>>>,
     /// Compressed bytes currently queued for the writer (backpressure cap).
     queued_bytes: Arc<AtomicUsize>,
     /// Packets dropped because the queue was over [`MAX_QUEUED_BYTES`].
@@ -138,6 +153,13 @@ struct SessionState {
     session_start_ticks: Option<i64>,
 
     timeline: TimelineIndex,
+    /// Closed frozen spans (session PTS, `[start, end]`), accumulated as the
+    /// `frozen` flag on incoming video packets toggles. Returned on finish.
+    frozen_spans: Vec<(i64, i64)>,
+    /// Session PTS where the current frozen run began (`None` ⇒ not in a run).
+    frozen_run_start: Option<i64>,
+    /// Session PTS of the most recent frozen frame in the current run.
+    frozen_run_end: i64,
     /// Shared with [`SessionWriter`] so `counts()` can read them while the writer
     /// thread owns the rest of the state.
     video_count: Arc<AtomicU64>,
@@ -337,6 +359,9 @@ impl SessionWriter {
             last_video_pts: i64::MIN,
             session_start_ticks: None,
             timeline: TimelineIndex::new(),
+            frozen_spans: Vec::new(),
+            frozen_run_start: None,
+            frozen_run_end: 0,
             video_count,
             audio_count,
             finished: false,
@@ -348,7 +373,7 @@ impl SessionWriter {
     /// `wallclock_ticks` is the packet's capture timestamp (100 ns,
     /// `SystemRelativeTime`/QPC domain) — the same clock the round anchors use.
     /// Returns immediately; no-op once finished or if the queue is over its cap.
-    pub fn push(&self, pkt: &EncodedPacket, wallclock_ticks: i64) {
+    pub fn push(&self, pkt: &EncodedPacket, wallclock_ticks: i64, frozen: bool) {
         self.enqueue(
             pkt.data.len(),
             WriterMsg::Video {
@@ -356,6 +381,7 @@ impl SessionWriter {
                 pts: pkt.pts,
                 keyframe: pkt.keyframe,
                 wallclock_ticks,
+                frozen,
             },
         );
     }
@@ -409,7 +435,7 @@ impl SessionWriter {
     /// Finalize the mp4: close the channel so the writer thread drains the queue,
     /// writes the trailer, and exits; then join it for the timeline index.
     /// Idempotent — later calls return the same cached path/timeline (or error).
-    pub fn finish(&self) -> Result<(PathBuf, TimelineIndex), String> {
+    pub fn finish(&self) -> Result<(PathBuf, SessionOutput), String> {
         // Drop the sender → the writer thread's `recv` ends after draining.
         if let Ok(mut g) = self.tx.lock() {
             let _ = g.take();
@@ -430,7 +456,7 @@ impl SessionWriter {
             *stored = Some(r);
         }
         match stored.as_ref().unwrap() {
-            Ok(tl) => Ok((self.out_path.clone(), tl.clone())),
+            Ok(out) => Ok((self.out_path.clone(), out.clone())),
             Err(e) => Err(e.clone()),
         }
     }
@@ -455,7 +481,7 @@ fn writer_loop(
     mut state: SessionState,
     rx: Receiver<WriterMsg>,
     queued_bytes: Arc<AtomicUsize>,
-) -> Result<TimelineIndex, String> {
+) -> Result<SessionOutput, String> {
     while let Ok(msg) = rx.recv() {
         match msg {
             WriterMsg::Video {
@@ -463,9 +489,10 @@ fn writer_loop(
                 pts,
                 keyframe,
                 wallclock_ticks,
+                frozen,
             } => {
                 let len = data.len();
-                state.write_video(&data, pts, keyframe, wallclock_ticks);
+                state.write_video(&data, pts, keyframe, wallclock_ticks, frozen);
                 queued_bytes.fetch_sub(len, Ordering::Relaxed);
             }
             WriterMsg::Audio {
@@ -479,12 +506,25 @@ fn writer_loop(
             }
         }
     }
-    let timeline = state.timeline.clone();
-    state.finalize().map(|()| timeline)
+    // Close any frozen run still open at end-of-stream, then hand back the
+    // timeline + the recorded frozen spans.
+    state.close_frozen_run();
+    let output = SessionOutput {
+        timeline: state.timeline.clone(),
+        frozen_spans: state.frozen_spans.clone(),
+    };
+    state.finalize().map(|()| output)
 }
 
 impl SessionState {
-    fn write_video(&mut self, data: &[u8], pkt_pts: i64, keyframe: bool, wallclock_ticks: i64) {
+    fn write_video(
+        &mut self,
+        data: &[u8],
+        pkt_pts: i64,
+        keyframe: bool,
+        wallclock_ticks: i64,
+        frozen: bool,
+    ) {
         if self.finished || self.ofmt.is_null() {
             return;
         }
@@ -499,6 +539,18 @@ impl SessionState {
             spts = self.last_video_pts + 1;
         }
         self.last_video_pts = spts;
+
+        // Track frozen spans in session-PTS space: open a run on the first frozen
+        // frame, extend it while frozen, close it on the first fresh frame. The cut
+        // pipeline compares its (also session-PTS) clip windows against these.
+        if frozen {
+            if self.frozen_run_start.is_none() {
+                self.frozen_run_start = Some(spts);
+            }
+            self.frozen_run_end = spts;
+        } else {
+            self.close_frozen_run();
+        }
 
         // Timeline pairs the true capture wall-clock with the session PTS.
         self.timeline.push(wallclock_ticks, spts);
@@ -556,6 +608,13 @@ impl SessionState {
                 self.audio_count.fetch_add(1, Ordering::Relaxed);
             }
             Err(e) => tracing::warn!("session: audio write failed: {e}"),
+        }
+    }
+
+    /// Close the current frozen run (if any) into `frozen_spans`. Idempotent.
+    fn close_frozen_run(&mut self) {
+        if let Some(start) = self.frozen_run_start.take() {
+            self.frozen_spans.push((start, self.frozen_run_end));
         }
     }
 
@@ -768,18 +827,19 @@ mod tests {
             conv.convert(&bgra, &nv12).expect("convert");
             for p in enc.encode(&nv12, i).expect("encode") {
                 let wall = base_ticks + p.pts * TICKS_PER_SECOND / fps as i64;
-                writer.push(&p, wall);
+                writer.push(&p, wall, false);
                 pushed += 1;
             }
         }
         for p in enc.flush().expect("flush") {
             let wall = base_ticks + p.pts * TICKS_PER_SECOND / fps as i64;
-            writer.push(&p, wall);
+            writer.push(&p, wall, false);
             pushed += 1;
         }
         assert!(pushed > 0, "encoder produced no packets");
 
-        let (path, timeline) = writer.finish().expect("finish");
+        let (path, output) = writer.finish().expect("finish");
+        let timeline = output.timeline;
         assert_eq!(path, out);
         assert!(!timeline.is_empty(), "timeline has no samples");
 
@@ -881,15 +941,15 @@ mod tests {
         // Push the first video packet to set the origin, then push all audio, then
         // the remaining video — a deliberately interleaved order.
         let first = &vpackets[0];
-        writer.push(first, base_ticks + first.pts * TICKS_PER_SECOND / fps as i64);
+        writer.push(first, base_ticks + first.pts * TICKS_PER_SECOND / fps as i64, false);
         for ap in &apackets {
             writer.push_audio(0, ap);
         }
         for vp in &vpackets[1..] {
-            writer.push(vp, base_ticks + vp.pts * TICKS_PER_SECOND / fps as i64);
+            writer.push(vp, base_ticks + vp.pts * TICKS_PER_SECOND / fps as i64, false);
         }
 
-        let (_path, _timeline) = writer.finish().expect("finish");
+        let (_path, _output) = writer.finish().expect("finish");
         let (vc, ac) = writer.counts();
         println!("session counts: {vc} video, {ac} audio");
         assert_eq!(vc as usize, vpackets.len());
@@ -981,7 +1041,7 @@ mod tests {
 
         // First video frame sets the origin, then interleave both audio tracks.
         let first = &vpackets[0];
-        writer.push(first, base_ticks + first.pts * TICKS_PER_SECOND / fps as i64);
+        writer.push(first, base_ticks + first.pts * TICKS_PER_SECOND / fps as i64, false);
         for ap in &m_pkts {
             writer.push_audio(0, ap);
         }
@@ -989,7 +1049,7 @@ mod tests {
             writer.push_audio(1, ap);
         }
         for vp in &vpackets[1..] {
-            writer.push(vp, base_ticks + vp.pts * TICKS_PER_SECOND / fps as i64);
+            writer.push(vp, base_ticks + vp.pts * TICKS_PER_SECOND / fps as i64, false);
         }
 
         writer.finish().expect("finish");

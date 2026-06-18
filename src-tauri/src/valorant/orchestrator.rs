@@ -244,7 +244,7 @@ fn start_match(app: &AppHandle, puuid: &str, presence: &PrivatePresence) -> Opti
 /// (the match-details retry can take tens of seconds — never block the loop).
 fn end_match(app: &AppHandle, am: ActiveMatch, mode: AutoCaptureMode) {
     am.clip.take_session(); // stop teeing into the (now finishing) writer
-    let (path, timeline) = match am.session.finish() {
+    let (path, output) = match am.session.finish() {
         Ok(x) => x,
         Err(e) => {
             tracing::warn!("auto-clip: finishing session failed: {e}");
@@ -253,6 +253,8 @@ fn end_match(app: &AppHandle, am: ActiveMatch, mode: AutoCaptureMode) {
             return;
         }
     };
+    let timeline = output.timeline;
+    let frozen_spans = output.frozen_spans;
     let anchors = am.tracker.anchors();
     let app = app.clone();
     let bootstrap = am.bootstrap;
@@ -265,6 +267,7 @@ fn end_match(app: &AppHandle, am: ActiveMatch, mode: AutoCaptureMode) {
             app,
             session_path: path,
             timeline,
+            frozen_spans,
             anchors,
             fps,
             game_start_ticks: started_ticks,
@@ -367,7 +370,7 @@ fn start_full_session(app: &AppHandle) -> Option<FullSession> {
 /// (on a blocking task — the copy can take a moment). Best-effort.
 fn finish_full_session(app: &AppHandle, fs: FullSession) {
     fs.clip.take_session(); // stop teeing into the writer
-    let (path, _timeline) = match fs.session.finish() {
+    let (path, _output) = match fs.session.finish() {
         Ok(x) => x,
         Err(e) => {
             tracing::warn!("session-record: finishing session failed: {e}");

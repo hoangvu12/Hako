@@ -248,8 +248,10 @@ impl ClipBuffer {
     }
 
     /// Append a freshly encoded packet (called on the encode thread). Tees to the
-    /// Mode-B session writer when a Valorant match is recording.
-    fn push(&self, pkt: EncodedPacket) {
+    /// Mode-B session writer when a Valorant match is recording. `frozen` marks the
+    /// frame as captured while frozen (minimized / stale swapchain) so the session
+    /// writer can record frozen spans for the post-match cut to skip.
+    fn push(&self, pkt: EncodedPacket, frozen: bool) {
         if let Some(session) = self.active_session() {
             // Reconstruct the packet's wall-clock tick from the shared video-base
             // anchor + its PTS — the same linear map the save path uses to place
@@ -257,7 +259,7 @@ impl ClipBuffer {
             if let (Some(&base), Some(meta)) = (self.video_base.get(), self.meta.get()) {
                 let fps = meta.fps.max(1) as i64;
                 let wall = base + pkt.pts * TICKS_PER_SECOND / fps;
-                session.push(&pkt, wall);
+                session.push(&pkt, wall, frozen);
             }
         }
         self.video.push(pkt);
@@ -1340,8 +1342,11 @@ fn encode_thread(
             .fetch_add(pkts.len() as u64, Ordering::Relaxed);
         let bytes: usize = pkts.iter().map(|p| p.data.len()).sum();
         shared.enc_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+        // Tag these packets with the current liveness so the session writer can
+        // mark frozen spans (minimized / stale-swapchain) for the cut to skip.
+        let frozen = shared.frozen.load(Ordering::Relaxed);
         for p in pkts {
-            clip.push(p);
+            clip.push(p, frozen);
         }
     };
 
