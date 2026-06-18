@@ -1,7 +1,7 @@
 {
   "name": "hako",
   "private": true,
-  "version": "1.0.3",
+  "version": "1.1.0",
   "type": "module",
   "description": "Performance-first Valorant clip recorder",
   "scripts": {
