@@ -1,6 +1,6 @@
 [package]
 name = "hako"
-version = "0.1.0"
+version = "1.0.0"
 description = "Performance-first Valorant clip recorder"
 authors = ["Hako"]
 edition = "2021"
@@ -17,6 +17,15 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
 tauri-plugin-global-shortcut = "2"
+# Window geometry persistence: restore the main window's size/position/maximized
+# state across launches. The window is created hidden and shown only after the
+# plugin has applied the saved geometry, so there's no resize/reposition flicker.
+tauri-plugin-window-state = "2"
+# Discord-style auto-update: a small splash window checks GitHub Releases on
+# launch, downloads + installs a signed update if one exists, then relaunches.
+# `process` provides the relaunch-into-the-new-binary call after install.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }

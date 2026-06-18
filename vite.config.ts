@@ -32,5 +32,15 @@ export default defineConfig({
     minify: "esbuild",
     // No sourcemaps in the shipped bundle (they're dead weight inside WebView2).
     sourcemap: false,
+    rollupOptions: {
+      // Two windows, two entry HTMLs: the main app (index.html) and the
+      // lightweight auto-update splash (updater.html). Keeping the splash a
+      // separate entry means it doesn't pull in the router/query/app bundle, so
+      // it paints instantly on launch.
+      input: {
+        main: path.resolve(__dirname, "index.html"),
+        updater: path.resolve(__dirname, "updater.html"),
+      },
+    },
   },
 });

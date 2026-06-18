@@ -1,7 +1,7 @@
 {
   "name": "hako",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "description": "Performance-first Valorant clip recorder",
   "scripts": {
@@ -19,6 +19,8 @@
     "@tanstack/react-virtual": "^3.14.3",
     "@tauri-apps/api": "^2.2.0",
     "@tauri-apps/plugin-global-shortcut": "^2.2.0",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "radix-ui": "^1.6.0",

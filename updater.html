@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="/logo.png" />
+    <title>Updating Hako</title>
+    <!-- Critical inline styles so the splash is dark and laid out the instant the
+         window appears — before the React bundle or Tailwind loads. -->
+    <style>
+      html,
+      body,
+      #updater-root {
+        margin: 0;
+        height: 100%;
+        background: #09090b;
+        overflow: hidden;
+        user-select: none;
+        cursor: default;
+      }
+      #updater-root {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="updater-root"></div>
+    <script type="module" src="/src/updater/main.tsx"></script>
+  </body>
+</html>

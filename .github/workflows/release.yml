@@ -1,0 +1,68 @@
+# Build, sign, and publish a Hako release + the auto-updater manifest.
+#
+# Trigger: push a version tag (e.g. `v0.2.0`). The job builds the NSIS installer
+# on Windows, signs the updater artifact with the Ed25519 key (repo secrets),
+# and uploads the installer + `latest.json` to a GitHub Release. The app's
+# updater endpoint
+#   https://github.com/hoangvu12/Hako/releases/latest/download/latest.json
+# serves that manifest, so installed copies discover the update.
+#
+# Before tagging: bump `version` in src-tauri/tauri.conf.json (and Cargo.toml /
+# package.json to match), commit, then `git tag v0.2.0 && git push --tags`.
+#
+# Required repo secrets (already set):
+#   TAURI_SIGNING_PRIVATE_KEY           — contents of the Ed25519 private key
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  — its password (empty for this key)
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      # tauri-action creates the GitHub Release and uploads assets.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      # FFmpeg shared build is gitignored (248 MB) and fetched on demand; the
+      # Rust link step needs it present at src-tauri/ffmpeg before building.
+      - name: Fetch FFmpeg
+        shell: pwsh
+        run: ./scripts/fetch-ffmpeg.ps1
+
+      - name: Build, sign, and publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Hako ${{ github.ref_name }}"
+          releaseBody: "See the assets below to download and install this version."
+          # Publish as a draft so you can review before it goes live. The
+          # updater only sees the release once you publish it (the
+          # `releases/latest` endpoint skips drafts).
+          releaseDraft: true
+          prerelease: false
+          # Generate + attach latest.json (the updater manifest).
+          includeUpdaterJson: true

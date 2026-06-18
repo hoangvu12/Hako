@@ -35,6 +35,25 @@ fn main() {
     let _log_guard = init_logging();
 
     tauri::Builder::default()
+        // Restore the main window's size/position/maximized state on launch.
+        // Only those flags — not VISIBLE (we control reveal via the update
+        // splash) and not DECORATIONS (the app is intentionally frameless). The
+        // `updater` splash is denylisted so it always opens centered at its
+        // fixed size.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
+                )
+                .with_denylist(&["updater"])
+                .build(),
+        )
+        // Auto-update: the splash window checks GitHub Releases and installs a
+        // signed update via these plugins; `process` provides the relaunch.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         // Range-aware clip streaming (smooth playback + seeking in the editor).
         .register_uri_scheme_protocol(media::SCHEME, media::handle)
@@ -60,7 +79,8 @@ fn main() {
             commands::remux_with_tracks,
             commands::get_settings,
             commands::update_settings,
-            commands::valorant_status
+            commands::valorant_status,
+            finish_to_main
         ])
         .setup(|app| {
             app.manage(init_library(app.handle()));
@@ -90,6 +110,23 @@ fn main() {
             // auto-cut highlight clips on match end (Mode B). Degrades to manual
             // clips if Riot/capture aren't available.
             valorant::orchestrator::spawn(app.handle().clone());
+            // Safety net for the update splash: if the `updater` window never
+            // calls `finish_to_main` (e.g. its webview failed to load entirely),
+            // reveal the main window anyway after a generous delay so the app can
+            // never be stranded behind the splash. We only *show* main (never
+            // close `updater`) — closing it could abort an in-flight download,
+            // and a legitimately slow download keeps main hidden until relaunch.
+            let reveal_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+                if let Some(main) = reveal_handle.get_webview_window("main") {
+                    if !main.is_visible().unwrap_or(true) {
+                        tracing::warn!("update splash never finished; revealing main window");
+                        let _ = main.show();
+                        let _ = main.set_focus();
+                    }
+                }
+            });
             tracing::info!("Hako core started");
             Ok(())
         })
@@ -98,7 +135,18 @@ fn main() {
         // a low memory target to free its renderer RAM (restored on show).
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
+                // Only the main window hides to tray; the transient updater
+                // splash must close normally so `finish_to_main` can dismiss it.
+                if window.label() != "main" {
+                    return;
+                }
                 api.prevent_close();
+                // Persist geometry now so even a later hard kill (while hidden to
+                // tray) still restores the last size/position on next launch.
+                use tauri_plugin_window_state::{AppHandleExt, StateFlags};
+                let _ = window.app_handle().save_window_state(
+                    StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED,
+                );
                 let _ = window.hide();
                 set_webview_memory_low(window.app_handle(), true);
             }
@@ -290,6 +338,25 @@ pub(crate) fn set_clip_hotkey(app: &tauri::AppHandle, old: Option<&str>, accel: 
     });
     if let Err(e) = res {
         tracing::error!("could not register clip hotkey ({accel}): {e}");
+    }
+}
+
+/// Dismiss the update splash and reveal the main window. Called by the updater
+/// window once it's finished (no update available, an error, offline, or after a
+/// successful install couldn't relaunch). The main window was created hidden and
+/// its geometry was already restored by `tauri-plugin-window-state`, so showing
+/// it here is flicker-free — the user never sees it jump from the default size.
+#[tauri::command]
+fn finish_to_main(app: tauri::AppHandle) {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.show();
+        let _ = main.unminimize();
+        let _ = main.set_focus();
+        // Visible again → full webview memory (it starts Normal anyway).
+        set_webview_memory_low(&app, false);
+    }
+    if let Some(updater) = app.get_webview_window("updater") {
+        let _ = updater.close();
     }
 }
 

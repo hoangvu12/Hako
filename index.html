@@ -5,6 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/png" href="/logo.png" />
     <title>Hako</title>
+    <!-- Paint the canvas dark before any CSS/JS loads. The window is shown only
+         after React has rendered, but this guarantees no white frame ever. -->
+    <style>
+      html,
+      body,
+      #root {
+        background: #09090b;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
