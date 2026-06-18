@@ -32,6 +32,11 @@ export function RecordingStatus() {
           <CardContent className="flex items-center gap-2">
             {isLoading ? (
               <Badge variant="secondary">Loading…</Badge>
+            ) : data?.capturing && !data?.capturing_live ? (
+              // Capturing but frozen (game minimized) — honest "paused" state.
+              <Badge variant="outline" className="text-amber-400">
+                Paused — minimized
+              </Badge>
             ) : (
               <Badge variant={data?.capturing ? "default" : "secondary"}>
                 {data?.capturing ? "Capturing" : "Idle"}

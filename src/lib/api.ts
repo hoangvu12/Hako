@@ -6,6 +6,10 @@ import { invoke } from "@tauri-apps/api/core";
  */
 export interface RecorderStatus {
   capturing: boolean;
+  /** Capturing AND delivering fresh frames. False while the game is minimized
+   * (frozen): the recorder is alive but footage is stale, so the UI shows an
+   * honest "paused" state instead of "recording". */
+  capturing_live: boolean;
   valorant_detected: boolean;
   encoder: string | null;
   buffer_seconds: number;

@@ -21,6 +21,10 @@ pub struct CaptureState(pub Mutex<Option<RunningCapture>>);
 #[derive(Debug, Clone, Serialize)]
 pub struct RecorderStatus {
     pub capturing: bool,
+    /// True when a capture is running AND delivering fresh frames. False while the
+    /// game is minimized (frozen): the recorder is alive but the footage is stale,
+    /// so the UI shows an honest "paused" state instead of "recording".
+    pub capturing_live: bool,
     pub valorant_detected: bool,
     pub encoder: Option<String>,
     pub buffer_seconds: u32,
@@ -38,7 +42,17 @@ pub fn recorder_status(app: AppHandle) -> RecorderStatus {
 /// and the orchestrator's per-tick `recorder-status` event (which drives the
 /// titlebar's "Now Clipping" indicator live).
 pub fn recorder_status_snapshot(app: &AppHandle) -> RecorderStatus {
-    let capturing = is_capturing(app);
+    // Read capturing + liveness from one lock so they're consistent: a capture is
+    // "live" only while it's delivering fresh frames (not minimized/frozen).
+    let (capturing, capturing_live) = app
+        .state::<CaptureState>()
+        .0
+        .lock()
+        .map(|g| match g.as_ref() {
+            Some(c) => (true, c.capturing_live()),
+            None => (false, false),
+        })
+        .unwrap_or((false, false));
     let valorant_detected = capture::find_valorant_window().is_some();
     let buffer_seconds = app
         .state::<SettingsState>()
@@ -46,15 +60,18 @@ pub fn recorder_status_snapshot(app: &AppHandle) -> RecorderStatus {
         .lock()
         .map(|s| s.buffer_seconds)
         .unwrap_or(30);
-    let message = match (valorant_detected, capturing) {
-        (true, true) => "Recording Valorant",
-        (true, false) => "Valorant detected",
-        (false, true) => "Capturing",
-        (false, false) => "Waiting for game",
+    let message = match (valorant_detected, capturing, capturing_live) {
+        // Capturing but frozen — be honest that footage is paused.
+        (_, true, false) => "Paused — game minimized",
+        (true, true, true) => "Recording Valorant",
+        (true, false, _) => "Valorant detected",
+        (false, true, true) => "Capturing",
+        (false, false, _) => "Waiting for game",
     }
     .to_string();
     RecorderStatus {
         capturing,
+        capturing_live,
         valorant_detected,
         encoder: None,
         buffer_seconds,

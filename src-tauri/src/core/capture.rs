@@ -102,6 +102,16 @@ struct Shared {
     enc_packets: AtomicU64,
     /// Total compressed bytes produced (for the bitrate readout).
     enc_bytes: AtomicU64,
+    /// True while the target window is minimized — the game stops presenting, so
+    /// capture is necessarily frozen. Checked each tick in `hook_source_loop`.
+    minimized: AtomicBool,
+    /// True when we believe the captured content is frozen (minimized now, or the
+    /// static watchdog tripped in Part B). Drives the honest "paused — minimized"
+    /// recorder indicator instead of silently recording one stale frame.
+    frozen: AtomicBool,
+    /// SystemRelativeTime (100 ns) of the last frame whose content actually
+    /// changed. Reserved for the Part B static watchdog; set on each live tick.
+    last_fresh_time: AtomicI64,
 }
 
 /// Result of a successful clip save (used to build the library row).
@@ -413,6 +423,9 @@ pub struct RunningCapture {
     thread: Option<JoinHandle<()>>,
     /// Shared clip buffer for the hotkey/command save path.
     clip: Arc<ClipBuffer>,
+    /// Live capture metrics + liveness flags (shared with the source/encode
+    /// threads). Read by the recorder-status snapshot for the honest indicator.
+    shared: Arc<Shared>,
 }
 
 impl RunningCapture {
@@ -426,6 +439,13 @@ impl RunningCapture {
     /// The shared clip buffer — clone out to save without holding capture state.
     pub fn clip(&self) -> Arc<ClipBuffer> {
         self.clip.clone()
+    }
+
+    /// Whether we're capturing *fresh* frames right now — false when the game is
+    /// minimized (or otherwise frozen), so the recorder can say "paused" instead
+    /// of pretending a frozen frame is live footage.
+    pub fn capturing_live(&self) -> bool {
+        !self.shared.frozen.load(Ordering::Relaxed)
     }
 }
 
@@ -582,6 +602,7 @@ pub fn start_hook(
             stop,
             thread: Some(thread),
             clip,
+            shared,
         }),
         Ok(Err(e)) => {
             let _ = thread.join();
@@ -790,8 +811,8 @@ fn run_hook_pipeline(
             .name("hako-hook-source".into())
             .spawn(move || {
                 hook_source_loop(
-                    hook, device, context, width, height, target_fps, filled_tx, free_pool, shared,
-                    source_stop,
+                    hook, hwnd_raw, device, context, width, height, target_fps, filled_tx,
+                    free_pool, shared, source_stop,
                 )
             })
             .map_err(|e| format!("spawn hook source thread: {e}"))?
@@ -822,6 +843,7 @@ fn run_hook_pipeline(
 /// dropping at loop-end tears the hook down.
 fn hook_source_loop(
     mut hook: RunningHook,
+    hwnd_raw: i64,
     _device: ID3D11Device,
     context: ID3D11DeviceContext,
     width: u32,
@@ -833,6 +855,10 @@ fn hook_source_loop(
     stop: Arc<AtomicBool>,
 ) {
     let mut warned_copy = false;
+    // One-time WARN when the session first goes frozen, so the log isn't silent
+    // while the game is minimized (it would otherwise keep logging healthy-looking
+    // "frames sampled=N handed=N" off a stale texture). Reset when it recovers.
+    let mut warned_frozen = false;
     // Per-second throughput report straight to the log, so we can measure frame
     // delivery from the file while the game stays focused (the live UI stats are
     // unreliable here — alt-tabbing to read them makes the game throttle/stop
@@ -866,6 +892,29 @@ fn hook_source_loop(
             next_tick = now;
         }
         next_tick += frame_interval;
+
+        // Minimized (e.g. alt-tabbed out of exclusive fullscreen) → the game has
+        // stopped presenting, so the shared texture only holds the last frame. The
+        // shtex path has no liveness signal, so re-copying it would silently
+        // record a frozen stretch. Mark frozen, skip the frame, and let the encode
+        // thread's constant-rate gap-fill repeat the previous real frame.
+        if is_window_minimized(hwnd_raw) {
+            shared.minimized.store(true, Ordering::Relaxed);
+            shared.frozen.store(true, Ordering::Relaxed);
+            if !warned_frozen {
+                tracing::warn!(
+                    "capture: game minimized/not presenting — frames frozen until it returns"
+                );
+                warned_frozen = true;
+            }
+            continue;
+        }
+        if shared.minimized.swap(false, Ordering::Relaxed) {
+            // Just came back on screen — clear the frozen flag and re-arm the WARN.
+            shared.frozen.store(false, Ordering::Relaxed);
+            warned_frozen = false;
+            tracing::info!("capture: game restored — resuming live capture");
+        }
 
         let frame = match hook.acquire(&_device) {
             Ok(Some(f)) => {
@@ -933,6 +982,10 @@ fn hook_source_loop(
             Ok(()) => {
                 shared.handed.fetch_add(1, Ordering::Relaxed);
                 sent_window += 1;
+                // We're past the minimize gate, so this is a non-stale tick. The
+                // Part B static watchdog will refine "fresh" via content hashing;
+                // for now any non-minimized handoff counts as liveness.
+                shared.last_fresh_time.store(ts, Ordering::Relaxed);
             }
             Err(TrySendError::Full((tex, _))) | Err(TrySendError::Disconnected((tex, _))) => {
                 if let Ok(mut p) = free_pool.lock() {

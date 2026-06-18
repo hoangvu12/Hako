@@ -82,6 +82,12 @@ export function RecorderStatusPopover() {
   // otherwise the buffer is empty and "Save last 30s" fails with "no capture".
   const detected = status?.valorant_detected ?? false;
   const capturing = status?.capturing ?? false;
+  // A capture can be running but frozen — the game is minimized (or otherwise not
+  // presenting), so the hook re-copies one stale frame. `capturing_live` is false
+  // then; surface an honest "paused" state rather than a green "Now Clipping" that
+  // would imply live footage is being buffered.
+  const live = status?.capturing_live ?? false;
+  const frozen = capturing && !live;
 
   const fps = settings?.target_fps ?? 60;
   const codec = (settings?.codec ?? "h264").toUpperCase();
@@ -110,13 +116,18 @@ export function RecorderStatusPopover() {
             capturing || detected ? "text-foreground" : "text-foreground/90"
           )}
         >
-          {capturing ? (
+          {capturing && !frozen ? (
             <>
               <span className="relative flex size-2">
                 <span className="absolute inline-flex size-full animate-ping rounded-full bg-success/70" />
                 <span className="relative inline-flex size-2 rounded-full bg-success" />
               </span>
               Now Clipping Valorant
+            </>
+          ) : frozen ? (
+            <>
+              <span className="relative inline-flex size-2 rounded-full bg-amber-400" />
+              Paused — Game Minimized
             </>
           ) : detected ? (
             <>
@@ -136,7 +147,7 @@ export function RecorderStatusPopover() {
         {/* Detection status card */}
         <div className="p-3">
           <div className="rounded-lg bg-secondary/40 px-4 py-5 text-center">
-            {capturing ? (
+            {capturing && !frozen ? (
               <>
                 <div className="mb-1 flex items-center justify-center gap-2">
                   <span className="relative flex size-2.5">
@@ -149,6 +160,19 @@ export function RecorderStatusPopover() {
                 </div>
                 <p className="mt-0.5 text-xs text-muted-foreground">
                   {status?.message ?? "Gameplay is being buffered."}
+                </p>
+              </>
+            ) : frozen ? (
+              <>
+                <div className="mb-1 flex items-center justify-center gap-2">
+                  <span className="relative inline-flex size-2.5 rounded-full bg-amber-400" />
+                </div>
+                <div className="text-sm font-semibold text-foreground">
+                  Paused — game minimized
+                </div>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  The game stopped presenting frames, so clipping is paused to
+                  avoid recording a frozen screen. It resumes when you return.
                 </p>
               </>
             ) : detected ? (
