@@ -95,6 +95,9 @@ fn main() {
                     core::hook::host::set_vendor_hook_dir(hook_dir);
                 }
             }
+            // Reap per-game hook DLL copies left by games from prior sessions
+            // (the ones still running keep their copy locked and are skipped).
+            core::hook::host::cleanup_stale_hook_dll_copies();
             build_tray(app.handle())?;
             // Register the save-clip global shortcut from the saved hotkey (not a
             // hardcoded key). Editing it in Settings / the titlebar re-registers

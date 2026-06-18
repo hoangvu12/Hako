@@ -25,7 +25,7 @@
 #![allow(dead_code)]
 
 use std::ffi::c_void;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -267,6 +267,85 @@ fn vendor_hook_dir() -> Result<PathBuf, String> {
     Err("could not locate vendored OBS hook binaries (set HAKO_OBS_HOOK_DIR)".into())
 }
 
+/// Root for per-game copies of the hook DLL: `%LOCALAPPDATA%\Hako\HookDLL`
+/// (falling back to the system temp dir). See [`prepare_hook_dll_copy`].
+fn hook_dll_root() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("Hako")
+        .join("HookDLL")
+}
+
+/// Copy `graphics-hook64.dll` out of the (read-only, installed) vendor `dir` into
+/// a per-PID subdir under [`hook_dll_root`], and return the copy's path.
+///
+/// Mirrors Medal's `HookLibraryManager.GetDLLForTarget` (per-`MedalHook_<pid>`
+/// copy): the game `LoadLibrary`s — and therefore holds a write lock on — only
+/// this throwaway copy, never the installed resource. That's the whole point:
+/// without it, a game injected in a prior session keeps the installed
+/// `graphics-hook64.dll` locked, and the NSIS auto-updater fails to overwrite it
+/// ("Error opening file for writing"). OBS injects straight from its install dir
+/// and hits exactly that bug; Medal sidesteps it with this copy. Stale copies are
+/// reaped by [`cleanup_stale_hook_dll_copies`] at startup.
+///
+/// An existing same-size copy is reused (so a re-hook of the same PID doesn't
+/// re-copy — and doesn't try to overwrite a copy the game already has locked).
+fn prepare_hook_dll_copy(dir: &Path, pid: u32) -> Result<PathBuf, String> {
+    let src = dir.join("graphics-hook64.dll");
+    let src_len = std::fs::metadata(&src)
+        .map_err(|e| format!("missing {}: {e}", src.display()))?
+        .len();
+
+    let dst_dir = hook_dll_root().join(format!("HakoHook_{pid}"));
+    let dst = dst_dir.join("graphics-hook64.dll");
+
+    let up_to_date = src_len != 0
+        && std::fs::metadata(&dst).map(|m| m.len()).ok() == Some(src_len);
+    if !up_to_date {
+        std::fs::create_dir_all(&dst_dir)
+            .map_err(|e| format!("create hook copy dir {}: {e}", dst_dir.display()))?;
+        std::fs::copy(&src, &dst)
+            .map_err(|e| format!("copy hook DLL to {}: {e}", dst.display()))?;
+    }
+    Ok(dst)
+}
+
+/// Delete per-PID hook DLL copies left behind by games that have since exited
+/// (e.g. after a crash or normal shutdown). Mirrors Medal's
+/// `HookTracker.CleanUpOldHookDLLs`, called once at startup: a copy whose PID is
+/// still running is left alone (the game has it locked); the rest are removed so
+/// `HookDLL` doesn't grow without bound. Best-effort — failures are logged only.
+pub fn cleanup_stale_hook_dll_copies() {
+    let root = hook_dll_root();
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return; // nothing copied yet
+    };
+    let sys = sysinfo::System::new_all();
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(pid) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_prefix("HakoHook_"))
+            .and_then(|n| n.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if sys.process(sysinfo::Pid::from_u32(pid)).is_some() {
+            continue; // game still running — its copy is locked, leave it
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => removed += 1,
+            Err(e) => tracing::debug!("could not remove stale hook copy {}: {e}", path.display()),
+        }
+    }
+    if removed > 0 {
+        tracing::info!("cleaned up {removed} stale hook DLL copy dir(s)");
+    }
+}
+
 /// Run `get-graphics-offsets64.exe` and parse its INI-style stdout into a
 /// [`GraphicsOffsets`] (module-relative function offsets the hook will Detour).
 ///
@@ -378,7 +457,10 @@ impl HookCapture {
             restart.set_event();
             tracing::info!(pid, "graphics-hook already present; signaled restart");
         } else {
-            inject(&dir, thread_id)?;
+            // Inject a per-PID copy of the DLL, not the installed resource, so a
+            // game holding the hook never locks the file the updater must replace.
+            let hook_dll = prepare_hook_dll_copy(&dir, pid)?;
+            inject(&hook_dll, &dir, thread_id)?;
             tracing::info!(pid, "inject-helper returned OK; waiting for hook to create IPC objects");
         }
 
@@ -505,9 +587,13 @@ fn try_open_dll_objects(pid: u32) -> Result<DllObjects, String> {
 /// and nudges it with `PostThreadMessage`, so the OS loader maps the DLL — no
 /// `OpenProcess`/`WriteProcessMemory`/`CreateRemoteThread` against the game.
 /// This is what OBS/Medal use for anti-cheated titles like Valorant.
-fn inject(dir: &std::path::Path, thread_id: u32) -> Result<(), String> {
-    let dll = dir.join("graphics-hook64.dll");
-    let helper = dir.join("inject-helper64.exe");
+///
+/// `dll` is the hook DLL to load into the game — a per-PID copy from
+/// [`prepare_hook_dll_copy`], not the installed resource. `helper_dir` is the
+/// vendor dir holding `inject-helper64.exe` (the helper just runs and exits, so
+/// it isn't subject to the same lock as the loaded DLL).
+fn inject(dll: &Path, helper_dir: &Path, thread_id: u32) -> Result<(), String> {
+    let helper = helper_dir.join("inject-helper64.exe");
     if !dll.exists() {
         return Err(format!("missing {}", dll.display()));
     }
