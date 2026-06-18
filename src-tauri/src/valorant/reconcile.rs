@@ -532,6 +532,21 @@ impl TimelineIndex {
         let frac = (wallclock_ticks - w0) as f64 / (w1 - w0) as f64;
         Some(p0 + ((p1 - p0) as f64 * frac).round() as i64)
     }
+
+    /// PTS at `wallclock_ticks`, but only if it lands within the recorded range
+    /// (± `tol` ticks of either end). `None` when the moment was never captured —
+    /// the recording started *after* it (the game was already in progress when we
+    /// began recording) or stopped *before* it. Unlike [`pts_at`], this does NOT
+    /// clamp a far-out-of-range timestamp onto a file end, so events that predate
+    /// a mid-game recording start are dropped instead of piling onto PTS 0.
+    pub fn pts_at_within(&self, wallclock_ticks: i64, tol: i64) -> Option<i64> {
+        let first = *self.samples.first()?;
+        let last = *self.samples.last()?;
+        if wallclock_ticks < first.0 - tol || wallclock_ticks > last.0 + tol {
+            return None;
+        }
+        self.pts_at(wallclock_ticks)
+    }
 }
 
 /// Estimate an event's wall-clock (100-ns ticks): prefer the per-round anchor
@@ -593,21 +608,31 @@ pub fn reconcile_to_pts(
 /// independently, so a frozen gap *between* the first and last action is handled
 /// correctly. Prefers the Medal `matchStart` calibration when `match_start` is
 /// `Some`, else the per-round / game-start anchor (mirrors [`reconcile_to_pts`]).
-/// `None` if the anchor can't be placed on the timeline.
+///
+/// The event's last action (`anchor`) must land within the recorded range
+/// (± `tol`): if it doesn't, the moment was never captured — recording began
+/// *after* it (the app was opened mid-game) or stopped *before* it — and we
+/// return `None` so the event is dropped rather than clamped onto a file end,
+/// where a pile of pre-recording kills would otherwise collapse onto PTS 0. This
+/// also makes the game-start fallback self-correcting: when its origin is wrong
+/// (mid-game start) the anchors land outside the recording and fall away here.
+/// The padded window *start* may legitimately predate the recording (the pre-roll
+/// is simply truncated to PTS 0), so it keeps the lenient clamp.
 pub fn event_span_pts(
     event: &GameEvent,
     match_start: Option<i64>,
     anchors: &[RoundAnchor],
     game_start_ticks: Option<i64>,
     timeline: &TimelineIndex,
+    tol: i64,
 ) -> Option<(i64, i64)> {
     let anchor_wall = match match_start {
         Some(ms) => event_wallclock_from_match_start(event, ms),
         None => event_wallclock(event, anchors, game_start_ticks)?,
     };
+    let end_pts = timeline.pts_at_within(anchor_wall, tol)?;
     let start_wall = anchor_wall - event.lead_in_millis * TICKS_PER_MS;
     let start_pts = timeline.pts_at(start_wall)?;
-    let end_pts = timeline.pts_at(anchor_wall)?;
     Some((start_pts, end_pts))
 }
 
@@ -847,9 +872,46 @@ mod tests {
         tl.push(0, 0);
         tl.push(300_000_000, 1800); // 30 s → PTS 1800 (60 fps)
         let (start_pts, end_pts) =
-            event_span_pts(&ev, None, &[], Some(0), &tl).expect("span reconciles");
+            event_span_pts(&ev, None, &[], Some(0), &tl, 2 * 10_000_000).expect("span reconciles");
         assert_eq!(end_pts, 1200); // 20 s → PTS 1200
         assert_eq!(start_pts, 840); // 14 s (20 − 6) → PTS 840
+    }
+
+    #[test]
+    fn pts_at_within_drops_out_of_range() {
+        let mut t = TimelineIndex::new();
+        t.push(0, 0);
+        t.push(10_000_000, 60); // recorded wall 0..1 s → PTS 0..60
+        let tol = 2_000_000; // 0.2 s
+        // Inside the recording: interpolated normally.
+        assert_eq!(t.pts_at_within(5_000_000, tol), Some(30));
+        // Just outside but within tol: clamped to the near end.
+        assert_eq!(t.pts_at_within(-1_000_000, tol), Some(0));
+        assert_eq!(t.pts_at_within(11_000_000, tol), Some(60));
+        // Far before the recording started (app opened mid-game): dropped.
+        assert_eq!(t.pts_at_within(-60_000_000, tol), None);
+        // Far after the recording stopped: dropped.
+        assert_eq!(t.pts_at_within(60_000_000, tol), None);
+    }
+
+    #[test]
+    fn event_before_recording_is_dropped_not_clamped() {
+        // App opened mid-game: recording covers wall 100..130 s. Calibration
+        // (match_start = 0 ⇒ game began at wall 0) is exact, but an Ace whose last
+        // kill landed at game-time 20 s — long before recording started — must be
+        // dropped, not clamped onto PTS 0 where it would pile up with other early
+        // kills.
+        let mut tl = TimelineIndex::new();
+        tl.push(1_000_000_000, 0); // 100 s → PTS 0
+        tl.push(1_300_000_000, 1800); // 130 s → PTS 1800 (30 s @ 60 fps)
+        let tol = 2 * 10_000_000; // 2 s
+        let early = GameEvent::span(EventKind::Ace, 0, 20_000, 20_000, 4_000);
+        assert!(event_span_pts(&early, Some(0), &[], None, &tl, tol).is_none());
+        // A kill inside the recorded window (game-time 110 s) still places.
+        let late = GameEvent::point(EventKind::Kill, 0, 110_000, 0);
+        let (s, e) = event_span_pts(&late, Some(0), &[], None, &tl, tol).expect("in-range places");
+        assert_eq!(e, 600); // 110 s → 10 s into recording → PTS 600
+        assert_eq!(s, 600);
     }
 
     #[test]

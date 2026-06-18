@@ -37,6 +37,12 @@ use crate::valorant::summary;
 
 /// `MaxAutoClipLength` — clamp each merged window to 120 s.
 const MAX_AUTOCLIP_SECS: i64 = 120;
+/// Slack (seconds) for landing an event's anchor on the recorded timeline —
+/// absorbs round-anchor read-time jitter. An event whose last action falls more
+/// than this outside the recording was never captured (recording started after
+/// it — app opened mid-game — or stopped before it) and is dropped, not clamped
+/// onto a file end.
+const PLACEMENT_TOL_SECS: i64 = 2;
 /// `match-details` retry budget (Riot finalizes a few s after match end).
 const MATCH_DETAILS_ATTEMPTS: u32 = 6;
 const MATCH_DETAILS_DELAY_SECS: u64 = 20;
@@ -186,21 +192,27 @@ async fn run(input: &CutInput) -> Result<(), String> {
     let game_start_ticks = input.game_start_ticks + skirmish_offset;
     let fps = input.fps.max(1);
     let max_len_pts = MAX_AUTOCLIP_SECS * fps as i64;
+    let place_tol = PLACEMENT_TOL_SECS * TICKS_PER_SECOND;
 
     // Reconcile each event to a session PTS span and build its padded window.
     let mut placed: Vec<(i64, i64, EventKind)> = Vec::new(); // (start_pts, end_pts, kind)
+    let mut dropped = 0usize;
     for e in &events {
         // Reconcile the event's [first-action, last-action] span to PTS. A
         // multi-kill spans first→last so the whole sequence is captured, not just
         // a fixed pad around the last kill; single-moment events have a zero-width
-        // span (start == end).
+        // span (start == end). An event whose anchor lands outside the recording
+        // (app opened mid-game, or recording stopped early) is dropped here rather
+        // than clamped onto a file end — see `event_span_pts`.
         let Some((start_pts, end_pts)) = reconcile::event_span_pts(
             e,
             match_start,
             &input.anchors,
             Some(game_start_ticks),
             &input.timeline,
+            place_tol,
         ) else {
+            dropped += 1;
             continue;
         };
         // Per-event clip window (Outplayed's "Events timing"): each kind has its
@@ -209,6 +221,13 @@ async fn run(input: &CutInput) -> Result<(), String> {
         let (s, end) = reconcile::clip_window_span(start_pts, end_pts, t.before, t.after, fps);
         let end = end.min(s + max_len_pts);
         placed.push((s, end, e.kind));
+    }
+    if dropped > 0 {
+        tracing::info!(
+            "auto-clip: dropped {dropped}/{} event(s) outside the recorded window \
+             (occurred before recording started or after it stopped — likely opened mid-game)",
+            events.len()
+        );
     }
     if placed.is_empty() {
         return Err("no events could be reconciled to the session timeline".into());
