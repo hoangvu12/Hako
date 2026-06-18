@@ -946,7 +946,17 @@ fn hook_source_loop(
             last_change = Instant::now();
             last_hash = None;
             warned_static = false;
-            tracing::info!("capture: game restored — resuming live capture");
+            // Returning from minimize/alt-tab is exactly when the game tends to
+            // recreate its swapchain (notably when leaving exclusive fullscreen), so
+            // the shared texture we hold may now be stale. Proactively re-hook now
+            // instead of waiting up to STATIC_RESTART_AFTER for the static watchdog
+            // to notice — this mirrors how Overwolf's native engine reacts to its
+            // GameExclusiveModeChangedEvent with ForceCaptureChangeRehook. Debounced
+            // via `last_restart` so a restore + an immediate static sample can't
+            // fire two restarts back to back.
+            hook.request_restart();
+            last_restart = Some(Instant::now());
+            tracing::info!("capture: game restored — re-hooking swapchain, resuming live capture");
         }
 
         let frame = match hook.acquire(&device) {
