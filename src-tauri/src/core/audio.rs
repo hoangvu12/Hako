@@ -611,14 +611,37 @@ fn resolve_app_pid(id: &str, game_pid: Option<u32>) -> u32 {
         return pid;
     }
     let sys = sysinfo::System::new_all();
-    sys.processes()
+    // Every process whose executable name matches the source id. Electron/
+    // Chromium apps (Discord, browsers, etc.) run *several* identically-named
+    // processes — and the one that actually renders audio is a child utility
+    // process (`--type=utility --utility-sub-type=audio.mojom.AudioService`),
+    // NOT the main window process the user thinks of.
+    let matching: Vec<&sysinfo::Process> = sys
+        .processes()
         .values()
-        .find(|p| {
+        .filter(|p| {
             p.name()
                 .to_str()
                 .map(|n| n.eq_ignore_ascii_case(id))
                 .unwrap_or(false)
         })
+        .collect();
+    if matching.is_empty() {
+        return 0;
+    }
+    let pids: std::collections::HashSet<sysinfo::Pid> =
+        matching.iter().map(|p| p.pid()).collect();
+    // Capture the *root* of the same-named group: the matching process whose
+    // parent is not itself in the group. `PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_
+    // PROCESS_TREE` then sweeps in every descendant (including the audio-service
+    // utility), so we record the app's sound no matter which child emits it.
+    // The old `.find()` returned an arbitrary match (HashMap order) — usually a
+    // leaf (gpu/renderer/utility) whose subtree excludes the audio renderer, so
+    // the track came out silent. See `process_loopback::open`.
+    matching
+        .iter()
+        .find(|p| p.parent().map_or(true, |pp| !pids.contains(&pp)))
+        .or_else(|| matching.first())
         .map(|p| p.pid().as_u32())
         .unwrap_or(0)
 }
@@ -2028,6 +2051,109 @@ mod tests {
             CoUninitialize();
         }
         result.expect("audio capture pipeline");
+    }
+
+    /// Capture the **microphone alone** for 5 s and report packet count + peak
+    /// amplitude — the isolated check the combined `captures_desktop_audio_to_aac`
+    /// test can't give (there mic + loopback land in one track, so a silent mic is
+    /// masked by desktop audio). **Speak into the mic while this runs**, then play
+    /// the printed `.aac`. Fails loudly if the default capture endpoint can't be
+    /// opened; warns (doesn't fail) if it opens but delivers pure silence, since a
+    /// truly muted/disconnected mic is an environment issue, not a code bug.
+    #[test]
+    fn captures_microphone_alone() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        }
+        let result = (|| -> Result<(), String> {
+            unsafe {
+                let enumerator: IMMDeviceEnumerator =
+                    CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+                        .map_err(|e| format!("enumerator: {e}"))?;
+                let mut mic = Source::open_mic(&enumerator)
+                    .map_err(|e| format!("open default mic: {e}"))?;
+                println!(
+                    "mic mix format: {} Hz, {} ch, block_align={}",
+                    mic.fmt.rate, mic.fmt.channels, mic.fmt.block_align
+                );
+
+                let mut encoder = AacEncoder::new()?;
+                let meta = AudioMeta {
+                    sample_rate: MIX_RATE as u32,
+                    channels: MIX_CHANNELS as u32,
+                    extradata: encoder.extradata(),
+                };
+                let block = encoder.frame_size();
+                mic.start()?;
+                let qpc_freq = {
+                    let mut f = 0i64;
+                    QueryPerformanceFrequency(&mut f).ok();
+                    f.max(1)
+                };
+
+                let mut timeline = Timeline::new();
+                let mut mixer = TrackMixer::new(block);
+                let mut scratch = Vec::new();
+                let mut zero = Vec::new();
+                let mut packets: Vec<EncodedPacket> = Vec::new();
+                let mut peak = 0f32;
+                let mut sink_runs = 0u64;
+
+                let start = Instant::now();
+                while start.elapsed().as_secs_f64() < 5.0 {
+                    let any = mic.drain(&mut timeline, qpc_freq, &mut scratch, &mut zero, |at, s| {
+                        sink_runs += 1;
+                        for &v in s {
+                            peak = peak.max(v.abs());
+                        }
+                        mixer.add_scaled(at, s, 1.0);
+                    });
+                    if let Some(epoch) = timeline.epoch() {
+                        for (samples, pts) in mixer.drain_ready(false, epoch) {
+                            packets.extend(encoder.encode_block(&samples, pts)?);
+                        }
+                    }
+                    if !any {
+                        std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
+                    }
+                }
+                let _ = mic.audio_client.Stop();
+                if let Some(epoch) = timeline.epoch() {
+                    for (samples, pts) in mixer.drain_ready(true, epoch) {
+                        packets.extend(encoder.encode_block(&samples, pts)?);
+                    }
+                }
+                packets.extend(encoder.flush()?);
+
+                let peak_db = if peak > 0.0 { 20.0 * peak.log10() } else { f32::NEG_INFINITY };
+                println!(
+                    "MIC: {sink_runs} buffer(s) drained, {} AAC packet(s), peak amplitude {peak:.4} ({peak_db:.1} dBFS)",
+                    packets.len()
+                );
+
+                // The mic MUST produce captured buffers — if it opens and starts,
+                // WASAPI shared capture delivers data continuously. Zero buffers
+                // means a real capture bug (the thing the user reported).
+                assert!(
+                    sink_runs > 0 && !packets.is_empty(),
+                    "MIC PRODUCED NO DATA after opening+starting — real capture bug"
+                );
+                if peak < 1e-4 {
+                    println!(
+                        "WARNING: mic delivered only silence (peak ~{peak:.6}). Check the \
+                         default recording device / mic level — code path is OK."
+                    );
+                }
+                let out = std::env::temp_dir().join("hako_mic_test.aac");
+                write_adts(&out, &meta, &packets);
+                println!("WROTE MIC AUDIO → {} (play it to verify your voice)", out.display());
+                Ok(())
+            }
+        })();
+        unsafe {
+            CoUninitialize();
+        }
+        result.expect("microphone capture");
     }
 
     /// Regression test for the process-loopback STATUS_HEAP_CORRUPTION: the

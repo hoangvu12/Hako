@@ -429,6 +429,10 @@ pub struct RunningCapture {
     /// Live capture metrics + liveness flags (shared with the source/encode
     /// threads). Read by the recorder-status snapshot for the honest indicator.
     shared: Arc<Shared>,
+    /// The captured window — retained so a settings change (e.g. enabling the
+    /// mic) can restart this capture against the same target to pick up the new
+    /// audio/encode config (capture snapshots its config at start).
+    hwnd: i64,
 }
 
 impl RunningCapture {
@@ -442,6 +446,18 @@ impl RunningCapture {
     /// The shared clip buffer — clone out to save without holding capture state.
     pub fn clip(&self) -> Arc<ClipBuffer> {
         self.clip.clone()
+    }
+
+    /// The captured window handle (for a config-change restart).
+    pub fn hwnd(&self) -> i64 {
+        self.hwnd
+    }
+
+    /// Whether a Valorant match is actively being recorded into this capture.
+    /// A restart while true would orphan the in-progress session's buffer, so
+    /// the settings path defers config-change restarts until the match ends.
+    pub fn has_active_session(&self) -> bool {
+        self.clip.active_session().is_some()
     }
 
     /// Whether we're capturing *fresh* frames right now — false when the game is
@@ -606,6 +622,7 @@ pub fn start_hook(
             thread: Some(thread),
             clip,
             shared,
+            hwnd: hwnd_raw,
         }),
         Ok(Err(e)) => {
             let _ = thread.join();

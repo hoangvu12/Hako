@@ -249,9 +249,13 @@ async fn run(input: &CutInput) -> Result<(), String> {
     let mut cut = 0usize;
     let mut skipped_frozen = 0usize;
     for (s, e) in merged {
-        // Re-clamp the merged span and pick the strongest event kind inside it.
+        // Re-clamp the merged span. A merged window can cover several events
+        // (e.g. a spike-defuse then a kill): collect them all in time order, and
+        // keep the strongest as the headline `kind` for back-compat + sorting.
         let end = e.min(s + max_len_pts);
         let kind = dominant_kind(&placed, s, end).unwrap_or(EventKind::Kill);
+        let kinds = kinds_in_window(&placed, s, end);
+        let event_labels: Vec<String> = kinds.iter().map(|k| k.label().to_string()).collect();
         let start_sec = s as f64 / fps as f64;
         let end_sec = end as f64 / fps as f64;
         if end_sec <= start_sec {
@@ -283,18 +287,21 @@ async fn run(input: &CutInput) -> Result<(), String> {
         // Stream-copy the window out of the session file (no re-encode).
         match crate::library::trim::trim_clip(&input.session_path, &out, start_sec, end_sec, false) {
             Ok(res) => {
-                // Tag the clip with its event + the match's agent when known
-                // (e.g. "Ace — Jett"), else just the event + duration.
+                // Tag the clip with all its events + the match's agent when
+                // known (e.g. "Spike Defused + Kill — Jett"), else events +
+                // duration.
+                let label = commands::events_summary(kind.label(), &event_labels);
                 let title = if summary.agent.is_empty() {
-                    format!("{} — {:.0}s", kind.label(), end_sec - start_sec)
+                    format!("{} — {:.0}s", label, end_sec - start_sec)
                 } else {
-                    format!("{} — {}", kind.label(), summary.agent)
+                    format!("{} — {}", label, summary.agent)
                 };
                 if let Err(err) = commands::finalize_auto_clip(
                     &input.app,
                     out,
                     title,
                     kind.label(),
+                    &event_labels,
                     res.width,
                     res.height,
                     res.duration_secs,
@@ -371,6 +378,25 @@ fn dominant_kind(placed: &[(i64, i64, EventKind)], start: i64, end: i64) -> Opti
         .max_by_key(|k| kind_priority(*k))
 }
 
+/// Every distinct event kind anchored inside `[start, end]`, in time order — so
+/// a merged window lists its events as they happened (e.g. spike-defuse → kill).
+/// Deduplicated by label so repeated kinds (two kills) collapse to one tag.
+fn kinds_in_window(placed: &[(i64, i64, EventKind)], start: i64, end: i64) -> Vec<EventKind> {
+    let mut hits: Vec<(i64, EventKind)> = placed
+        .iter()
+        .filter(|&&(s, _, _)| s >= start - 1 && s <= end)
+        .map(|&(s, _, k)| (s, k))
+        .collect();
+    hits.sort_by_key(|&(s, _)| s);
+    let mut out: Vec<EventKind> = Vec::new();
+    for (_, k) in hits {
+        if !out.iter().any(|e| e.label() == k.label()) {
+            out.push(k);
+        }
+    }
+    out
+}
+
 /// Tag priority: the headline moments (Victory/Ace/Clutch) outrank multi-kills,
 /// which outrank single kills, spike plays, deaths, and assists.
 fn kind_priority(k: EventKind) -> u8 {
@@ -426,6 +452,7 @@ pub fn save_whole_session(
         out,
         title.to_string(),
         event,
+        std::slice::from_ref(&event.to_string()),
         res.width,
         res.height,
         res.duration_secs,

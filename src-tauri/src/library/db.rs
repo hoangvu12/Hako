@@ -18,8 +18,13 @@ pub struct ClipRecord {
     pub id: i64,
     pub path: String,
     pub title: String,
-    /// Event tag (EventKind name) or "Manual".
+    /// Primary event tag (EventKind label) or "Manual" — the dominant event when
+    /// a clip's window merged several. Kept for back-compat + the headline badge.
     pub event: Option<String>,
+    /// Every event captured in this clip's window, in time order (e.g. a window
+    /// that merged a spike-defuse and a kill carries both). Falls back to the
+    /// single `event` for rows written before multi-event tracking existed.
+    pub events: Vec<String>,
     pub duration_secs: f64,
     pub width: i64,
     pub height: i64,
@@ -36,6 +41,8 @@ pub struct NewClip {
     pub path: String,
     pub title: String,
     pub event: Option<String>,
+    /// All events in the clip's window (empty ⇒ derive from `event`).
+    pub events: Vec<String>,
     pub duration_secs: f64,
     pub width: i64,
     pub height: i64,
@@ -84,25 +91,32 @@ impl Library {
                 size_bytes      INTEGER NOT NULL DEFAULT 0,
                 thumb_path      TEXT,
                 filmstrip_path  TEXT,
+                events          TEXT,
                 created_unix_ms INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_clips_created ON clips(created_unix_ms DESC);",
         )
         .map_err(|e| format!("init schema: {e}"))?;
-        // Migration for DBs created before the filmstrip column existed. SQLite
-        // has no "ADD COLUMN IF NOT EXISTS", so we ignore the duplicate-column error.
+        // Migrations for DBs created before a column existed. SQLite has no "ADD
+        // COLUMN IF NOT EXISTS", so we ignore the duplicate-column error.
         let _ = conn.execute("ALTER TABLE clips ADD COLUMN filmstrip_path TEXT", []);
+        let _ = conn.execute("ALTER TABLE clips ADD COLUMN events TEXT", []);
         Ok(Library { conn })
     }
 
     /// Insert a clip; returns its new id.
     pub fn insert(&self, clip: &NewClip) -> Result<i64, String> {
         let created = now_unix_ms();
+        // Store the event list as a JSON array; NULL when empty so old readers
+        // (and the `event` fallback) keep working.
+        let events_json = (!clip.events.is_empty())
+            .then(|| serde_json::to_string(&clip.events).ok())
+            .flatten();
         self.conn
             .execute(
                 "INSERT INTO clips
-                   (path, title, event, duration_secs, width, height, size_bytes, thumb_path, filmstrip_path, created_unix_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                   (path, title, event, duration_secs, width, height, size_bytes, thumb_path, filmstrip_path, events, created_unix_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     clip.path,
                     clip.title,
@@ -113,6 +127,7 @@ impl Library {
                     clip.size_bytes,
                     clip.thumb_path,
                     clip.filmstrip_path,
+                    events_json,
                     created,
                 ],
             )
@@ -126,7 +141,7 @@ impl Library {
             .conn
             .prepare(
                 "SELECT id, path, title, event, duration_secs, width, height, size_bytes,
-                        thumb_path, filmstrip_path, created_unix_ms
+                        thumb_path, filmstrip_path, created_unix_ms, events
                  FROM clips ORDER BY created_unix_ms DESC",
             )
             .map_err(|e| format!("prepare list: {e}"))?;
@@ -145,7 +160,7 @@ impl Library {
             .conn
             .prepare(
                 "SELECT id, path, title, event, duration_secs, width, height, size_bytes,
-                        thumb_path, filmstrip_path, created_unix_ms
+                        thumb_path, filmstrip_path, created_unix_ms, events
                  FROM clips WHERE id = ?1",
             )
             .map_err(|e| format!("prepare get: {e}"))?;
@@ -213,11 +228,20 @@ impl Library {
 }
 
 fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<ClipRecord> {
+    let event: Option<String> = row.get(3)?;
+    // `events` (col 11) is a JSON array; for rows predating it (NULL/garbage),
+    // fall back to the single `event` so the UI always has something to show.
+    let events_json: Option<String> = row.get(11)?;
+    let events = events_json
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| event.clone().into_iter().collect());
     Ok(ClipRecord {
         id: row.get(0)?,
         path: row.get(1)?,
         title: row.get(2)?,
-        event: row.get(3)?,
+        event,
+        events,
         duration_secs: row.get(4)?,
         width: row.get(5)?,
         height: row.get(6)?,
@@ -244,6 +268,7 @@ mod tests {
             path: path.into(),
             title: title.into(),
             event: event.map(|s| s.into()),
+            events: event.into_iter().map(|s| s.to_string()).collect(),
             duration_secs: 12.0,
             width: 2560,
             height: 1440,
@@ -271,6 +296,25 @@ mod tests {
         lib.delete(id1).unwrap();
         assert!(lib.get(id1).unwrap().is_none());
         assert_eq!(lib.count().unwrap(), 1);
+    }
+
+    #[test]
+    fn multi_event_round_trips_and_single_falls_back() {
+        let lib = Library::open_in_memory().unwrap();
+        // A merged window carrying several events.
+        let mut multi = sample("m.mp4", "Spike Defused + Kill", Some("Spike Defused"));
+        multi.events = vec!["Spike Defused".into(), "Kill".into()];
+        let id_multi = lib.insert(&multi).unwrap();
+        let rec = lib.get(id_multi).unwrap().unwrap();
+        assert_eq!(rec.events, vec!["Spike Defused", "Kill"]);
+        assert_eq!(rec.event.as_deref(), Some("Spike Defused"));
+
+        // A single-event clip persisted with an empty events list still reports
+        // its one event (the `event` fallback the UI relies on).
+        let mut single = sample("s.mp4", "Ace", Some("Ace"));
+        single.events = Vec::new();
+        let id_single = lib.insert(&single).unwrap();
+        assert_eq!(lib.get(id_single).unwrap().unwrap().events, vec!["Ace"]);
     }
 
     #[test]

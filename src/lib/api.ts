@@ -34,7 +34,11 @@ export interface ClipRecord {
   id: number;
   path: string;
   title: string;
+  /** Headline event (the dominant one when a clip's window merged several). */
   event: string | null;
+  /** Every event captured in the clip's window, in time order. Falls back to
+   * `[event]` for clips saved before multi-event tracking existed. */
+  events: string[];
   duration_secs: number;
   width: number;
   height: number;

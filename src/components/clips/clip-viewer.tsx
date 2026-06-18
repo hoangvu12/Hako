@@ -804,10 +804,17 @@ function ViewerStage({
 
           <div className="flex flex-wrap gap-2">
             {trimmed ? (
-              <span className="inline-flex items-center gap-1.5 rounded-md bg-warning/15 px-2.5 py-1 text-xs font-medium text-warning">
-                <Scissors weight="fill" className="size-3.5" />
-                {clip.event}
-              </span>
+              // One badge per event the clip's window covered (a merged window
+              // can hold several, e.g. a spike-defuse and a kill).
+              (clip.events.length ? clip.events : [clip.event ?? ""]).map((ev, i) => (
+                <span
+                  key={`${ev}-${i}`}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-warning/15 px-2.5 py-1 text-xs font-medium text-warning"
+                >
+                  <Scissors weight="fill" className="size-3.5" />
+                  {ev}
+                </span>
+              ))
             ) : (
               <span className="inline-flex items-center gap-1.5 rounded-md bg-info/15 px-2.5 py-1 text-xs font-medium text-info">
                 <Lightning weight="fill" className="size-3.5" />

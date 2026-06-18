@@ -368,6 +368,7 @@ pub fn save_clip_full(
         path: saved.path.to_string_lossy().to_string(),
         title,
         event: event.map(|s| s.to_string()),
+        events: event.into_iter().map(|s| s.to_string()).collect(),
         duration_secs: saved.duration_secs,
         width: saved.width as i64,
         height: saved.height as i64,
@@ -417,6 +418,7 @@ pub fn finalize_auto_clip(
     path: PathBuf,
     title: String,
     event: &str,
+    events: &[String],
     width: i64,
     height: i64,
     duration_secs: f64,
@@ -428,6 +430,7 @@ pub fn finalize_auto_clip(
         path: path.to_string_lossy().to_string(),
         title,
         event: Some(event.to_string()),
+        events: events.to_vec(),
         duration_secs,
         width,
         height,
@@ -444,6 +447,17 @@ pub fn finalize_auto_clip(
     let _ = app.emit(crate::events::CLIP_CREATED, &record);
     tracing::info!("auto-clip saved ({event}) → {}", record.path);
     Ok(record)
+}
+
+/// Human-readable label for a clip's event(s): "Ace + Kill" when a merged
+/// window covers several, else the single event. Empty list ⇒ falls back to
+/// `primary`.
+pub fn events_summary(primary: &str, events: &[String]) -> String {
+    if events.len() > 1 {
+        events.join(" + ")
+    } else {
+        events.first().map(String::as_str).unwrap_or(primary).to_string()
+    }
 }
 
 /// All clips in the library, newest first.
@@ -519,6 +533,7 @@ pub fn trim_clip(
                 path: out.to_string_lossy().to_string(),
                 title: format!("{} (trim)", rec.title),
                 event: rec.event.clone(),
+                events: rec.events.clone(),
                 duration_secs: res.duration_secs,
                 width: res.width,
                 height: res.height,
@@ -627,6 +642,7 @@ pub fn remux_with_tracks(
                 path: out.to_string_lossy().to_string(),
                 title: format!("{} (export)", rec.title),
                 event: rec.event.clone(),
+                events: rec.events.clone(),
                 duration_secs: res.duration_secs,
                 width: res.width,
                 height: res.height,
@@ -709,16 +725,57 @@ pub fn update_settings(
     let path = settings_path(&app)?;
     next.save(&path)?;
     let new_hotkey = next.save_hotkey.clone();
-    let old_hotkey = {
+    let (old_hotkey, capture_changed) = {
         let mut guard = settings.0.lock().map_err(|_| "settings poisoned")?;
-        let prev = guard.save_hotkey.clone();
+        let prev_hotkey = guard.save_hotkey.clone();
+        let capture_changed = guard.capture_config_differs(&next);
         *guard = next;
-        prev
+        (prev_hotkey, capture_changed)
     };
     if old_hotkey != new_hotkey {
         crate::set_clip_hotkey(&app, Some(&old_hotkey), &new_hotkey);
     }
+    // A running capture snapshots its fps/buffer/codec/audio config at start, so
+    // a change (e.g. enabling the microphone) wouldn't apply to the live buffer.
+    // Restart it against the same window to pick up the new config — but never
+    // mid-match (that would orphan the in-progress session's buffer); those
+    // changes apply when the next match's capture starts.
+    if capture_changed {
+        restart_capture_for_config_change(&app);
+    }
     Ok(())
+}
+
+/// Restart the live buffer capture so a settings change takes effect, if one is
+/// running and no Valorant match is actively recording into it. Best-effort: a
+/// failed restart leaves capture stopped, which the orchestrator re-starts on
+/// the next game-window poll.
+fn restart_capture_for_config_change(app: &AppHandle) {
+    let state = app.state::<CaptureState>();
+    // Read the target window + match-busy flag, then drop the lock before
+    // stop/start (both take the same lock internally).
+    let hwnd = {
+        let guard = match state.0.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        match guard.as_ref() {
+            None => return, // no capture running — change applies next start
+            Some(running) if running.has_active_session() => {
+                tracing::info!(
+                    "settings: capture config changed mid-match; applying after the match ends"
+                );
+                return;
+            }
+            Some(running) => running.hwnd(),
+        }
+    };
+    stop_capture_with(app);
+    if let Err(e) = start_capture_with(app, hwnd, None, None) {
+        tracing::warn!("settings: capture restart after config change failed: {e}");
+    } else {
+        tracing::info!("settings: restarted capture to apply new audio/encode config");
+    }
 }
 
 /// Best-effort live Valorant status for the `/valorant` panel.

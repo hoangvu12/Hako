@@ -176,7 +176,7 @@ pub const GAME_SOURCE_ID: &str = "game";
 ///
 /// `separate_tracks` is Medal's "Separate audio tracks" toggle: when on, the
 /// clip gets a master "All Audio" mix (track 0) *plus* one named stem per source.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AudioConfig {
     /// `"all_pc_audio"` | `"specific_apps"`.
@@ -224,7 +224,7 @@ impl Default for AudioConfig {
 }
 
 /// A selected render endpoint in `all_pc_audio` mode (Medal `AudioModeDevice`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AudioDeviceSel {
     /// Stable WASAPI render-endpoint id, or [`AUTO_DEVICE`] for the default.
@@ -248,7 +248,7 @@ impl Default for AudioDeviceSel {
 }
 
 /// A selected per-app source in `specific_apps` mode (Medal `AudioModeSource`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AudioAppSel {
     /// [`GAME_SOURCE_ID`] for the game, or a process name like `"discord.exe"`.
@@ -313,6 +313,25 @@ impl Settings {
     /// `gpu_adapter` is Auto (`< 0`), else the DXGI adapter index.
     pub fn gpu_adapter_index(&self) -> Option<u32> {
         (self.gpu_adapter >= 0).then_some(self.gpu_adapter as u32)
+    }
+
+    /// Whether anything a running capture snapshots at start differs between
+    /// `self` and `other` — i.e. a change that only takes effect once capture is
+    /// restarted (fps, buffer, codec/bitrate/resolution, GPU, and the whole audio
+    /// config incl. mic). The settings path uses this to hot-restart the live
+    /// buffer so toggles like "enable microphone" apply without relaunching.
+    pub fn capture_config_differs(&self, other: &Settings) -> bool {
+        self.target_fps != other.target_fps
+            || self.buffer_seconds != other.buffer_seconds
+            || self.buffer_storage != other.buffer_storage
+            || self.codec != other.codec
+            || self.bitrate_mbps != other.bitrate_mbps
+            || self.resolution != other.resolution
+            || self.gpu_adapter != other.gpu_adapter
+            || self.video_encoder != other.video_encoder
+            || self.capture_audio != other.capture_audio
+            || self.mic_source != other.mic_source
+            || self.effective_audio() != other.effective_audio()
     }
 
     /// The effective [`AudioConfig`] for capture: the explicit `audio` config if
