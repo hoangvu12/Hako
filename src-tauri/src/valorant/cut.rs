@@ -187,25 +187,26 @@ async fn run(input: &CutInput) -> Result<(), String> {
     let fps = input.fps.max(1);
     let max_len_pts = MAX_AUTOCLIP_SECS * fps as i64;
 
-    // Reconcile each event to a session PTS and build its padded window.
+    // Reconcile each event to a session PTS span and build its padded window.
     let mut placed: Vec<(i64, i64, EventKind)> = Vec::new(); // (start_pts, end_pts, kind)
     for e in &events {
-        let pts = match match_start {
-            Some(ms) => input
-                .timeline
-                .pts_at(reconcile::event_wallclock_from_match_start(e, ms)),
-            None => reconcile::reconcile_to_pts(
-                e,
-                &input.anchors,
-                Some(game_start_ticks),
-                &input.timeline,
-            ),
+        // Reconcile the event's [first-action, last-action] span to PTS. A
+        // multi-kill spans first→last so the whole sequence is captured, not just
+        // a fixed pad around the last kill; single-moment events have a zero-width
+        // span (start == end).
+        let Some((start_pts, end_pts)) = reconcile::event_span_pts(
+            e,
+            match_start,
+            &input.anchors,
+            Some(game_start_ticks),
+            &input.timeline,
+        ) else {
+            continue;
         };
-        let Some(pts) = pts else { continue };
         // Per-event clip window (Outplayed's "Events timing"): each kind has its
         // own before/after padding instead of one global pad.
         let t = timings.for_kind(e.kind);
-        let (s, end) = reconcile::clip_window(pts, t.before, t.after, fps);
+        let (s, end) = reconcile::clip_window_span(start_pts, end_pts, t.before, t.after, fps);
         let end = end.min(s + max_len_pts);
         placed.push((s, end, e.kind));
     }

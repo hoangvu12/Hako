@@ -502,10 +502,51 @@ pub struct GameEvent {
     pub kind: EventKind,
     /// Round index this event belongs to (`roundNum`).
     pub round: i32,
-    /// Anchor time for reconciliation: ms since the game started.
+    /// Anchor time for reconciliation: ms since the game started. For a
+    /// multi-action event (e.g. a multi-kill) this is the *last* action — the
+    /// clip window ends here (+ padding).
     pub time_since_game_start_millis: i64,
     /// ms since this round started (finer anchor when round starts are known).
     pub time_since_round_start_millis: i64,
+    /// How long *before* the anchor this event's sequence began, in ms (0 for a
+    /// single-moment event). The clip window opens `lead_in_millis` before the
+    /// anchor (then minus the before-pad) so the whole sequence is covered —
+    /// e.g. an Ace spans its first kill, not just a fixed pad around the last.
+    /// Identical in game- and round-time (both differ by the same round offset).
+    pub lead_in_millis: i64,
+}
+
+impl GameEvent {
+    /// A single-moment event (one kill, death, spike, …): the window pads
+    /// symmetrically around this instant (`lead_in_millis == 0`).
+    pub fn point(kind: EventKind, round: i32, game_millis: i64, round_millis: i64) -> Self {
+        GameEvent {
+            kind,
+            round,
+            time_since_game_start_millis: game_millis,
+            time_since_round_start_millis: round_millis,
+            lead_in_millis: 0,
+        }
+    }
+
+    /// A multi-action event anchored at its *last* action (`game_millis` /
+    /// `round_millis`), whose window reaches back `lead_in_millis` to the first
+    /// action so the entire sequence (every kill of a multi-kill) is captured.
+    pub fn span(
+        kind: EventKind,
+        round: i32,
+        game_millis: i64,
+        round_millis: i64,
+        lead_in_millis: i64,
+    ) -> Self {
+        GameEvent {
+            kind,
+            round,
+            time_since_game_start_millis: game_millis,
+            time_since_round_start_millis: round_millis,
+            lead_in_millis: lead_in_millis.max(0),
+        }
+    }
 }
 
 #[cfg(test)]

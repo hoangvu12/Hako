@@ -3,9 +3,10 @@
 //! Two pure stages, both unit-tested without a live game:
 //!
 //! 1. **Derive** ([`derive_events`]) — from post-match `MatchDetails`, compute
-//!    our highlight events: one multi-kill tier per round (Kill/2K/3K/4K/Ace at
-//!    the *last* kill of the round so the clip covers the whole sequence), plus
-//!    Knife / Death / Assist. Filtered by [`EventToggles`].
+//!    our highlight events: one multi-kill tier per round (Kill/2K/3K/4K/Ace
+//!    anchored at the *last* kill but carrying a `lead_in` back to the *first*
+//!    kill so the clip spans the whole sequence), plus Knife / Death / Assist.
+//!    Filtered by [`EventToggles`].
 //! 2. **Reconcile** ([`reconcile_to_pts`]) — map an event's match-relative time
 //!    to a session-file PTS. We logged each round's start wall-clock live (from
 //!    presence score changes); `kill_wall ≈ round_start_wall +
@@ -217,45 +218,51 @@ pub fn derive_events(details: &MatchDetails, puuid: &str, toggles: &EventToggles
             .collect();
         our_kills.sort_by_key(|k| k.time_since_round_start_millis);
 
-        // One multi-kill tier event per round, anchored at the LAST kill so the
-        // clip captures the full sequence (padding extends backwards).
-        if let Some(last) = our_kills.last() {
-            events.push(GameEvent {
-                kind: EventKind::for_multikill(our_kills.len()),
-                round: round.round_num,
-                time_since_game_start_millis: last.time_since_game_start_millis,
-                time_since_round_start_millis: last.time_since_round_start_millis,
-            });
+        // One multi-kill tier event per round, anchored at the LAST kill with the
+        // window reaching back to the FIRST so the *whole* sequence is captured.
+        // (Medal spans first→last + padding via its OverlapMergeGrouper; a fixed
+        // pad around just the last kill would drop the early kills of a spread-out
+        // Ace.) `lead_in` = the first→last gap, same in game- and round-time.
+        if let (Some(first), Some(last)) = (our_kills.first(), our_kills.last()) {
+            let lead_in =
+                last.time_since_round_start_millis - first.time_since_round_start_millis;
+            events.push(GameEvent::span(
+                EventKind::for_multikill(our_kills.len()),
+                round.round_num,
+                last.time_since_game_start_millis,
+                last.time_since_round_start_millis,
+                lead_in,
+            ));
         }
 
         // Knife kills are their own highlight regardless of the round's tier.
         for k in our_kills.iter().filter(|k| k.is_knife()) {
-            events.push(GameEvent {
-                kind: EventKind::Knife,
-                round: round.round_num,
-                time_since_game_start_millis: k.time_since_game_start_millis,
-                time_since_round_start_millis: k.time_since_round_start_millis,
-            });
+            events.push(GameEvent::point(
+                EventKind::Knife,
+                round.round_num,
+                k.time_since_game_start_millis,
+                k.time_since_round_start_millis,
+            ));
         }
 
         // Deaths (we are the victim) and assists (we assisted someone else).
         for ps in &round.player_stats {
             for k in &ps.kills {
                 if k.victim == puuid {
-                    events.push(GameEvent {
-                        kind: EventKind::Death,
-                        round: round.round_num,
-                        time_since_game_start_millis: k.time_since_game_start_millis,
-                        time_since_round_start_millis: k.time_since_round_start_millis,
-                    });
+                    events.push(GameEvent::point(
+                        EventKind::Death,
+                        round.round_num,
+                        k.time_since_game_start_millis,
+                        k.time_since_round_start_millis,
+                    ));
                 }
                 if k.killer != puuid && k.assistants.iter().any(|a| a == puuid) {
-                    events.push(GameEvent {
-                        kind: EventKind::Assist,
-                        round: round.round_num,
-                        time_since_game_start_millis: k.time_since_game_start_millis,
-                        time_since_round_start_millis: k.time_since_round_start_millis,
-                    });
+                    events.push(GameEvent::point(
+                        EventKind::Assist,
+                        round.round_num,
+                        k.time_since_game_start_millis,
+                        k.time_since_round_start_millis,
+                    ));
                 }
             }
         }
@@ -311,21 +318,21 @@ fn derive_spike_events(
 
     if round.bomb_planter == puuid && code.eq_ignore_ascii_case("Detonate") {
         let round_ms = round.plant_round_time + SPIKE_FUSE_MS;
-        out.push(GameEvent {
-            kind: EventKind::SpikeDetonated,
-            round: round.round_num,
-            time_since_game_start_millis: offset + round_ms,
-            time_since_round_start_millis: round_ms,
-        });
+        out.push(GameEvent::point(
+            EventKind::SpikeDetonated,
+            round.round_num,
+            offset + round_ms,
+            round_ms,
+        ));
     }
     if round.bomb_defuser == puuid && code.eq_ignore_ascii_case("Defuse") {
         let round_ms = round.defuse_round_time;
-        out.push(GameEvent {
-            kind: EventKind::SpikeDefused,
-            round: round.round_num,
-            time_since_game_start_millis: offset + round_ms,
-            time_since_round_start_millis: round_ms,
-        });
+        out.push(GameEvent::point(
+            EventKind::SpikeDefused,
+            round.round_num,
+            offset + round_ms,
+            round_ms,
+        ));
     }
     out
 }
@@ -374,6 +381,11 @@ fn detect_clutch(
     let mut enemy_dead = 0usize;
     let mut became_alone = false; // we are the last teammate standing
     let mut our_kills_after_alone = 0usize;
+    // First and last (clinching) of our kills once the clutch is on — the clip
+    // spans the whole 1vX, not just a fixed pad around the final kill (same
+    // reasoning as the multi-kill span: a drawn-out clutch would otherwise lose
+    // its opening kills).
+    let mut first_clutch: Option<&crate::valorant::model::Kill> = None;
     let mut clinch: Option<&crate::valorant::model::Kill> = None;
 
     for k in &kills {
@@ -390,6 +402,7 @@ fn detect_clutch(
 
         if became_alone && k.killer == puuid {
             our_kills_after_alone += 1;
+            first_clutch = first_clutch.or(Some(k));
             clinch = Some(k);
         }
         // The instant our side is reduced to exactly us, with enemies remaining,
@@ -404,6 +417,7 @@ fn detect_clutch(
             // alone only if it was a teammate death; our own kill still counts).
             if k.killer == puuid {
                 our_kills_after_alone += 1;
+                first_clutch = first_clutch.or(Some(k));
                 clinch = Some(k);
             }
         }
@@ -413,12 +427,18 @@ fn detect_clutch(
     if !became_alone || our_kills_after_alone == 0 {
         return None;
     }
-    Some(GameEvent {
-        kind: EventKind::Clutch,
-        round: round.round_num,
-        time_since_game_start_millis: clinch.time_since_game_start_millis,
-        time_since_round_start_millis: clinch.time_since_round_start_millis,
-    })
+    // Span from our first clutch kill to the clinch (lead_in identical in game-
+    // and round-time). Falls back to a point if somehow only the clinch is set.
+    let lead_in = first_clutch
+        .map(|f| clinch.time_since_round_start_millis - f.time_since_round_start_millis)
+        .unwrap_or(0);
+    Some(GameEvent::span(
+        EventKind::Clutch,
+        round.round_num,
+        clinch.time_since_game_start_millis,
+        clinch.time_since_round_start_millis,
+        lead_in,
+    ))
 }
 
 /// The match Victory event: emitted when our team is flagged `won`, anchored at
@@ -443,12 +463,12 @@ fn detect_victory(details: &MatchDetails, our_team: &str) -> Option<GameEvent> {
         .iter()
         .flat_map(|r| r.player_stats.iter().flat_map(|ps| ps.kills.iter()).map(move |k| (r.round_num, k)))
         .max_by_key(|(_, k)| k.time_since_game_start_millis)?;
-    Some(GameEvent {
-        kind: EventKind::Victory,
-        round: last.0,
-        time_since_game_start_millis: last.1.time_since_game_start_millis,
-        time_since_round_start_millis: last.1.time_since_round_start_millis,
-    })
+    Some(GameEvent::point(
+        EventKind::Victory,
+        last.0,
+        last.1.time_since_game_start_millis,
+        last.1.time_since_round_start_millis,
+    ))
 }
 
 /// A round's start wall-clock, logged live when the presence score changes.
@@ -567,11 +587,49 @@ pub fn reconcile_to_pts(
     timeline.pts_at(wall)
 }
 
+/// Reconcile an event to its `[start_pts, end_pts]` clip-window anchors: the
+/// window ends at the event's anchor (last action) and starts at the sequence's
+/// first action (`anchor − lead_in`). Both endpoints map through the timeline
+/// independently, so a frozen gap *between* the first and last action is handled
+/// correctly. Prefers the Medal `matchStart` calibration when `match_start` is
+/// `Some`, else the per-round / game-start anchor (mirrors [`reconcile_to_pts`]).
+/// `None` if the anchor can't be placed on the timeline.
+pub fn event_span_pts(
+    event: &GameEvent,
+    match_start: Option<i64>,
+    anchors: &[RoundAnchor],
+    game_start_ticks: Option<i64>,
+    timeline: &TimelineIndex,
+) -> Option<(i64, i64)> {
+    let anchor_wall = match match_start {
+        Some(ms) => event_wallclock_from_match_start(event, ms),
+        None => event_wallclock(event, anchors, game_start_ticks)?,
+    };
+    let start_wall = anchor_wall - event.lead_in_millis * TICKS_PER_MS;
+    let start_pts = timeline.pts_at(start_wall)?;
+    let end_pts = timeline.pts_at(anchor_wall)?;
+    Some((start_pts, end_pts))
+}
+
 /// Clip window `[center − before, center + after]` in PTS units, clamped to ≥ 0.
 pub fn clip_window(center_pts: i64, pad_before_secs: u32, pad_after_secs: u32, fps: u32) -> (i64, i64) {
+    clip_window_span(center_pts, center_pts, pad_before_secs, pad_after_secs, fps)
+}
+
+/// Clip window for a reconciled `[start_pts, end_pts]` span: pad `before` ahead
+/// of the start (the sequence's first action) and `after` past the end (its
+/// last). `[start − before, end + after]`, clamped to ≥ 0. A single-moment event
+/// passes `start == end` (see [`clip_window`]).
+pub fn clip_window_span(
+    start_pts: i64,
+    end_pts: i64,
+    pad_before_secs: u32,
+    pad_after_secs: u32,
+    fps: u32,
+) -> (i64, i64) {
     let fps = fps.max(1) as i64;
-    let start = (center_pts - pad_before_secs as i64 * fps).max(0);
-    let end = center_pts + pad_after_secs as i64 * fps;
+    let start = (start_pts - pad_before_secs as i64 * fps).max(0);
+    let end = end_pts + pad_after_secs as i64 * fps;
     (start, end)
 }
 
@@ -634,8 +692,9 @@ mod tests {
     }
 
     #[test]
-    fn derives_ace_as_single_event_at_last_kill() {
+    fn derives_ace_anchored_at_last_kill_spanning_back_to_first() {
         let me = "ME";
+        // Five kills at 1,2,3,4,5 s into the round.
         let r = round(
             0,
             me,
@@ -650,10 +709,13 @@ mod tests {
             round_results: vec![r],
         };
         let ev = derive_events(&details, me, &EventToggles::default());
-        // One Ace event (default toggles: Ace on), anchored at the last kill.
+        // One Ace event (default toggles: Ace on), anchored at the last kill...
         let aces: Vec<_> = ev.iter().filter(|e| e.kind == EventKind::Ace).collect();
         assert_eq!(aces.len(), 1);
         assert_eq!(aces[0].time_since_round_start_millis, 5000);
+        // ...but reaching back to the first kill (5 s − 1 s = 4 s lead-in) so the
+        // window pads outward from the first kill, not just the last.
+        assert_eq!(aces[0].lead_in_millis, 4000);
     }
 
     #[test]
@@ -712,12 +774,7 @@ mod tests {
     #[test]
     fn reconciles_via_round_anchor() {
         let me = "ME";
-        let ev = GameEvent {
-            kind: EventKind::Ace,
-            round: 3,
-            time_since_game_start_millis: 0,
-            time_since_round_start_millis: 2000, // 2 s into the round
-        };
+        let ev = GameEvent::point(EventKind::Ace, 3, 0, 2000); // 2 s into the round
         let anchors = [RoundAnchor {
             round: 3,
             start_wallclock_ticks: 50_000_000, // round started at t=5 s
@@ -736,12 +793,7 @@ mod tests {
         // Round 3 starts at wall 50 s. A kill 2 s into round 3 is 120 s into the
         // game ⇒ matchStart = 50s + 2s − 120s = −68s (game began 68 s before the
         // round-3 start anchor). Then any event maps via matchStart + gameTime.
-        let ev = vec![GameEvent {
-            kind: EventKind::Ace,
-            round: 3,
-            time_since_game_start_millis: 120_000,
-            time_since_round_start_millis: 2_000,
-        }];
+        let ev = vec![GameEvent::point(EventKind::Ace, 3, 120_000, 2_000)];
         let anchors = [RoundAnchor {
             round: 3,
             start_wallclock_ticks: 50 * 10_000_000,
@@ -758,12 +810,7 @@ mod tests {
 
     #[test]
     fn calibration_none_without_matching_anchor() {
-        let ev = vec![GameEvent {
-            kind: EventKind::Ace,
-            round: 5,
-            time_since_game_start_millis: 1_000,
-            time_since_round_start_millis: 100,
-        }];
+        let ev = vec![GameEvent::point(EventKind::Ace, 5, 1_000, 100)];
         let anchors = [RoundAnchor {
             round: 2,
             start_wallclock_ticks: 0,
@@ -777,6 +824,32 @@ mod tests {
         assert_eq!((s, e), (0, 60 + 240)); // start clamped to 0
         let merged = merge_windows(vec![(0, 300), (250, 500), (1000, 1200)]);
         assert_eq!(merged, vec![(0, 500), (1000, 1200)]);
+    }
+
+    #[test]
+    fn span_window_pads_outward_from_first_and_last() {
+        // A multi-kill spanning PTS 600..1200 (10..20 s at 60 fps) pads 8 s before
+        // the first action and 4 s after the last → [600−480, 1200+240].
+        let (s, e) = clip_window_span(600, 1200, 8, 4, 60);
+        assert_eq!((s, e), (600 - 480, 1200 + 240));
+        // A zero-width span behaves exactly like the point `clip_window`.
+        assert_eq!(clip_window_span(600, 600, 8, 4, 60), clip_window(600, 8, 4, 60));
+        // Start still clamps to ≥ 0.
+        assert_eq!(clip_window_span(60, 300, 8, 4, 60).0, 0);
+    }
+
+    #[test]
+    fn event_span_reconciles_first_and_last_action() {
+        // Ace anchored at 20 s into the game (game-start fallback, no round anchor),
+        // reaching back 6 s to its first kill. Timeline is linear 60 fps from 0.
+        let ev = GameEvent::span(EventKind::Ace, 0, 20_000, 20_000, 6_000);
+        let mut tl = TimelineIndex::new();
+        tl.push(0, 0);
+        tl.push(300_000_000, 1800); // 30 s → PTS 1800 (60 fps)
+        let (start_pts, end_pts) =
+            event_span_pts(&ev, None, &[], Some(0), &tl).expect("span reconciles");
+        assert_eq!(end_pts, 1200); // 20 s → PTS 1200
+        assert_eq!(start_pts, 840); // 14 s (20 − 6) → PTS 840
     }
 
     #[test]
@@ -902,8 +975,11 @@ mod tests {
         };
         let ev = derive_events(&details, me, &EventToggles::default());
         let clutch = ev.iter().find(|e| e.kind == EventKind::Clutch).unwrap();
-        // Anchored at our clinching (last) kill.
+        // Anchored at our clinching (last) kill (3 s)...
         assert_eq!(clutch.time_since_round_start_millis, 3000);
+        // ...spanning back to our first clutch kill (2 s, after mate died at 1 s)
+        // so the window covers the whole 1v2, not just the final kill.
+        assert_eq!(clutch.lead_in_millis, 1000);
     }
 
     #[test]
