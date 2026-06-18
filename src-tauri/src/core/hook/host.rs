@@ -425,6 +425,7 @@ impl HookCapture {
             fps,
             _keepalive: keepalive,
             stop: objs.stop,
+            restart: objs.restart,
             ready: objs.ready,
             _exit: objs.exit,
             _init: objs.init,
@@ -442,6 +443,9 @@ impl HookCapture {
 /// The bundle of DLL-created IPC objects the host opens in step 6.
 struct DllObjects {
     stop: OwnedHandle,
+    /// The hook's own restart event — signaling it makes the resident DLL re-run
+    /// `capture_init_shtex` (re-hook the current swapchain) without re-injecting.
+    restart: OwnedHandle,
     ready: OwnedHandle,
     exit: OwnedHandle,
     init: OwnedHandle,
@@ -476,12 +480,14 @@ fn try_open_dll_objects(pid: u32) -> Result<DllObjects, String> {
     let init = open_event(contract::EVENT_HOOK_INIT, pid)?;
     let ready = open_event(contract::EVENT_HOOK_READY, pid)?;
     let stop = open_event(contract::EVENT_CAPTURE_STOP, pid)?;
+    let restart = open_event(contract::EVENT_CAPTURE_RESTART, pid)?;
     let exit = open_event(contract::EVENT_HOOK_EXIT, pid)?;
     let tex_mutex1 = open_mutex(contract::MUTEX_TEXTURE1, pid)?;
     let tex_mutex2 = open_mutex(contract::MUTEX_TEXTURE2, pid)?;
     let (info_mapping, info_view) = open_hook_info(pid)?;
     Ok(DllObjects {
         stop,
+        restart,
         ready,
         exit,
         init,
@@ -533,6 +539,9 @@ pub struct RunningHook {
     /// Held for the session; dropping it tells the hook to self-destruct.
     _keepalive: OwnedHandle,
     stop: OwnedHandle,
+    /// The hook's restart event — `request_restart()` signals it to re-hook the
+    /// current swapchain (recovery from a stale-texture freeze, Part B).
+    restart: OwnedHandle,
     ready: OwnedHandle,
     _exit: OwnedHandle,
     _init: OwnedHandle,
@@ -676,6 +685,15 @@ impl RunningHook {
     /// Step 12: stop the hook (drop keepalive happens via `Drop`).
     pub fn stop(&mut self) {
         self.stop.set_event();
+    }
+
+    /// Ask the resident hook to re-hook the current swapchain (OBS restart path):
+    /// it re-runs `capture_init_shtex` and re-signals `HookReady`, so the next
+    /// `acquire()` reopens the (possibly new) shared texture. No re-injection —
+    /// safe under anti-cheat. Used to recover from a stale-texture freeze after a
+    /// fullscreen↔borderless switch (Part B static watchdog).
+    pub fn request_restart(&self) {
+        self.restart.set_event();
     }
 }
 

@@ -26,7 +26,8 @@ use windows::core::{BOOL, Interface, Result as WinResult};
 use windows::Win32::Foundation::{HWND, LPARAM};
 use windows::Win32::Graphics::Direct3D11::{
     ID3D11Device, ID3D11DeviceContext, ID3D11Resource, ID3D11Texture2D, D3D11_BIND_RENDER_TARGET,
-    D3D11_BOX, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
+    D3D11_BOX, D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
+    D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_TYPELESS, DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -844,7 +845,7 @@ fn run_hook_pipeline(
 fn hook_source_loop(
     mut hook: RunningHook,
     hwnd_raw: i64,
-    _device: ID3D11Device,
+    device: ID3D11Device,
     context: ID3D11DeviceContext,
     width: u32,
     height: u32,
@@ -871,11 +872,35 @@ fn hook_source_loop(
     // constant-rate gap-fill smooths over any presents we sampled twice).
     let frame_interval = Duration::from_secs_f64(1.0 / fps.max(1) as f64);
     let mut next_tick = Instant::now();
+
+    // ── Part B: static-frame watchdog state ─────────────────────────────────
+    // A non-minimized freeze (e.g. capturing a stale swapchain after a
+    // fullscreen↔borderless switch) is invisible on the shtex path — there's no
+    // liveness signal. So ~once a second we hash a small center patch of the
+    // freshly-copied frame; if it stops changing while the window is visible and
+    // not minimized, we flag `frozen` and (after a longer window, debounced) ask
+    // the hook to re-hook the swapchain. Mirrors Medal's numSameFrames + regen.
+    // Skipped for tiny windows (<probe), which aren't the freeze case.
+    const PROBE: u32 = 64;
+    const STATIC_SAMPLE: Duration = Duration::from_secs(1);
+    const STATIC_FLAG_AFTER: Duration = Duration::from_secs(3);
+    const STATIC_RESTART_AFTER: Duration = Duration::from_secs(5);
+    const RESTART_DEBOUNCE: Duration = Duration::from_secs(10);
+    let watchdog_ok = width >= PROBE && height >= PROBE;
+    let mut readback: Option<ID3D11Texture2D> = None;
+    let mut last_hash: Option<u64> = None;
+    let mut last_change = Instant::now();
+    let mut last_static_sample = Instant::now();
+    let mut last_restart: Option<Instant> = None;
+    let mut same_frames: u64 = 0;
+    let mut warned_static = false;
+
     while !stop.load(Ordering::Acquire) {
         if last_report.elapsed() >= Duration::from_secs(1) {
             tracing::info!(
                 sampled = acq_window,
                 handed = sent_window,
+                same_frames,
                 "hook source: frames sampled in last ~1s"
             );
             acq_window = 0;
@@ -913,10 +938,16 @@ fn hook_source_loop(
             // Just came back on screen — clear the frozen flag and re-arm the WARN.
             shared.frozen.store(false, Ordering::Relaxed);
             warned_frozen = false;
+            // Re-arm the static watchdog too: a long minimized gap left `last_change`
+            // stale, which would otherwise instantly re-flag a freeze before the
+            // first post-restore sample proves content is moving again.
+            last_change = Instant::now();
+            last_hash = None;
+            warned_static = false;
             tracing::info!("capture: game restored — resuming live capture");
         }
 
-        let frame = match hook.acquire(&_device) {
+        let frame = match hook.acquire(&device) {
             Ok(Some(f)) => {
                 acq_window += 1;
                 f
@@ -977,15 +1008,76 @@ fn hook_source_loop(
             continue;
         }
 
+        // Part B static-frame watchdog: ~once a second, hash a center patch of
+        // the freshly-copied `staging` (we still own it here, before handoff).
+        // `last_fresh_time`/`frozen` are driven by *content change*, not mere
+        // handoff, so a non-minimized stale stretch is detected and recovered.
+        if watchdog_ok && last_static_sample.elapsed() >= STATIC_SAMPLE {
+            last_static_sample = Instant::now();
+            if let Some(hash) =
+                probe_center_hash(&device, &context, &staging, &mut readback, width, height, PROBE)
+            {
+                if last_hash != Some(hash) {
+                    // Content moved — capture is genuinely live.
+                    last_hash = Some(hash);
+                    last_change = Instant::now();
+                    same_frames = 0;
+                    shared.last_fresh_time.store(ts, Ordering::Relaxed);
+                    // Clear a watchdog-set freeze. Don't override the minimize gate,
+                    // which owns `frozen` while the window is iconic.
+                    if !shared.minimized.load(Ordering::Relaxed) {
+                        if warned_static {
+                            tracing::info!("capture: content moving again — freeze cleared");
+                        }
+                        shared.frozen.store(false, Ordering::Relaxed);
+                        warned_static = false;
+                    }
+                } else {
+                    // Byte-identical center patch — Valorant gameplay/menus always
+                    // animate, so a static patch strongly implies a frozen capture.
+                    same_frames += 1;
+                    let stuck = last_change.elapsed();
+                    let visible =
+                        unsafe { IsWindowVisible(HWND(hwnd_raw as *mut c_void)).as_bool() };
+                    if stuck >= STATIC_FLAG_AFTER
+                        && visible
+                        && !shared.minimized.load(Ordering::Relaxed)
+                    {
+                        shared.frozen.store(true, Ordering::Relaxed);
+                        if !warned_static {
+                            tracing::warn!(
+                                stuck_secs = stuck.as_secs(),
+                                same_frames,
+                                "capture: center patch static while window visible — \
+                                 capture appears frozen (stale swapchain?)"
+                            );
+                            warned_static = true;
+                        }
+                        // Escalate to a hook re-hook after a longer window, debounced
+                        // so we don't spam restarts. The hook re-runs capture_init →
+                        // re-signals HookReady → acquire() reopens the texture.
+                        if stuck >= STATIC_RESTART_AFTER
+                            && last_restart.map_or(true, |t| t.elapsed() >= RESTART_DEBOUNCE)
+                        {
+                            tracing::warn!(
+                                "capture: requesting hook restart to recover frozen swapchain"
+                            );
+                            hook.request_restart();
+                            last_restart = Some(Instant::now());
+                            // Re-arm the change clock so we give the re-init a beat
+                            // before re-evaluating (avoids back-to-back restarts).
+                            last_change = Instant::now();
+                        }
+                    }
+                }
+            }
+        }
+
         shared.last_handed_time.store(ts, Ordering::Relaxed);
         match filled_tx.try_send((staging, ts)) {
             Ok(()) => {
                 shared.handed.fetch_add(1, Ordering::Relaxed);
                 sent_window += 1;
-                // We're past the minimize gate, so this is a non-stale tick. The
-                // Part B static watchdog will refine "fresh" via content hashing;
-                // for now any non-minimized handoff counts as liveness.
-                shared.last_fresh_time.store(ts, Ordering::Relaxed);
             }
             Err(TrySendError::Full((tex, _))) | Err(TrySendError::Disconnected((tex, _))) => {
                 if let Ok(mut p) = free_pool.lock() {
@@ -1044,6 +1136,88 @@ fn create_staging_like(
         device.CreateTexture2D(&desc, None, Some(&mut tex))?;
     }
     Ok(tex.expect("CreateTexture2D returned null staging texture"))
+}
+
+/// Part B static-frame watchdog primitive: hash a `probe`×`probe` patch from the
+/// center of `src` (a freshly-copied frame). Lazily creates a CPU-readable
+/// staging texture in `readback` (same format as `src`), GPU-copies the center
+/// sub-rect into it, maps it, and FNV-1a hashes the rows. Returns `None` (and
+/// leaves capture untouched) on any D3D failure — the watchdog is best-effort and
+/// must never break the frame loop. Assumes a 4-byte BGRA/RGBA pixel (all formats
+/// the hook path supports); `RowPitch` handles any padding.
+fn probe_center_hash(
+    device: &ID3D11Device,
+    context: &ID3D11DeviceContext,
+    src: &ID3D11Texture2D,
+    readback: &mut Option<ID3D11Texture2D>,
+    width: u32,
+    height: u32,
+    probe: u32,
+) -> Option<u64> {
+    // Lazily build the readback texture, matching `src`'s exact format so the
+    // copy is a same-format blit.
+    if readback.is_none() {
+        let mut src_desc = D3D11_TEXTURE2D_DESC::default();
+        unsafe { src.GetDesc(&mut src_desc) };
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: probe,
+            Height: probe,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: src_desc.Format,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_STAGING,
+            BindFlags: 0,
+            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+            MiscFlags: 0,
+        };
+        let mut tex: Option<ID3D11Texture2D> = None;
+        if unsafe { device.CreateTexture2D(&desc, None, Some(&mut tex)) }.is_err() {
+            return None;
+        }
+        *readback = tex;
+    }
+    let dst = readback.as_ref()?;
+
+    // Copy the center sub-rect (src → readback).
+    let cx = (width - probe) / 2;
+    let cy = (height - probe) / 2;
+    let box_ = D3D11_BOX {
+        left: cx,
+        top: cy,
+        front: 0,
+        right: cx + probe,
+        bottom: cy + probe,
+        back: 1,
+    };
+    let dst_res: ID3D11Resource = dst.cast().ok()?;
+    let src_res: ID3D11Resource = src.cast().ok()?;
+    unsafe {
+        context.CopySubresourceRegion(&dst_res, 0, 0, 0, 0, &src_res, 0, Some(&box_));
+    }
+
+    // Map and FNV-1a hash the patch rows, then unmap.
+    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+    if unsafe { context.Map(&dst_res, 0, D3D11_MAP_READ, 0, Some(&mut mapped)) }.is_err() {
+        return None;
+    }
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let row_bytes = (probe * 4) as usize;
+    unsafe {
+        let base = mapped.pData as *const u8;
+        for row in 0..probe as usize {
+            let row_ptr = base.add(row * mapped.RowPitch as usize);
+            for &b in std::slice::from_raw_parts(row_ptr, row_bytes) {
+                hash ^= b as u64;
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        context.Unmap(&dst_res, 0);
+    }
+    Some(hash)
 }
 
 /// Output (encode) dimensions for a captured `src_w`x`src_h` frame given an
