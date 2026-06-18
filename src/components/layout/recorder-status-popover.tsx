@@ -75,7 +75,13 @@ export function RecorderStatusPopover() {
   const { data: status } = useRecorderStatus();
   const { data: settings } = useSettings();
 
+  // The window being present (`detected`) is NOT the same as a capture actually
+  // running (`capturing`): the hook can fail to inject (anti-cheat, minimized,
+  // missing binaries) while the game window still exists. Gate the "Now Clipping"
+  // indicator on `capturing` so it can't claim to be recording when it isn't —
+  // otherwise the buffer is empty and "Save last 30s" fails with "no capture".
   const detected = status?.valorant_detected ?? false;
+  const capturing = status?.capturing ?? false;
 
   const fps = settings?.target_fps ?? 60;
   const codec = (settings?.codec ?? "h264").toUpperCase();
@@ -101,16 +107,21 @@ export function RecorderStatusPopover() {
           type="button"
           className={cn(
             "flex h-8 items-center gap-2.5 rounded-lg border border-border bg-secondary/50 px-3 text-sm font-medium transition-colors hover:bg-secondary",
-            detected ? "text-foreground" : "text-foreground/90"
+            capturing || detected ? "text-foreground" : "text-foreground/90"
           )}
         >
-          {detected ? (
+          {capturing ? (
             <>
               <span className="relative flex size-2">
                 <span className="absolute inline-flex size-full animate-ping rounded-full bg-success/70" />
                 <span className="relative inline-flex size-2 rounded-full bg-success" />
               </span>
               Now Clipping Valorant
+            </>
+          ) : detected ? (
+            <>
+              <span className="relative inline-flex size-2 rounded-full bg-amber-400" />
+              Valorant Detected
             </>
           ) : (
             <>
@@ -125,7 +136,7 @@ export function RecorderStatusPopover() {
         {/* Detection status card */}
         <div className="p-3">
           <div className="rounded-lg bg-secondary/40 px-4 py-5 text-center">
-            {detected ? (
+            {capturing ? (
               <>
                 <div className="mb-1 flex items-center justify-center gap-2">
                   <span className="relative flex size-2.5">
@@ -139,6 +150,25 @@ export function RecorderStatusPopover() {
                 <p className="mt-0.5 text-xs text-muted-foreground">
                   {status?.message ?? "Gameplay is being buffered."}
                 </p>
+              </>
+            ) : detected ? (
+              <>
+                <div className="mb-1 flex items-center justify-center gap-2">
+                  <span className="relative inline-flex size-2.5 rounded-full bg-amber-400" />
+                </div>
+                <div className="text-sm font-semibold text-foreground">
+                  Valorant detected — not recording yet
+                </div>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Capture hasn&apos;t started, so there&apos;s nothing to save.
+                </p>
+                <button
+                  type="button"
+                  onClick={recheck}
+                  className="mt-1 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                >
+                  Retry detection
+                </button>
               </>
             ) : (
               <>
