@@ -30,6 +30,14 @@ export const Events = {
  * Mirrors the Rust `ClipRecord` (src-tauri/src/library/db.rs). Also the payload
  * of the `clip-created` event.
  */
+/** One event's position inside a clip (mirrors Rust `EventMark`). */
+export interface EventMark {
+  /** EventKind label, e.g. "Kill", "Ace", "Spike Defused". */
+  label: string;
+  /** Seconds from the clip's start where the event happened. */
+  at: number;
+}
+
 export interface ClipRecord {
   id: number;
   path: string;
@@ -39,6 +47,10 @@ export interface ClipRecord {
   /** Every event captured in the clip's window, in time order. Falls back to
    * `[event]` for clips saved before multi-event tracking existed. */
   events: string[];
+  /** Per-event positions within the clip (label + offset seconds), for the
+   * editor's seek-bar markers. Empty for manual saves and for clips cut before
+   * positions were persisted. */
+  event_marks: EventMark[];
   duration_secs: number;
   width: number;
   height: number;

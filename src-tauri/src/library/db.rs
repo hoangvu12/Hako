@@ -10,7 +10,31 @@
 use std::path::Path;
 
 use rusqlite::{params, Connection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+/// One event's position inside a clip — the label (EventKind label, e.g. "Kill")
+/// and its offset in seconds from the clip's start. Drives the seek-bar markers
+/// in the editor. Persisted as a JSON array in the `event_marks` column.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventMark {
+    pub label: String,
+    /// Seconds from the clip's start where the event happened.
+    pub at: f64,
+}
+
+/// Shift a clip's marks for a sub-range `[start, end)` (a trim/export copy):
+/// rebase each offset to the new clip's origin and keep only those that still
+/// fall inside the kept window.
+pub fn rebase_marks(marks: &[EventMark], start: f64, end: f64) -> Vec<EventMark> {
+    marks
+        .iter()
+        .filter(|m| m.at >= start - 0.05 && m.at <= end + 0.05)
+        .map(|m| EventMark {
+            label: m.label.clone(),
+            at: (m.at - start).max(0.0),
+        })
+        .collect()
+}
 
 /// A clip row as stored / returned. Mirrors `ClipRecord` in api.ts.
 #[derive(Debug, Clone, Serialize)]
@@ -25,6 +49,10 @@ pub struct ClipRecord {
     /// that merged a spike-defuse and a kill carries both). Falls back to the
     /// single `event` for rows written before multi-event tracking existed.
     pub events: Vec<String>,
+    /// Per-event positions within the clip (label + offset seconds), for the
+    /// editor's seek-bar markers. Empty for manual saves and for clips cut
+    /// before event positions were persisted.
+    pub event_marks: Vec<EventMark>,
     pub duration_secs: f64,
     pub width: i64,
     pub height: i64,
@@ -65,6 +93,8 @@ pub struct NewClip {
     pub event: Option<String>,
     /// All events in the clip's window (empty ⇒ derive from `event`).
     pub events: Vec<String>,
+    /// Per-event positions within the clip (empty ⇒ no markers).
+    pub event_marks: Vec<EventMark>,
     pub duration_secs: f64,
     pub width: i64,
     pub height: i64,
@@ -146,6 +176,7 @@ impl Library {
                 thumb_path      TEXT,
                 filmstrip_path  TEXT,
                 events          TEXT,
+                event_marks     TEXT,
                 created_unix_ms INTEGER NOT NULL,
                 agent           TEXT,
                 agent_id        TEXT,
@@ -164,6 +195,7 @@ impl Library {
         // COLUMN IF NOT EXISTS", so we ignore the duplicate-column error.
         let _ = conn.execute("ALTER TABLE clips ADD COLUMN filmstrip_path TEXT", []);
         let _ = conn.execute("ALTER TABLE clips ADD COLUMN events TEXT", []);
+        let _ = conn.execute("ALTER TABLE clips ADD COLUMN event_marks TEXT", []);
         // Valorant game-context columns (added together; all nullable).
         for col in [
             "agent TEXT",
@@ -189,12 +221,16 @@ impl Library {
         let events_json = (!clip.events.is_empty())
             .then(|| serde_json::to_string(&clip.events).ok())
             .flatten();
+        // Event positions as a JSON array; NULL when empty so old readers ignore it.
+        let marks_json = (!clip.event_marks.is_empty())
+            .then(|| serde_json::to_string(&clip.event_marks).ok())
+            .flatten();
         self.conn
             .execute(
                 "INSERT INTO clips
-                   (path, title, event, duration_secs, width, height, size_bytes, thumb_path, filmstrip_path, events, created_unix_ms,
+                   (path, title, event, duration_secs, width, height, size_bytes, thumb_path, filmstrip_path, events, event_marks, created_unix_ms,
                     agent, agent_id, map, mode, won, kills, deaths, assists, headshot_pct)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
                 params![
                     clip.path,
                     clip.title,
@@ -206,6 +242,7 @@ impl Library {
                     clip.thumb_path,
                     clip.filmstrip_path,
                     events_json,
+                    marks_json,
                     created,
                     clip.agent,
                     clip.agent_id,
@@ -229,7 +266,8 @@ impl Library {
             .prepare(
                 "SELECT id, path, title, event, duration_secs, width, height, size_bytes,
                         thumb_path, filmstrip_path, created_unix_ms, events,
-                        agent, agent_id, map, mode, won, kills, deaths, assists, headshot_pct
+                        agent, agent_id, map, mode, won, kills, deaths, assists, headshot_pct,
+                        event_marks
                  FROM clips ORDER BY created_unix_ms DESC",
             )
             .map_err(|e| format!("prepare list: {e}"))?;
@@ -249,7 +287,8 @@ impl Library {
             .prepare(
                 "SELECT id, path, title, event, duration_secs, width, height, size_bytes,
                         thumb_path, filmstrip_path, created_unix_ms, events,
-                        agent, agent_id, map, mode, won, kills, deaths, assists, headshot_pct
+                        agent, agent_id, map, mode, won, kills, deaths, assists, headshot_pct,
+                        event_marks
                  FROM clips WHERE id = ?1",
             )
             .map_err(|e| format!("prepare get: {e}"))?;
@@ -290,6 +329,21 @@ impl Library {
         Ok(())
     }
 
+    /// Rewrite a clip's event markers after an in-place trim/export (the offsets
+    /// must be rebased to the new file's origin). NULLs the column when empty.
+    pub fn update_event_marks(&self, id: i64, marks: &[EventMark]) -> Result<(), String> {
+        let json = (!marks.is_empty())
+            .then(|| serde_json::to_string(marks).ok())
+            .flatten();
+        self.conn
+            .execute(
+                "UPDATE clips SET event_marks = ?1 WHERE id = ?2",
+                params![json, id],
+            )
+            .map_err(|e| format!("update_event_marks: {e}"))?;
+        Ok(())
+    }
+
     pub fn rename(&self, id: i64, title: &str) -> Result<(), String> {
         let n = self
             .conn
@@ -325,12 +379,18 @@ fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<ClipRecord> {
         .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| event.clone().into_iter().collect());
+    // `event_marks` (col 21) is a JSON array; absent/garbage ⇒ no markers.
+    let marks_json: Option<String> = row.get(21)?;
+    let event_marks = marks_json
+        .and_then(|s| serde_json::from_str::<Vec<EventMark>>(&s).ok())
+        .unwrap_or_default();
     Ok(ClipRecord {
         id: row.get(0)?,
         path: row.get(1)?,
         title: row.get(2)?,
         event,
         events,
+        event_marks,
         duration_secs: row.get(4)?,
         width: row.get(5)?,
         height: row.get(6)?,
@@ -449,6 +509,30 @@ mod tests {
         assert_eq!(brec.map, None);
         assert_eq!(brec.won, None);
         assert_eq!(brec.kills, None);
+    }
+
+    #[test]
+    fn event_marks_round_trip_and_rebase() {
+        let lib = Library::open_in_memory().unwrap();
+        let mut c = sample("e.mp4", "Double Kill", Some("Double Kill"));
+        c.event_marks = vec![
+            EventMark { label: "Kill".into(), at: 3.0 },
+            EventMark { label: "Kill".into(), at: 9.5 },
+        ];
+        let id = lib.insert(&c).unwrap();
+        let rec = lib.get(id).unwrap().unwrap();
+        assert_eq!(rec.event_marks.len(), 2);
+        assert_eq!(rec.event_marks[1].at, 9.5);
+
+        // Rebasing onto [2, 8) drops the 9.5s mark and shifts 3.0 → 1.0.
+        let rebased = rebase_marks(&rec.event_marks, 2.0, 8.0);
+        assert_eq!(rebased.len(), 1);
+        assert_eq!(rebased[0].at, 1.0);
+
+        // A clip with no marks round-trips to an empty list (NULL column).
+        let bare = sample("b.mp4", "Clip", None);
+        let bid = lib.insert(&bare).unwrap();
+        assert!(lib.get(bid).unwrap().unwrap().event_marks.is_empty());
     }
 
     #[test]

@@ -262,6 +262,9 @@ async fn run(input: &CutInput) -> Result<(), String> {
         let kind = dominant_kind(&placed, s, end).unwrap_or(EventKind::Kill);
         let kinds = kinds_in_window(&placed, s, end);
         let event_labels: Vec<String> = kinds.iter().map(|k| k.label().to_string()).collect();
+        // Per-event positions within this clip (offset from its start), for the
+        // editor's seek-bar markers.
+        let event_marks = marks_in_window(&placed, s, end, fps as i64);
         let start_sec = s as f64 / fps as f64;
         let end_sec = end as f64 / fps as f64;
         if end_sec <= start_sec {
@@ -308,6 +311,7 @@ async fn run(input: &CutInput) -> Result<(), String> {
                     title,
                     kind.label(),
                     &event_labels,
+                    event_marks,
                     res.width,
                     res.height,
                     res.duration_secs,
@@ -404,6 +408,31 @@ fn kinds_in_window(placed: &[(i64, i64, EventKind)], start: i64, end: i64) -> Ve
     out
 }
 
+/// Each event anchored inside `[start, end]` as a seek-bar marker — its label
+/// plus its offset (seconds) from the clip's start. Unlike [`kinds_in_window`]
+/// this keeps every occurrence (two kills → two markers) so the bar shows where
+/// each moment actually happened.
+fn marks_in_window(
+    placed: &[(i64, i64, EventKind)],
+    start: i64,
+    end: i64,
+    fps: i64,
+) -> Vec<crate::library::db::EventMark> {
+    let fps = fps.max(1);
+    let mut hits: Vec<(i64, EventKind)> = placed
+        .iter()
+        .filter(|&&(s, _, _)| s >= start - 1 && s <= end)
+        .map(|&(s, _, k)| (s, k))
+        .collect();
+    hits.sort_by_key(|&(s, _)| s);
+    hits.into_iter()
+        .map(|(s, k)| crate::library::db::EventMark {
+            label: k.label().to_string(),
+            at: ((s - start).max(0) as f64) / fps as f64,
+        })
+        .collect()
+}
+
 /// Tag priority: the headline moments (Victory/Ace/Clutch) outrank multi-kills,
 /// which outrank single kills, spike plays, deaths, and assists.
 fn kind_priority(k: EventKind) -> u8 {
@@ -463,6 +492,8 @@ pub fn save_whole_session(
         title.to_string(),
         event,
         std::slice::from_ref(&event.to_string()),
+        // A whole-match save has no per-event positions to mark.
+        Vec::new(),
         res.width,
         res.height,
         res.duration_secs,

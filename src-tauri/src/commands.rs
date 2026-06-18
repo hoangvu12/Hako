@@ -9,7 +9,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::core::capture::{self, RunningCapture, WindowTarget};
 use crate::core::device::{self, GpuInfo};
 use crate::core::encode::{self, FfmpegProbe};
-use crate::library::db::{ClipRecord, Library, NewClip};
+use crate::library::db::{rebase_marks, ClipRecord, EventMark, Library, NewClip};
 use crate::settings::Settings;
 
 /// Managed state holding the currently running capture, if any.
@@ -427,6 +427,9 @@ pub fn finalize_auto_clip(
     title: String,
     event: &str,
     events: &[String],
+    // Per-event positions within the clip (label + offset seconds), for the
+    // editor's seek-bar markers. Empty for whole-session saves.
+    event_marks: Vec<EventMark>,
     width: i64,
     height: i64,
     duration_secs: f64,
@@ -443,6 +446,7 @@ pub fn finalize_auto_clip(
         title,
         event: Some(event.to_string()),
         events: events.to_vec(),
+        event_marks,
         duration_secs,
         width,
         height,
@@ -581,6 +585,7 @@ pub fn trim_clip(
                 title: format!("{} (trim)", rec.title),
                 event: rec.event.clone(),
                 events: rec.events.clone(),
+                event_marks: rebase_marks(&rec.event_marks, start, end),
                 duration_secs: res.duration_secs,
                 width: res.width,
                 height: res.height,
@@ -619,6 +624,7 @@ pub fn trim_clip(
                     thumb.as_deref(),
                     filmstrip.as_deref(),
                 )?;
+                lib.update_event_marks(id, &rebase_marks(&rec.event_marks, start, end))?;
                 lib.get(id)?.ok_or("clip vanished after trim")?
             };
             tracing::info!("trimmed clip {id} → overwrite {}", record.path);
@@ -722,6 +728,7 @@ pub fn remux_with_tracks(
                 title: format!("{} (export)", rec.title),
                 event: rec.event.clone(),
                 events: rec.events.clone(),
+                event_marks: rebase_marks(&rec.event_marks, start, end),
                 duration_secs: res.duration_secs,
                 width: res.width,
                 height: res.height,
@@ -758,6 +765,7 @@ pub fn remux_with_tracks(
                     thumb.as_deref(),
                     filmstrip.as_deref(),
                 )?;
+                lib.update_event_marks(id, &rebase_marks(&rec.event_marks, start, end))?;
                 lib.get(id)?.ok_or("clip vanished after remux")?
             };
             tracing::info!("remuxed clip {id} → overwrite {}", record.path);
