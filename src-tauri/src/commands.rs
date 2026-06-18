@@ -364,6 +364,13 @@ pub fn save_clip_full(
         .and_then(|s| s.to_str())
         .unwrap_or("Clip")
         .to_string();
+    // If a Valorant match is live, tag the manual clip with the same agent/map/
+    // mode an auto-clip would carry (win/loss + K/D/A are unknowable mid-match).
+    // All-`None` when saved outside a match.
+    let context = app
+        .try_state::<crate::valorant::live::LiveMatchState>()
+        .and_then(|s| s.0.lock().ok().map(|g| g.clip_context()))
+        .unwrap_or_default();
     let new = NewClip {
         path: saved.path.to_string_lossy().to_string(),
         title,
@@ -375,6 +382,7 @@ pub fn save_clip_full(
         size_bytes,
         thumb_path: thumb,
         filmstrip_path: filmstrip,
+        ..context
     };
 
     let library = app.state::<LibraryState>();
@@ -422,6 +430,10 @@ pub fn finalize_auto_clip(
     width: i64,
     height: i64,
     duration_secs: f64,
+    // Game context for this clip (agent/map/mode/result/K-D-A). Only the
+    // context fields are read; build it via `MatchSummary::clip_context()` (or
+    // `NewClip::default()` when no match context is available).
+    context: NewClip,
 ) -> Result<ClipRecord, String> {
     let thumb = generate_thumbnail(app, &path);
     let filmstrip = generate_filmstrip(app, &path, duration_secs);
@@ -437,6 +449,7 @@ pub fn finalize_auto_clip(
         size_bytes,
         thumb_path: thumb,
         filmstrip_path: filmstrip,
+        ..context
     };
     let library = app.state::<LibraryState>();
     let record = {
@@ -540,6 +553,7 @@ pub fn trim_clip(
                 size_bytes,
                 thumb_path: thumb,
                 filmstrip_path: filmstrip,
+                ..NewClip::context_from(&rec)
             };
             let record = {
                 let lib = library.0.lock().map_err(|_| "library poisoned")?;
@@ -649,6 +663,7 @@ pub fn remux_with_tracks(
                 size_bytes,
                 thumb_path: thumb,
                 filmstrip_path: filmstrip,
+                ..NewClip::context_from(&rec)
             };
             let record = {
                 let lib = library.0.lock().map_err(|_| "library poisoned")?;

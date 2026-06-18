@@ -45,6 +45,26 @@ impl MatchSummary {
         format!("{}/{}/{}", self.kills, self.deaths, self.assists)
     }
 
+    /// The Valorant game-context fields for a clip cut from this match — agent,
+    /// map, mode, result, K/D/A, headshot %. Returned as a context-only
+    /// [`NewClip`] (path/title/media stay `Default`) for struct-update merge into
+    /// the finalized clip. Empty agent/map/mode collapse to `None`.
+    pub fn clip_context(&self) -> crate::library::db::NewClip {
+        let some = |s: &str| (!s.is_empty()).then(|| s.to_string());
+        crate::library::db::NewClip {
+            agent: some(&self.agent),
+            agent_id: some(&self.agent_id),
+            map: some(&self.map),
+            mode: some(&self.mode),
+            won: Some(self.won),
+            kills: Some(self.kills as i64),
+            deaths: Some(self.deaths as i64),
+            assists: Some(self.assists as i64),
+            headshot_pct: Some(self.headshot_pct),
+            ..Default::default()
+        }
+    }
+
     /// Medal's `BuildMatchTitle`: outcome + agent + KDA. Uses the resolved
     /// `agent`, or "Unknown" when it hasn't been looked up.
     pub fn build_title(&self) -> String {

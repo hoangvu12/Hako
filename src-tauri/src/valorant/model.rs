@@ -293,6 +293,27 @@ pub fn game_mode_name(asset: &str) -> &'static str {
     }
 }
 
+/// Map a **live** presence/core-game `queueId` to its display name. The live
+/// queue id vocabulary differs from the post-match `gameMode` asset path (which
+/// [`game_mode_name`] handles), so this keeps manual clips' `mode` labels aligned
+/// with auto-clips'. Empty string for unknown ids (caller falls back to the raw id).
+pub fn queue_id_name(queue_id: &str) -> &'static str {
+    match queue_id {
+        "competitive" => "Competitive",
+        "unrated" => "Unrated",
+        "swiftplay" => "Swiftplay",
+        "spikerush" => "Spike Rush",
+        "deathmatch" => "Deathmatch",
+        "ggteam" => "Escalation",
+        "onefa" => "Replication",
+        "hurm" => "Team Deathmatch",
+        "snowball" => "Snowball Fight",
+        "newmap" => "New Map",
+        "premier" => "Premier",
+        _ => "",
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Player {
     /// Player UUID. Riot's match-details calls this `subject` (NOT `puuid`,
@@ -438,6 +459,42 @@ pub struct CurrentGamePlayer {
     pub match_id: String,
 }
 
+/// `GET https://glz-{region}-1.{shard}.a.pvp.net/core-game/v1/matches/{matchID}`
+/// — the **live** (in-progress) match. Unlike `match-details` this is available
+/// mid-match, so we use it to resolve our agent for tagging manual clips. glz
+/// endpoints use PascalCase keys. We only model the few fields we consume.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CoreGameMatch {
+    #[serde(rename = "MatchID", default)]
+    pub match_id: String,
+    #[serde(rename = "MapID", default)]
+    pub map_id: String,
+    #[serde(rename = "ModeID", default)]
+    pub mode_id: String,
+    #[serde(rename = "Players", default)]
+    pub players: Vec<CoreGamePlayerEntry>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CoreGamePlayerEntry {
+    #[serde(rename = "Subject", default)]
+    pub subject: String,
+    /// Agent UUID the player locked in.
+    #[serde(rename = "CharacterID", default)]
+    pub character_id: String,
+}
+
+impl CoreGameMatch {
+    /// The agent UUID `puuid` locked in this match, if present + non-empty.
+    pub fn agent_for(&self, puuid: &str) -> Option<String> {
+        self.players
+            .iter()
+            .find(|p| p.subject.eq_ignore_ascii_case(puuid))
+            .map(|p| p.character_id.clone())
+            .filter(|s| !s.is_empty())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Derived events (Hako's own — the auto-clip event set)
 // ---------------------------------------------------------------------------
@@ -559,6 +616,33 @@ mod tests {
         assert_eq!(LoopState::parse("MENUS"), LoopState::Menus);
         assert_eq!(LoopState::parse("PREGAME"), LoopState::Pregame);
         assert_eq!(LoopState::parse("WHATEVER"), LoopState::Unknown);
+    }
+
+    #[test]
+    fn queue_id_display_names() {
+        assert_eq!(queue_id_name("competitive"), "Competitive");
+        assert_eq!(queue_id_name("spikerush"), "Spike Rush");
+        assert_eq!(queue_id_name("hurm"), "Team Deathmatch");
+        // Unknown / custom ids map to empty (caller falls back to the raw id).
+        assert_eq!(queue_id_name("custom"), "");
+        assert_eq!(queue_id_name(""), "");
+    }
+
+    #[test]
+    fn core_game_match_resolves_our_agent() {
+        let json = r#"{
+            "MatchID": "m1",
+            "MapID": "/Game/Maps/Ascent/Ascent",
+            "ModeID": "/Game/GameModes/Bomb/BombGameMode.BombGameMode_C",
+            "Players": [
+                { "Subject": "me", "CharacterID": "jett-uuid" },
+                { "Subject": "them", "CharacterID": "sage-uuid" }
+            ]
+        }"#;
+        let m: CoreGameMatch = serde_json::from_str(json).unwrap();
+        assert_eq!(m.agent_for("me").as_deref(), Some("jett-uuid"));
+        assert_eq!(m.agent_for("ME").as_deref(), Some("jett-uuid")); // case-insensitive
+        assert_eq!(m.agent_for("nobody"), None);
     }
 
     #[test]

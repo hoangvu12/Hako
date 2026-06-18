@@ -33,6 +33,28 @@ pub struct ClipRecord {
     /// Sprite-sheet filmstrip for the editor scrubber (one JPEG, N tiles).
     pub filmstrip_path: Option<String>,
     pub created_unix_ms: i64,
+
+    // --- Valorant game context (all optional) -----------------------------
+    // Populated for clips cut from a match: auto-clips fill everything from the
+    // post-match summary; manual F9 saves fill agent/map/mode from the live
+    // match (win + K/D/A are unknowable mid-match). All `None` for clips saved
+    // outside a Valorant match and for clips predating this metadata.
+    /// Agent display name (e.g. "Jett"), for filtering + artwork.
+    pub agent: Option<String>,
+    /// Agent UUID (`characterId`) — pairs with `agent` for icon lookup.
+    pub agent_id: Option<String>,
+    /// Map asset path (e.g. `/Game/Maps/Ascent/Ascent`); the UI prettifies it.
+    pub map: Option<String>,
+    /// Game-mode display name (e.g. "Competitive", "Standard", "Deathmatch").
+    pub mode: Option<String>,
+    /// Match result when known (auto-clips): `true` win, `false` loss.
+    pub won: Option<bool>,
+    /// Match K/D/A totals (auto-clips only).
+    pub kills: Option<i64>,
+    pub deaths: Option<i64>,
+    pub assists: Option<i64>,
+    /// Headshot % over recorded damage, 0–100 (auto-clips only).
+    pub headshot_pct: Option<f64>,
 }
 
 /// Fields supplied on insert (id + created timestamp are assigned by the DB).
@@ -49,6 +71,38 @@ pub struct NewClip {
     pub size_bytes: i64,
     pub thumb_path: Option<String>,
     pub filmstrip_path: Option<String>,
+    /// Valorant game context (see [`ClipRecord`]); all `None` ⇒ a clip with no
+    /// match context (e.g. a manual save outside a game).
+    pub agent: Option<String>,
+    pub agent_id: Option<String>,
+    pub map: Option<String>,
+    pub mode: Option<String>,
+    pub won: Option<bool>,
+    pub kills: Option<i64>,
+    pub deaths: Option<i64>,
+    pub assists: Option<i64>,
+    pub headshot_pct: Option<f64>,
+}
+
+impl NewClip {
+    /// A `NewClip` carrying *only* the Valorant game-context fields copied from an
+    /// existing record (path/title/media fields stay `Default`). Use with struct-
+    /// update syntax so a derived clip (a trim/export copy) keeps its match
+    /// metadata: `NewClip { path, title, …, ..NewClip::context_from(&rec) }`.
+    pub fn context_from(rec: &ClipRecord) -> NewClip {
+        NewClip {
+            agent: rec.agent.clone(),
+            agent_id: rec.agent_id.clone(),
+            map: rec.map.clone(),
+            mode: rec.mode.clone(),
+            won: rec.won,
+            kills: rec.kills,
+            deaths: rec.deaths,
+            assists: rec.assists,
+            headshot_pct: rec.headshot_pct,
+            ..Default::default()
+        }
+    }
 }
 
 pub struct Library {
@@ -92,7 +146,16 @@ impl Library {
                 thumb_path      TEXT,
                 filmstrip_path  TEXT,
                 events          TEXT,
-                created_unix_ms INTEGER NOT NULL
+                created_unix_ms INTEGER NOT NULL,
+                agent           TEXT,
+                agent_id        TEXT,
+                map             TEXT,
+                mode            TEXT,
+                won             INTEGER,
+                kills           INTEGER,
+                deaths          INTEGER,
+                assists         INTEGER,
+                headshot_pct    REAL
             );
             CREATE INDEX IF NOT EXISTS idx_clips_created ON clips(created_unix_ms DESC);",
         )
@@ -101,6 +164,20 @@ impl Library {
         // COLUMN IF NOT EXISTS", so we ignore the duplicate-column error.
         let _ = conn.execute("ALTER TABLE clips ADD COLUMN filmstrip_path TEXT", []);
         let _ = conn.execute("ALTER TABLE clips ADD COLUMN events TEXT", []);
+        // Valorant game-context columns (added together; all nullable).
+        for col in [
+            "agent TEXT",
+            "agent_id TEXT",
+            "map TEXT",
+            "mode TEXT",
+            "won INTEGER",
+            "kills INTEGER",
+            "deaths INTEGER",
+            "assists INTEGER",
+            "headshot_pct REAL",
+        ] {
+            let _ = conn.execute(&format!("ALTER TABLE clips ADD COLUMN {col}"), []);
+        }
         Ok(Library { conn })
     }
 
@@ -115,8 +192,9 @@ impl Library {
         self.conn
             .execute(
                 "INSERT INTO clips
-                   (path, title, event, duration_secs, width, height, size_bytes, thumb_path, filmstrip_path, events, created_unix_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                   (path, title, event, duration_secs, width, height, size_bytes, thumb_path, filmstrip_path, events, created_unix_ms,
+                    agent, agent_id, map, mode, won, kills, deaths, assists, headshot_pct)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
                 params![
                     clip.path,
                     clip.title,
@@ -129,6 +207,15 @@ impl Library {
                     clip.filmstrip_path,
                     events_json,
                     created,
+                    clip.agent,
+                    clip.agent_id,
+                    clip.map,
+                    clip.mode,
+                    clip.won,
+                    clip.kills,
+                    clip.deaths,
+                    clip.assists,
+                    clip.headshot_pct,
                 ],
             )
             .map_err(|e| format!("insert clip: {e}"))?;
@@ -141,7 +228,8 @@ impl Library {
             .conn
             .prepare(
                 "SELECT id, path, title, event, duration_secs, width, height, size_bytes,
-                        thumb_path, filmstrip_path, created_unix_ms, events
+                        thumb_path, filmstrip_path, created_unix_ms, events,
+                        agent, agent_id, map, mode, won, kills, deaths, assists, headshot_pct
                  FROM clips ORDER BY created_unix_ms DESC",
             )
             .map_err(|e| format!("prepare list: {e}"))?;
@@ -160,7 +248,8 @@ impl Library {
             .conn
             .prepare(
                 "SELECT id, path, title, event, duration_secs, width, height, size_bytes,
-                        thumb_path, filmstrip_path, created_unix_ms, events
+                        thumb_path, filmstrip_path, created_unix_ms, events,
+                        agent, agent_id, map, mode, won, kills, deaths, assists, headshot_pct
                  FROM clips WHERE id = ?1",
             )
             .map_err(|e| format!("prepare get: {e}"))?;
@@ -249,6 +338,16 @@ fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<ClipRecord> {
         thumb_path: row.get(8)?,
         filmstrip_path: row.get(9)?,
         created_unix_ms: row.get(10)?,
+        // events is col 11 (read above); game context follows at 12..=20.
+        agent: row.get(12)?,
+        agent_id: row.get(13)?,
+        map: row.get(14)?,
+        mode: row.get(15)?,
+        won: row.get(16)?,
+        kills: row.get(17)?,
+        deaths: row.get(18)?,
+        assists: row.get(19)?,
+        headshot_pct: row.get(20)?,
     })
 }
 
@@ -275,6 +374,7 @@ mod tests {
             size_bytes: 1234,
             thumb_path: None,
             filmstrip_path: None,
+            ..Default::default()
         }
     }
 
@@ -315,6 +415,40 @@ mod tests {
         single.events = Vec::new();
         let id_single = lib.insert(&single).unwrap();
         assert_eq!(lib.get(id_single).unwrap().unwrap().events, vec!["Ace"]);
+    }
+
+    #[test]
+    fn game_context_round_trips_and_defaults_to_null() {
+        let lib = Library::open_in_memory().unwrap();
+
+        // A fully-enriched auto-clip.
+        let mut enriched = sample("g.mp4", "Ace — Jett", Some("Ace"));
+        enriched.agent = Some("Jett".into());
+        enriched.agent_id = Some("add6443a-41bd-e414-f6ad-e58d267f4e95".into());
+        enriched.map = Some("/Game/Maps/Ascent/Ascent".into());
+        enriched.mode = Some("Competitive".into());
+        enriched.won = Some(true);
+        enriched.kills = Some(21);
+        enriched.deaths = Some(14);
+        enriched.assists = Some(5);
+        enriched.headshot_pct = Some(31.5);
+        let id = lib.insert(&enriched).unwrap();
+        let rec = lib.get(id).unwrap().unwrap();
+        assert_eq!(rec.agent.as_deref(), Some("Jett"));
+        assert_eq!(rec.map.as_deref(), Some("/Game/Maps/Ascent/Ascent"));
+        assert_eq!(rec.mode.as_deref(), Some("Competitive"));
+        assert_eq!(rec.won, Some(true));
+        assert_eq!((rec.kills, rec.deaths, rec.assists), (Some(21), Some(14), Some(5)));
+        assert_eq!(rec.headshot_pct, Some(31.5));
+
+        // A bare clip (manual save with no match context) → all game fields null.
+        let bare = sample("b.mp4", "Clip", None);
+        let bid = lib.insert(&bare).unwrap();
+        let brec = lib.get(bid).unwrap().unwrap();
+        assert_eq!(brec.agent, None);
+        assert_eq!(brec.map, None);
+        assert_eq!(brec.won, None);
+        assert_eq!(brec.kills, None);
     }
 
     #[test]

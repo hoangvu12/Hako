@@ -17,3 +17,4 @@ pub mod summary; // post-match K/D/A, headshot %, agent, win/loss, title
 pub mod service; // state machine + session bootstrap
 pub mod cut; // post-match: derive → reconcile → cut clips → library
 pub mod orchestrator; // live presence loop driving Mode-B recording
+pub mod live; // shared live-match context for tagging manual clips

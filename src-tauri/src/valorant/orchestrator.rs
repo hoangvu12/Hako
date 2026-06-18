@@ -38,9 +38,11 @@ use crate::core::session::SessionWriter;
 use crate::events;
 use crate::settings::AutoCaptureMode;
 use crate::valorant::cut::{self, RemoteReady};
+use crate::valorant::live::{LiveMatch, LiveMatchState};
 use crate::valorant::local_api::LocalClient;
 use crate::valorant::log_watch::{self, LogTail, RoundTracker};
-use crate::valorant::model::PrivatePresence;
+use crate::valorant::model::{self, LoopState, PrivatePresence};
+use crate::valorant::remote_api;
 use crate::valorant::service::{Action, StateMachine};
 
 /// Presence poll cadence (Medal polls the local API on a similar interval). The
@@ -109,6 +111,9 @@ async fn run(app: AppHandle) {
     // failing hook (e.g. game minimized / not rendering) isn't re-injected every
     // tick into the anti-cheat-protected process.
     let mut next_capture_attempt = Instant::now();
+    // True once we've kicked off the (best-effort, once-per-match) live-agent
+    // resolver for the current match; reset when we leave the match.
+    let mut live_resolver_spawned = false;
     tracing::info!("valorant orchestrator started");
 
     loop {
@@ -137,6 +142,11 @@ async fn run(app: AppHandle) {
         };
         let loop_state = presence.loop_state();
         let rounds_played = presence.score_ally + presence.score_enemy;
+
+        // Keep the shared live-match context current (map/mode from presence,
+        // agent resolved best-effort) so a manual F9 save can tag its clip with
+        // the same context an auto-clip would. Independent of capture mode.
+        update_live_match(&app, &presence, loop_state, &puuid, &mut live_resolver_spawned);
 
         for action in sm.update(loop_state, rounds_played) {
             match action {
@@ -380,7 +390,13 @@ fn finish_full_session(app: &AppHandle, fs: FullSession) {
     };
     let app = app.clone();
     tokio::spawn(async move {
-        if let Err(e) = cut::save_whole_session(&app, &path, "Full Session", "Full Session") {
+        if let Err(e) = cut::save_whole_session(
+            &app,
+            &path,
+            "Full Session",
+            "Full Session",
+            crate::library::db::NewClip::default(),
+        ) {
             tracing::warn!("session-record: save failed: {e}");
         }
         if let Err(e) = std::fs::remove_file(&path) {
@@ -439,6 +455,81 @@ fn auto_manage_capture(app: &AppHandle, auto_capturing: &mut bool, next_attempt:
         }
         // Game up and already capturing (ours or the user's) → leave it be.
         Some(_) => {}
+    }
+}
+
+/// Refresh the shared [`LiveMatchState`] from the current presence tick. While
+/// INGAME it mirrors the live map + mode and, once per match, spawns a
+/// best-effort task to resolve our agent. On leaving the match it resets the
+/// context so a later manual save outside a game carries nothing.
+fn update_live_match(
+    app: &AppHandle,
+    presence: &PrivatePresence,
+    loop_state: LoopState,
+    puuid: &str,
+    resolver_spawned: &mut bool,
+) {
+    let Some(state) = app.try_state::<LiveMatchState>() else {
+        return;
+    };
+    if loop_state == LoopState::InGame {
+        if let Ok(mut g) = state.0.lock() {
+            g.in_match = true;
+            let map = presence.match_map();
+            g.map = (!map.is_empty()).then(|| map.to_string());
+            // Display name for the live queue id; fall back to the raw id so an
+            // unmapped mode is still a filterable label.
+            let qid = presence.queue_id();
+            let mode = model::queue_id_name(qid);
+            let mode = if mode.is_empty() { qid } else { mode };
+            g.mode = (!mode.is_empty()).then(|| mode.to_string());
+        }
+        if !*resolver_spawned {
+            *resolver_spawned = true;
+            tauri::async_runtime::spawn(resolve_live_agent(app.clone(), puuid.to_string()));
+        }
+    } else {
+        // Out of a match → clear context + allow a fresh resolve next match.
+        *resolver_spawned = false;
+        if let Ok(mut g) = state.0.lock() {
+            if g.in_match {
+                *g = LiveMatch::default();
+            }
+        }
+    }
+}
+
+/// Resolve our agent for the live match and write it into [`LiveMatchState`].
+/// Best-effort: bootstraps the remote API, reads the in-progress core-game match
+/// for our `CharacterID`, resolves the display name, and stores it (only while
+/// still in the same match). Any failure leaves `agent` `None`.
+async fn resolve_live_agent(app: AppHandle, puuid: String) {
+    let Some(ready) = cut::bootstrap_remote(puuid.clone()).await else {
+        return;
+    };
+    let Some(match_id) = ready.match_id.as_deref() else {
+        return;
+    };
+    let agent_id = match ready.data.remote.core_game_match(match_id).await {
+        Ok(m) => m.agent_for(&puuid),
+        Err(e) => {
+            tracing::debug!("live-agent: core-game match fetch: {e}");
+            return;
+        }
+    };
+    let Some(agent_id) = agent_id else {
+        return;
+    };
+    let name = remote_api::fetch_agent_name(&agent_id).await;
+    if let Some(state) = app.try_state::<LiveMatchState>() {
+        if let Ok(mut g) = state.0.lock() {
+            // Only apply if we're still in a match (it may have ended meanwhile).
+            if g.in_match {
+                tracing::info!("live-agent: resolved {} for manual clips", name.as_deref().unwrap_or(&agent_id));
+                g.agent_id = Some(agent_id);
+                g.agent = name;
+            }
+        }
     }
 }
 

@@ -18,7 +18,7 @@ use base64::Engine;
 use reqwest::header::AUTHORIZATION;
 
 use crate::valorant::local_api::LocalClient;
-use crate::valorant::model::{CurrentGamePlayer, MatchDetails};
+use crate::valorant::model::{CoreGameMatch, CurrentGamePlayer, MatchDetails};
 
 /// Fixed client-platform JSON, base64'd into `X-Riot-ClientPlatform`.
 const CLIENT_PLATFORM_JSON: &str = r#"{"platformType":"PC","platformOS":"Windows","platformOSVersion":"10.0.19042.1.256.64bit","platformChipset":"Unknown"}"#;
@@ -209,6 +209,27 @@ impl RemoteClient {
         } else {
             Some(p.match_id)
         })
+    }
+
+    /// The **live** (in-progress) match: players (with their agents), map, mode.
+    /// Available mid-match (unlike `match-details`); 404s once the match ends.
+    /// Used to resolve our agent for tagging manual clips.
+    pub async fn core_game_match(&self, match_id: &str) -> Result<CoreGameMatch, String> {
+        let url = format!(
+            "https://glz-{}-1.{}.a.pvp.net/core-game/v1/matches/{}",
+            self.region, self.shard, match_id
+        );
+        let resp = self
+            .authed(self.http.get(&url))
+            .send()
+            .await
+            .map_err(|e| format!("core-game match: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("core-game match → HTTP {}", resp.status()));
+        }
+        resp.json()
+            .await
+            .map_err(|e| format!("decode core-game match: {e}"))
     }
 
     /// Post-match details. 404 means the match isn't finalized yet.

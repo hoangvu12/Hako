@@ -58,6 +58,9 @@ fn main() {
         // Range-aware clip streaming (smooth playback + seeking in the editor).
         .register_uri_scheme_protocol(media::SCHEME, media::handle)
         .manage(commands::CaptureState::default())
+        // Shared live-match context (map/mode/agent) for tagging manual F9 clips;
+        // kept current by the Valorant orchestrator.
+        .manage(valorant::live::LiveMatchState::default())
         .invoke_handler(tauri::generate_handler![
             commands::recorder_status,
             commands::gpu_info,

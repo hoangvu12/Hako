@@ -166,7 +166,13 @@ async fn run(input: &CutInput) -> Result<(), String> {
         } else {
             summary.title.clone()
         };
-        return save_whole_session(&input.app, &input.session_path, &title, "Full Match");
+        return save_whole_session(
+            &input.app,
+            &input.session_path,
+            &title,
+            "Full Match",
+            summary.clip_context(),
+        );
     }
 
     let toggles = load_toggles(&input.app);
@@ -305,6 +311,7 @@ async fn run(input: &CutInput) -> Result<(), String> {
                     res.width,
                     res.height,
                     res.duration_secs,
+                    summary.clip_context(),
                 ) {
                     tracing::warn!("auto-clip: library insert failed: {err}");
                 } else {
@@ -441,6 +448,9 @@ pub fn save_whole_session(
     session_path: &std::path::Path,
     title: &str,
     event: &str,
+    // Game context (agent/map/mode/result). `NewClip::default()` when none is
+    // known (e.g. Session-mode recordings with no match-details fetch).
+    context: crate::library::db::NewClip,
 ) -> Result<(), String> {
     /// Upper bound on a session's length (s) — trim copies to EOF within it.
     const WHOLE_FILE_SECS: f64 = 24.0 * 60.0 * 60.0;
@@ -456,6 +466,7 @@ pub fn save_whole_session(
         res.width,
         res.height,
         res.duration_secs,
+        context,
     )?;
     tracing::info!("auto-clip: saved {event} ({:.0}s)", res.duration_secs);
     Ok(())
