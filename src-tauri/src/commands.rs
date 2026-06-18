@@ -505,6 +505,40 @@ pub fn rename_clip(library: State<LibraryState>, id: i64, title: String) -> Resu
         .rename(id, &title)
 }
 
+/// Reveal a clip's file in the OS file manager (Windows Explorer), with the file
+/// selected — the "Open in folder" action in the clip viewer.
+#[tauri::command]
+pub fn reveal_clip(library: State<LibraryState>, id: i64) -> Result<(), String> {
+    let rec = library
+        .0
+        .lock()
+        .map_err(|_| "library poisoned")?
+        .get(id)?
+        .ok_or("clip not found")?;
+    reveal_in_explorer(&rec.path)
+}
+
+#[cfg(windows)]
+fn reveal_in_explorer(path: &str) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    // `explorer /select,"<path>"` opens the containing folder with the file
+    // selected. raw_arg keeps `/select,` unquoted and only the path quoted — the
+    // exact form Explorer parses (a fully-quoted single token silently misfires
+    // and opens Documents instead). Filenames can't contain `"`, so there's no
+    // quote to escape out of. Explorer can exit non-zero spuriously, so we only
+    // spawn and don't inspect the status.
+    std::process::Command::new("explorer")
+        .raw_arg(format!("/select,\"{path}\""))
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("failed to open Explorer: {e}"))
+}
+
+#[cfg(not(windows))]
+fn reveal_in_explorer(_path: &str) -> Result<(), String> {
+    Err("revealing files is only supported on Windows".into())
+}
+
 /// Where a trim writes its result: replace the original file, or save a copy.
 #[derive(Debug, Clone, Copy, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]

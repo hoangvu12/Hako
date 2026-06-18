@@ -2,13 +2,6 @@ import * as React from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { Link } from "@tanstack/react-router";
 import {
-  Triangle,
-  Monitor,
-  Lightning,
-  Scissors,
-  Copy,
-  Check,
-  CloudArrowUp,
   Play,
   Pause,
   DotsThree,
@@ -25,14 +18,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import type { ClipRecord } from "@/lib/api";
 import {
   mapNameFromPath,
@@ -416,18 +403,13 @@ export function ClipCard({
   onRename: () => void;
   assets?: ValorantAssets;
 }) {
-  const [copied, setCopied] = React.useState(false);
-  const trimmed = clip.event != null;
-
-  async function copyLink() {
-    try {
-      await navigator.clipboard.writeText(convertFileSrc(clip.path));
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      /* clipboard unavailable */
-    }
-  }
+  // Every event the clip's window covered, falling back to the headline tag for
+  // clips saved before multi-event tracking (mirrors the detail panel).
+  const eventLabels = clip.events.length
+    ? clip.events
+    : clip.event
+      ? [clip.event]
+      : [];
 
   return (
     <div className="group flex flex-col overflow-hidden rounded-xl border border-border/60 bg-card shadow-sm transition-colors hover:border-border">
@@ -459,11 +441,6 @@ export function ClipCard({
                 <PencilSimple />
                 Rename
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={copyLink}>
-                <Copy />
-                Copy link
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
               <DropdownMenuItem variant="destructive" onSelect={onDelete}>
                 <Trash />
                 Delete
@@ -472,51 +449,25 @@ export function ClipCard({
           </DropdownMenu>
         </div>
 
-        <div className="flex items-center gap-1.5 truncate text-[11px] font-medium text-muted-foreground">
-          <span className="flex size-3 items-center justify-center rounded-sm bg-primary/20">
-            <Triangle weight="fill" className="size-2 text-primary" />
-          </span>
+        {/* One quiet metadata line: the event(s) lead (slightly emphasized,
+            truncating when many), then when / how big. No chips or per-item
+            icons — the thumbnail badges already carry the visual weight. */}
+        <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+          {eventLabels.length ? (
+            <>
+              <span
+                className="min-w-0 truncate text-foreground/80"
+                title={eventLabels.join(", ")}
+              >
+                {eventLabels.join(", ")}
+              </span>
+              <Dot />
+            </>
+          ) : null}
+          <span className="shrink-0">{timeAgo(clip.created_unix_ms)}</span>
           <Dot />
-          <Monitor className="size-3" />
-          <span>On Device</span>
-          <Dot />
-          <span>{fmtSize(clip.size_bytes)}</span>
-          <Dot />
-          {trimmed ? (
-            <Scissors className="size-3 text-warning" />
-          ) : (
-            <Lightning weight="fill" className="size-3 text-info" />
-          )}
-          <span className="truncate">{timeAgo(clip.created_unix_ms)}</span>
+          <span className="shrink-0">{fmtSize(clip.size_bytes)}</span>
         </div>
-      </div>
-
-      {/* Actions */}
-      <div className="mt-auto flex items-center justify-between border-t border-border/60 px-3.5 pt-2 pb-3.5 text-muted-foreground">
-        <button
-          type="button"
-          onClick={copyLink}
-          className="flex items-center gap-1.5 text-xs font-medium transition-colors hover:text-foreground"
-        >
-          {copied ? (
-            <Check className="size-3.5 text-success" />
-          ) : (
-            <Copy className="size-3.5" />
-          )}
-          {copied ? "Copied" : "Copy Link"}
-        </button>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              aria-label="Upload to cloud"
-              className={cn("transition-colors hover:text-foreground")}
-            >
-              <CloudArrowUp className="size-4" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>Upload to cloud</TooltipContent>
-        </Tooltip>
       </div>
     </div>
   );

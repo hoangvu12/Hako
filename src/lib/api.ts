@@ -256,6 +256,11 @@ export async function renameClip(id: number, title: string): Promise<void> {
   await invoke("rename_clip", { id, title });
 }
 
+/** Reveal a clip's file in the OS file manager (Explorer), selecting it. */
+export async function revealClip(id: number): Promise<void> {
+  await invoke("reveal_clip", { id });
+}
+
 /** Where a trim writes its result. */
 export type TrimMode = "overwrite" | "copy";
 

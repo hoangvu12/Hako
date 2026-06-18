@@ -21,6 +21,7 @@ import {
   FloppyDisk,
   CircleNotch,
   ArrowCounterClockwise,
+  FolderOpen,
 } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
@@ -34,6 +35,7 @@ import {
 } from "@/hooks/use-library";
 import { Slider } from "@/components/ui/slider";
 import { useTrackMixer } from "@/hooks/use-track-mixer";
+import { revealClip } from "@/lib/api";
 import type { AudioTrackInfo, ClipRecord, TrackVolume, TrimMode } from "@/lib/api";
 
 /** Per-stem editor state. Solo overrides mute across the stem set. */
@@ -858,7 +860,19 @@ function ViewerStage({
             <SpecRow label="Saved" value={fmtDate(clip.created_unix_ms)} />
           </dl>
 
-          <CopyPath path={clip.path} />
+          <div className="flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                void revealClip(clip.id).catch(() => {});
+              }}
+              className="flex items-center justify-center gap-2 rounded-lg border border-border/60 bg-card/40 px-4 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <FolderOpen className="size-4" />
+              Open in folder
+            </button>
+            <CopyPath path={clip.path} />
+          </div>
 
           <div className="mt-auto" />
           <button

@@ -77,6 +77,7 @@ fn main() {
             commands::clips_list,
             commands::delete_clip,
             commands::rename_clip,
+            commands::reveal_clip,
             commands::trim_clip,
             commands::clip_audio_tracks,
             commands::read_clip_range,
