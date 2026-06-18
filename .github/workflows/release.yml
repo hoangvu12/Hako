@@ -64,10 +64,11 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "Hako ${{ github.ref_name }}"
           releaseBody: "See the assets below to download and install this version."
-          # Publish as a draft so you can review before it goes live. The
-          # updater only sees the release once you publish it (the
-          # `releases/latest` endpoint skips drafts).
-          releaseDraft: true
+          # Publish immediately (not a draft). GitHub auto-marks the newest
+          # published, non-prerelease release as "Latest", so the
+          # `releases/latest/download/latest.json` endpoint resolves and the
+          # in-app updater discovers it with no manual publish step.
+          releaseDraft: false
           prerelease: false
           # Generate + attach latest.json (the updater manifest).
           includeUpdaterJson: true
