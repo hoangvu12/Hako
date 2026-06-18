@@ -18,8 +18,8 @@ import type { ClipRecord } from "@/lib/api";
 // Grid metrics (kept in sync with the row layout below). `GAP` mirrors the old
 // `gap-5`; `MIN_CARD` is the smallest comfortable card width before we drop a
 // column. The row heights are measured per row; these only seed scroll math.
-const GAP = 20;
-const MIN_CARD = 240;
+const GAP = 12;
+const MIN_CARD = 340;
 const EST_CLIP_ROW = 280;
 const EST_HEADER_ROW = 44;
 
@@ -198,7 +198,7 @@ export default function ClipsPage() {
                     </div>
                   ) : (
                     <div
-                      className="grid gap-5 pb-5"
+                      className="grid gap-3 pb-3"
                       style={{
                         gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
                       }}
