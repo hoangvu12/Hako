@@ -33,6 +33,7 @@ import {
   useTrimClip,
 } from "@/hooks/use-library";
 import { Slider } from "@/components/ui/slider";
+import { useTrackMixer } from "@/hooks/use-track-mixer";
 import type { AudioTrackInfo, ClipRecord, TrackVolume, TrimMode } from "@/lib/api";
 
 /** Per-stem editor state. Solo overrides mute across the stem set. */
@@ -303,10 +304,35 @@ function ViewerStage({
       return c && (c.muted || c.solo || c.volume !== 100);
     });
 
+  // Live per-stem mixing: decode the stems and play them through a Web Audio
+  // gain graph synced to the (muted) <video>, so mute/solo/volume are *heard*
+  // during preview — not just applied on export. `active` is false (native
+  // <video> audio kept) for no-stems clips or until/unless the decode succeeds.
+  const stemGains = React.useMemo(() => {
+    const m = new Map<number, number>();
+    for (const s of stems) {
+      const c = ctlOf(s.index);
+      const audible = soloActive ? c.solo : !c.muted;
+      m.set(s.index, audible ? c.volume / 100 : 0);
+    }
+    return m;
+  }, [stems, ctlOf, soloActive]);
+  // Top-bar mute/volume is the monitor level (preview-only; not in the export mix).
+  const masterMonitorGain = muted ? 0 : volume;
+  const { active: liveMix } = useTrackMixer({
+    src,
+    stems,
+    videoRef,
+    stemGains,
+    masterGain: masterMonitorGain,
+  });
+
   // Reflect muted/volume/speed onto the element (React doesn't track these).
+  // While live mixing is active the element stays muted (Web Audio carries the
+  // sound); the top-bar mute/volume then drives the graph's master gain instead.
   React.useEffect(() => {
-    if (videoRef.current) videoRef.current.muted = muted;
-  }, [muted]);
+    if (videoRef.current) videoRef.current.muted = liveMix || muted;
+  }, [muted, liveMix]);
   React.useEffect(() => {
     if (videoRef.current) videoRef.current.volume = volume;
   }, [volume]);
@@ -761,6 +787,7 @@ function ViewerStage({
             {hasStems && audioEnabled ? (
               <TrackMixerPanel
                 stems={stems}
+                live={liveMix}
                 ctlOf={ctlOf}
                 soloActive={soloActive}
                 onMute={(idx) => patchTrack(idx, { muted: !ctlOf(idx).muted })}
@@ -996,6 +1023,7 @@ function TrimHandle({
  */
 function TrackMixerPanel({
   stems,
+  live,
   ctlOf,
   soloActive,
   onMute,
@@ -1003,6 +1031,8 @@ function TrackMixerPanel({
   onVolume,
 }: {
   stems: AudioTrackInfo[];
+  /** Whether changes are audible live in preview (else export-only fallback). */
+  live: boolean;
   ctlOf: (idx: number) => TrackCtl;
   soloActive: boolean;
   onMute: (idx: number) => void;
@@ -1015,7 +1045,7 @@ function TrackMixerPanel({
         <SpeakerSimpleHigh weight="fill" className="size-4" />
         Audio tracks
         <span className="font-normal text-muted-foreground/70">
-          · mix what you export
+          {live ? "· mix live, saved on export" : "· mix what you export"}
         </span>
       </div>
       <div className="flex flex-col gap-2.5">
