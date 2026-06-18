@@ -22,6 +22,15 @@ import {
   CircleNotch,
   ArrowCounterClockwise,
   FolderOpen,
+  Faders,
+  Skull,
+  Knife,
+  Bomb,
+  Trophy,
+  Fire,
+  Handshake,
+  ShieldCheck,
+  type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
@@ -34,9 +43,21 @@ import {
   useTrimClip,
 } from "@/hooks/use-library";
 import { Slider } from "@/components/ui/slider";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { useTrackMixer } from "@/hooks/use-track-mixer";
+import { useValorantAssets, mapNameFromPath } from "@/hooks/use-valorant-assets";
 import { revealClip } from "@/lib/api";
-import type { AudioTrackInfo, ClipRecord, TrackVolume, TrimMode } from "@/lib/api";
+import type {
+  AudioTrackInfo,
+  ClipRecord,
+  EventMark,
+  TrackVolume,
+  TrimMode,
+} from "@/lib/api";
 
 /** Per-stem editor state. Solo overrides mute across the stem set. */
 interface TrackCtl {
@@ -83,6 +104,21 @@ function fmtDate(unixMs: number): string {
     month: "long",
     day: "numeric",
   });
+}
+
+/** Icon + tint for a seek-bar event marker, keyed off the EventKind label. */
+function eventIconFor(label: string): { Icon: PhosphorIcon; tint: string } {
+  const l = label.toLowerCase();
+  if (l.includes("victory")) return { Icon: Trophy, tint: "text-warning" };
+  if (l.includes("clutch")) return { Icon: Fire, tint: "text-warning" };
+  if (l.includes("knife")) return { Icon: Knife, tint: "text-white" };
+  if (l.includes("defus")) return { Icon: ShieldCheck, tint: "text-info" };
+  if (l.includes("spike") || l.includes("detonat"))
+    return { Icon: Bomb, tint: "text-destructive" };
+  if (l.includes("death")) return { Icon: Skull, tint: "text-destructive" };
+  if (l.includes("assist")) return { Icon: Handshake, tint: "text-info" };
+  // Kills (single + multi-kill + ace) and anything unrecognised.
+  return { Icon: Skull, tint: "text-white" };
 }
 
 /** Pick a "nice" ruler step (≈8 ticks) for a given duration. */
@@ -387,6 +423,16 @@ function ViewerStage({
     setCurrent(t);
   }
 
+  // Seek to an absolute time, clamped to the selection. Used by the fullscreen
+  // overlay scrubber, which has no filmstrip bar to measure against.
+  function seekToTime(t: number) {
+    const v = videoRef.current;
+    if (!v) return;
+    const clamped = Math.min(Math.max(t, trimStart), trimEnd);
+    v.currentTime = clamped;
+    setCurrent(clamped);
+  }
+
   // --- playhead / trim-handle pointer handling ---
   // The bar isn't click-to-seek; you grab the playhead or a trim handle. Capture
   // is set on the bar so its move/up handlers receive the whole drag.
@@ -561,11 +607,26 @@ function ViewerStage({
             }}
             onPlay={() => setPlaying(true)}
             onPause={() => setPlaying(false)}
-            className="max-h-full max-w-full rounded-lg bg-black object-contain shadow-2xl"
+            className={cn(
+              "bg-black",
+              fullscreen
+                // Fill the whole screen, cropping to fit (no letterboxing).
+                ? "absolute inset-0 size-full object-cover"
+                : "max-h-full max-w-full rounded-lg object-contain shadow-2xl",
+            )}
           />
 
-          {/* Overlay control bar */}
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex items-center gap-3 rounded-b-lg bg-gradient-to-t from-black/80 via-black/30 to-transparent px-4 pt-10 pb-3 text-white opacity-0 transition-opacity group-hover/video:opacity-100 [&>*]:pointer-events-auto">
+          {/* Overlay control bar — always visible, with a seek bar on top (the
+              filmstrip editor below is the precise scrubber; this is the quick one). */}
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex flex-col gap-1.5 rounded-b-lg bg-gradient-to-t from-black/85 via-black/35 to-transparent px-4 pt-12 pb-3 text-white [&>*]:pointer-events-auto">
+            <OverlaySeekBar
+              current={current}
+              start={trimStart}
+              end={trimEnd}
+              marks={clip.event_marks}
+              onSeek={seekToTime}
+            />
+            <div className="flex items-center gap-3">
             <CtrlButton label={playing ? "Pause" : "Play"} onClick={togglePlay}>
               {playing ? (
                 <Pause weight="fill" className="size-5" />
@@ -626,22 +687,13 @@ function ViewerStage({
                 <CornersOut weight="bold" className="size-5" />
               )}
             </CtrlButton>
+            </div>
           </div>
         </div>
 
         {/* ---- Trim editor (filmstrip + toolbar) ---- */}
         {!fullscreen ? (
           <div className="w-full max-w-6xl shrink-0">
-            {/* Big current-time readout */}
-            <div className="mb-2 flex items-baseline justify-center gap-2">
-              <span className="font-mono text-3xl font-semibold tabular-nums tracking-tight">
-                {fmtClock(current)}
-              </span>
-              <span className="font-mono text-lg tabular-nums text-muted-foreground">
-                / {fmtTime(duration)}
-              </span>
-            </div>
-
             {/* Padded so the trim handles have room at the very ends */}
             <div className="px-4">
               {/* Ruler — click / drag anywhere here to move the playhead */}
@@ -728,28 +780,22 @@ function ViewerStage({
             </div>
 
             {/* Editor toolbar */}
-            <div className="mt-4 flex items-center gap-3 px-4">
-              <button
-                type="button"
-                onClick={() => setAudioEnabled((a) => !a)}
-                className={cn(
-                  "flex items-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition-colors",
-                  audioEnabled
-                    ? "border-border/70 bg-card/50 text-foreground hover:bg-card"
-                    : "border-border/50 bg-transparent text-muted-foreground hover:text-foreground",
-                )}
-                title="Include audio in the saved clip"
-              >
-                {audioEnabled ? (
-                  <SpeakerSimpleHigh weight="fill" className="size-5" />
-                ) : (
-                  <SpeakerSimpleX weight="fill" className="size-5" />
-                )}
-                Audio {audioEnabled ? "On" : "Off"}
-              </button>
+            <div className="mt-3 flex items-center gap-2.5 px-4">
+              <AudioSettingsPopover
+                audioEnabled={audioEnabled}
+                onToggleAudio={() => setAudioEnabled((a) => !a)}
+                hasStems={hasStems}
+                stems={stems}
+                live={liveMix}
+                ctlOf={ctlOf}
+                soloActive={soloActive}
+                onMute={(idx) => patchTrack(idx, { muted: !ctlOf(idx).muted })}
+                onSolo={(idx) => patchTrack(idx, { solo: !ctlOf(idx).solo })}
+                onVolume={(idx, v) => patchTrack(idx, { volume: v })}
+              />
 
-              <div className="flex items-center gap-2 font-mono text-sm tabular-nums text-muted-foreground">
-                <Scissors weight="bold" className="size-4 text-primary-text" />
+              <div className="flex items-center gap-1.5 font-mono text-xs tabular-nums text-muted-foreground">
+                <Scissors weight="bold" className="size-3.5 text-primary-text" />
                 <span className="text-foreground">{fmtClock(trimStart)}</span>
                 <span>–</span>
                 <span className="text-foreground">{fmtClock(trimEnd)}</span>
@@ -768,9 +814,9 @@ function ViewerStage({
                     setAudioEnabled(true);
                     setTrackCtl({});
                   }}
-                  className="flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+                  className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
                 >
-                  <ArrowCounterClockwise weight="bold" className="size-5" />
+                  <ArrowCounterClockwise weight="bold" className="size-4" />
                   Reset
                 </button>
               ) : null}
@@ -779,25 +825,12 @@ function ViewerStage({
                 type="button"
                 disabled={!edited}
                 onClick={() => setSaveOpen(true)}
-                className="flex items-center gap-2 rounded-lg bg-primary px-6 py-2.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex items-center gap-1.5 rounded-lg bg-primary px-5 py-1.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                <FloppyDisk weight="bold" className="size-5" />
+                <FloppyDisk weight="bold" className="size-4" />
                 Save
               </button>
             </div>
-
-            {/* Per-track audio mixer (multi-track clips only) */}
-            {hasStems && audioEnabled ? (
-              <TrackMixerPanel
-                stems={stems}
-                live={liveMix}
-                ctlOf={ctlOf}
-                soloActive={soloActive}
-                onMute={(idx) => patchTrack(idx, { muted: !ctlOf(idx).muted })}
-                onSolo={(idx) => patchTrack(idx, { solo: !ctlOf(idx).solo })}
-                onVolume={(idx, v) => patchTrack(idx, { volume: v })}
-              />
-            ) : null}
 
             {/* Navigation hint */}
             <p className="mt-3 text-center text-xs text-muted-foreground/70">
@@ -826,10 +859,17 @@ function ViewerStage({
         <div className="flex flex-1 flex-col gap-5 p-5">
           <EditableTitle title={clip.title} onCommit={onRename} />
 
-          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          {/* One compact spec line — date, size, length, resolution */}
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
             <span>{fmtDate(clip.created_unix_ms)}</span>
-            <span className="size-[3px] rounded-full bg-secondary" />
+            <span className="size-[3px] rounded-full bg-muted-foreground/40" />
+            <span className="font-mono tabular-nums">{fmtSize(clip.size_bytes)}</span>
+            <span className="size-[3px] rounded-full bg-muted-foreground/40" />
             <span className="font-mono tabular-nums">{fmtTime(clip.duration_secs)}</span>
+            <span className="size-[3px] rounded-full bg-muted-foreground/40" />
+            <span className="font-mono tabular-nums">
+              {clip.width}×{clip.height}
+            </span>
           </div>
 
           <div className="flex flex-wrap gap-2">
@@ -853,14 +893,13 @@ function ViewerStage({
             )}
           </div>
 
-          <dl className="space-y-2.5 rounded-lg border border-border/60 bg-card/40 p-4 text-xs">
-            <SpecRow label="Resolution" value={`${clip.width}×${clip.height}`} />
-            <SpecRow label="Duration" value={fmtTime(clip.duration_secs)} />
-            <SpecRow label="File size" value={fmtSize(clip.size_bytes)} />
-            <SpecRow label="Saved" value={fmtDate(clip.created_unix_ms)} />
-          </dl>
+          {/* Valorant match context — silent for clips cut outside a match */}
+          <ClipGameContext clip={clip} />
 
           <div className="flex flex-col gap-2">
+            <span className="text-[11px] font-semibold tracking-wide text-muted-foreground/70 uppercase">
+              File
+            </span>
             <button
               type="button"
               onClick={() => {
@@ -1036,7 +1075,17 @@ function TrimHandle({
  * controls choose how the stems are re-mixed into the exported master. Solo
  * overrides mute: if any stem is soloed, only soloed stems are audible.
  */
-function TrackMixerPanel({
+/**
+ * The toolbar's "Audio" control: a popover holding the master include-audio
+ * toggle plus, for multi-track clips, the per-stem mute/solo/volume mixer. The
+ * recorded clip carries a master mix (track 0, what the player uses) plus raw
+ * stems; these controls choose how the stems are re-mixed into the export. Solo
+ * overrides mute: if any stem is soloed, only soloed stems are audible.
+ */
+function AudioSettingsPopover({
+  audioEnabled,
+  onToggleAudio,
+  hasStems,
   stems,
   live,
   ctlOf,
@@ -1045,6 +1094,9 @@ function TrackMixerPanel({
   onSolo,
   onVolume,
 }: {
+  audioEnabled: boolean;
+  onToggleAudio: () => void;
+  hasStems: boolean;
   stems: AudioTrackInfo[];
   /** Whether changes are audible live in preview (else export-only fallback). */
   live: boolean;
@@ -1055,78 +1107,135 @@ function TrackMixerPanel({
   onVolume: (idx: number, v: number) => void;
 }) {
   return (
-    <div className="mx-4 mt-4 rounded-lg border border-border/60 bg-card/30 px-4 py-3">
-      <div className="mb-2.5 flex items-center gap-2 text-xs font-medium text-muted-foreground">
-        <SpeakerSimpleHigh weight="fill" className="size-4" />
-        Audio tracks
-        <span className="font-normal text-muted-foreground/70">
-          {live ? "· mix live, saved on export" : "· mix what you export"}
-        </span>
-      </div>
-      <div className="flex flex-col gap-2.5">
-        {stems.map((s) => {
-          const c = ctlOf(s.index);
-          const audible = soloActive ? c.solo : !c.muted;
-          return (
-            <div key={s.index} className="flex items-center gap-3">
-              <span
-                className={cn(
-                  "w-36 shrink-0 truncate text-sm",
-                  audible ? "text-foreground" : "text-muted-foreground/60",
-                )}
-                title={s.name}
-              >
-                {s.name}
-              </span>
-              <button
-                type="button"
-                onClick={() => onMute(s.index)}
-                aria-label={c.muted ? "Unmute track" : "Mute track"}
-                title={c.muted ? "Unmute" : "Mute"}
-                className={cn(
-                  "flex size-8 items-center justify-center rounded-md border transition-colors",
-                  c.muted
-                    ? "border-destructive/40 bg-destructive/10 text-destructive"
-                    : "border-border/70 bg-card/50 text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {c.muted ? (
-                  <SpeakerSimpleX weight="fill" className="size-4" />
-                ) : (
-                  <SpeakerSimpleHigh weight="fill" className="size-4" />
-                )}
-              </button>
-              <button
-                type="button"
-                onClick={() => onSolo(s.index)}
-                aria-label={c.solo ? "Unsolo track" : "Solo track"}
-                title="Solo"
-                className={cn(
-                  "flex size-8 items-center justify-center rounded-md border text-xs font-bold transition-colors",
-                  c.solo
-                    ? "border-primary/50 bg-primary/15 text-primary-text"
-                    : "border-border/70 bg-card/50 text-muted-foreground hover:text-foreground",
-                )}
-              >
-                S
-              </button>
-              <Slider
-                min={0}
-                max={100}
-                value={[c.volume]}
-                onValueChange={([v]) => onVolume(s.index, v)}
-                disabled={!audible}
-                aria-label={`${s.name} volume`}
-                className="max-w-[14rem] flex-1"
-              />
-              <span className="w-9 text-right font-mono text-xs tabular-nums text-muted-foreground">
-                {c.volume}%
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          title="Audio settings"
+          className={cn(
+            "flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors",
+            audioEnabled
+              ? "border-border/70 bg-card/50 text-foreground hover:bg-card"
+              : "border-border/50 bg-transparent text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {audioEnabled ? (
+            <SpeakerSimpleHigh weight="fill" className="size-4" />
+          ) : (
+            <SpeakerSimpleX weight="fill" className="size-4" />
+          )}
+          Audio
+          <Faders weight="bold" className="size-4 opacity-70" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[24rem] p-0">
+        {/* Master toggle: include this clip's audio in the export */}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={audioEnabled}
+          onClick={onToggleAudio}
+          className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-white/5"
+        >
+          <span className="min-w-0">
+            <span className="block text-sm font-medium text-foreground">
+              Include audio
+            </span>
+            <span className="block text-xs text-muted-foreground">
+              {audioEnabled ? "Saved with sound" : "Saved without sound"}
+            </span>
+          </span>
+          <span
+            className={cn(
+              "relative h-5 w-9 shrink-0 rounded-full transition-colors",
+              audioEnabled ? "bg-primary" : "bg-muted-foreground/30",
+            )}
+          >
+            <span
+              className={cn(
+                "absolute top-0.5 left-0.5 size-4 rounded-full bg-white transition-transform",
+                audioEnabled && "translate-x-4",
+              )}
+            />
+          </span>
+        </button>
+
+        {/* Per-stem mixer (multi-track clips only, when audio is kept) */}
+        {hasStems && audioEnabled ? (
+          <div className="border-t border-panel-border px-4 py-3">
+            <div className="mb-2.5 flex items-center gap-2 text-xs font-medium text-muted-foreground">
+              Tracks
+              <span className="font-normal text-muted-foreground/70">
+                {live ? "· mix live, saved on export" : "· mix what you export"}
               </span>
             </div>
-          );
-        })}
-      </div>
-    </div>
+            <div className="flex flex-col gap-2.5">
+              {stems.map((s) => {
+                const c = ctlOf(s.index);
+                const audible = soloActive ? c.solo : !c.muted;
+                return (
+                  <div key={s.index} className="flex items-center gap-2">
+                    <span
+                      className={cn(
+                        "w-20 shrink-0 truncate text-[13px]",
+                        audible ? "text-foreground" : "text-muted-foreground/60",
+                      )}
+                      title={s.name}
+                    >
+                      {s.name}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => onMute(s.index)}
+                      aria-label={c.muted ? "Unmute track" : "Mute track"}
+                      title={c.muted ? "Unmute" : "Mute"}
+                      className={cn(
+                        "flex size-7 shrink-0 items-center justify-center rounded-md border transition-colors",
+                        c.muted
+                          ? "border-destructive/40 bg-destructive/10 text-destructive"
+                          : "border-border/70 bg-card/50 text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      {c.muted ? (
+                        <SpeakerSimpleX weight="fill" className="size-3.5" />
+                      ) : (
+                        <SpeakerSimpleHigh weight="fill" className="size-3.5" />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onSolo(s.index)}
+                      aria-label={c.solo ? "Unsolo track" : "Solo track"}
+                      title="Solo"
+                      className={cn(
+                        "flex size-7 shrink-0 items-center justify-center rounded-md border text-xs font-bold transition-colors",
+                        c.solo
+                          ? "border-primary/50 bg-primary/15 text-primary-text"
+                          : "border-border/70 bg-card/50 text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      S
+                    </button>
+                    <Slider
+                      min={0}
+                      max={100}
+                      value={[c.volume]}
+                      onValueChange={([v]) => onVolume(s.index, v)}
+                      disabled={!audible}
+                      aria-label={`${s.name} volume`}
+                      className="min-w-0 flex-1"
+                    />
+                    <span className="w-9 shrink-0 text-right font-mono text-xs tabular-nums text-muted-foreground">
+                      {c.volume}%
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -1315,11 +1424,175 @@ function EditableTitle({
   );
 }
 
-function SpecRow({ label, value }: { label: string; value: string }) {
+/**
+ * Slim scrubber drawn on the video itself, shown only in fullscreen where the
+ * filmstrip editor (the normal way to seek) isn't on screen. It maps across the
+ * active selection — the trimmed range is the clip — so 0% is the in-point and
+ * 100% the out-point.
+ */
+function OverlaySeekBar({
+  current,
+  start,
+  end,
+  marks,
+  onSeek,
+}: {
+  current: number;
+  start: number;
+  end: number;
+  /** Event positions (absolute clip seconds); shown as icon markers. */
+  marks: EventMark[];
+  onSeek: (t: number) => void;
+}) {
+  const ref = React.useRef<HTMLDivElement>(null);
+  const [dragging, setDragging] = React.useState(false);
+  const span = Math.max(0.0001, end - start);
+  const pct = Math.min(100, Math.max(0, ((current - start) / span) * 100));
+  const pctOf = (t: number) => ((t - start) / span) * 100;
+
+  function seek(clientX: number) {
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (clientX - r.left) / r.width));
+    onSeek(start + frac * span);
+  }
+
   return (
-    <div className="flex items-center justify-between gap-3">
-      <dt className="text-muted-foreground">{label}</dt>
-      <dd className="font-mono tabular-nums text-foreground">{value}</dd>
+    <div
+      ref={ref}
+      onPointerDown={(e) => {
+        e.currentTarget.setPointerCapture(e.pointerId);
+        setDragging(true);
+        seek(e.clientX);
+      }}
+      onPointerMove={(e) => {
+        if (dragging) seek(e.clientX);
+      }}
+      onPointerUp={(e) => {
+        setDragging(false);
+        try {
+          e.currentTarget.releasePointerCapture(e.pointerId);
+        } catch {
+          /* not captured */
+        }
+      }}
+      role="slider"
+      aria-label="Seek"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(pct)}
+      className="group/seek relative flex h-4 cursor-pointer touch-none items-center select-none"
+    >
+      <div className="h-1 w-full overflow-hidden rounded-full bg-white/25">
+        <div className="h-full rounded-full bg-primary" style={{ width: `${pct}%` }} />
+      </div>
+
+      {/* Event markers — click to jump to the moment. */}
+      {marks.map((m, i) => {
+        const p = pctOf(m.at);
+        if (p < -0.5 || p > 100.5) return null;
+        const { Icon, tint } = eventIconFor(m.label);
+        return (
+          <button
+            type="button"
+            key={`${m.label}-${i}`}
+            title={`${m.label} · ${fmtClock(m.at)}`}
+            aria-label={`Jump to ${m.label}`}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              onSeek(m.at);
+            }}
+            className="absolute top-1/2 z-10 flex size-4 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/75 ring-1 ring-white/40 transition-transform hover:scale-125"
+            style={{ left: `${Math.min(100, Math.max(0, p))}%` }}
+          >
+            <Icon weight="fill" className={cn("size-2.5", tint)} />
+          </button>
+        );
+      })}
+
+      <span
+        className="pointer-events-none absolute size-3 -translate-x-1/2 rounded-full bg-white opacity-0 shadow transition-opacity group-hover/seek:opacity-100"
+        style={{ left: `${pct}%` }}
+      />
+    </div>
+  );
+}
+
+/**
+ * Valorant match context for the open clip — agent, map, mode, result and
+ * K/D/A. Renders nothing for clips cut outside a match (all fields null), so the
+ * details panel stays clean for non-match clips. Mirrors the card badges'
+ * artwork via the shared asset lookups.
+ */
+function ClipGameContext({ clip }: { clip: ClipRecord }) {
+  const assets = useValorantAssets();
+  const agent = assets.agentFor(clip);
+  const agentName = agent?.name ?? clip.agent ?? null;
+  const mapName = assets.mapFor(clip.map)?.name ?? mapNameFromPath(clip.map);
+  const hasResult = clip.won != null;
+  const hasKda =
+    clip.kills != null && clip.deaths != null && clip.assists != null;
+
+  if (!agentName && !mapName && !clip.mode && !hasResult) return null;
+
+  const sub = [mapName, clip.mode].filter(Boolean).join(" · ");
+
+  return (
+    <div className="flex flex-col gap-2">
+      <span className="text-[11px] font-semibold tracking-wide text-muted-foreground/70 uppercase">
+        Match
+      </span>
+      <div className="flex flex-col gap-3 rounded-lg border border-border/60 bg-card/40 p-3.5">
+        <div className="flex items-center gap-3">
+          {agent?.icon ? (
+            <img
+              src={agent.icon}
+              alt=""
+              className="size-10 shrink-0 rounded-md bg-black/30 object-cover"
+            />
+          ) : null}
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-semibold text-foreground">
+              {agentName ?? "Unknown agent"}
+            </div>
+            {sub ? (
+              <div className="truncate text-xs text-muted-foreground">{sub}</div>
+            ) : null}
+          </div>
+          {hasResult ? (
+            <span
+              className={cn(
+                "rounded-md px-2 py-0.5 text-[11px] font-bold text-white",
+                clip.won ? "bg-success/80" : "bg-destructive/80",
+              )}
+            >
+              {clip.won ? "WIN" : "LOSS"}
+            </span>
+          ) : null}
+        </div>
+
+        {hasKda ? (
+          <div className="flex items-center gap-2 border-t border-border/50 pt-3 text-xs text-muted-foreground">
+            <span className="font-mono tabular-nums">
+              <span className="font-semibold text-foreground">{clip.kills}</span>
+              {" / "}
+              <span className="font-semibold text-foreground">{clip.deaths}</span>
+              {" / "}
+              <span className="font-semibold text-foreground">{clip.assists}</span>
+            </span>
+            <span className="text-muted-foreground/70">KDA</span>
+            {clip.headshot_pct != null ? (
+              <span className="ml-auto">
+                <span className="font-mono font-semibold tabular-nums text-foreground">
+                  {Math.round(clip.headshot_pct)}%
+                </span>{" "}
+                <span className="text-muted-foreground/70">HS</span>
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
