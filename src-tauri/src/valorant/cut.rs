@@ -201,7 +201,9 @@ async fn run(input: &CutInput) -> Result<(), String> {
     let place_tol = PLACEMENT_TOL_SECS * TICKS_PER_SECOND;
 
     // Reconcile each event to a session PTS span and build its padded window.
-    let mut placed: Vec<(i64, i64, EventKind)> = Vec::new(); // (start_pts, end_pts, kind)
+    // (window_start, window_end, anchor_pts, kind) — anchor_pts is the event's
+    // actual moment (used for seek-bar markers), distinct from the padded window.
+    let mut placed: Vec<(i64, i64, i64, EventKind)> = Vec::new();
     let mut dropped = 0usize;
     for e in &events {
         // Reconcile the event's [first-action, last-action] span to PTS. A
@@ -226,7 +228,11 @@ async fn run(input: &CutInput) -> Result<(), String> {
         let t = timings.for_kind(e.kind);
         let (s, end) = reconcile::clip_window_span(start_pts, end_pts, t.before, t.after, fps);
         let end = end.min(s + max_len_pts);
-        placed.push((s, end, e.kind));
+        // Anchor the seek-bar marker at the event's actual moment (end_pts — the
+        // kill / last action), clamped into the window. Using the padded window
+        // start `s` instead would land every marker at the clip's 0:00 in-point.
+        let anchor = end_pts.clamp(s, end);
+        placed.push((s, end, anchor, e.kind));
     }
     if dropped > 0 {
         tracing::info!(
@@ -243,7 +249,7 @@ async fn run(input: &CutInput) -> Result<(), String> {
     // tol = the widest after-pad among enabled kinds so near events still fuse).
     let (_, max_after) = timings.max_pad(&toggles);
     let tol_pts = max_after.max(1) as i64 * fps as i64;
-    let windows: Vec<(i64, i64)> = placed.iter().map(|&(s, e, _)| (s, e)).collect();
+    let windows: Vec<(i64, i64)> = placed.iter().map(|&(s, e, _, _)| (s, e)).collect();
     let merged = reconcile::merge_windows_tol(windows, tol_pts);
 
     tracing::info!(
@@ -381,22 +387,22 @@ async fn fetch_match_details_retry(
 
 /// The strongest highlight kind whose anchor falls inside `[start, end]` (so the
 /// merged clip is tagged by its best moment, e.g. an Ace over a stray Kill).
-fn dominant_kind(placed: &[(i64, i64, EventKind)], start: i64, end: i64) -> Option<EventKind> {
+fn dominant_kind(placed: &[(i64, i64, i64, EventKind)], start: i64, end: i64) -> Option<EventKind> {
     placed
         .iter()
-        .filter(|&&(s, _, _)| s >= start - 1 && s <= end)
-        .map(|&(_, _, k)| k)
+        .filter(|&&(s, _, _, _)| s >= start - 1 && s <= end)
+        .map(|&(_, _, _, k)| k)
         .max_by_key(|k| kind_priority(*k))
 }
 
 /// Every distinct event kind anchored inside `[start, end]`, in time order — so
 /// a merged window lists its events as they happened (e.g. spike-defuse → kill).
 /// Deduplicated by label so repeated kinds (two kills) collapse to one tag.
-fn kinds_in_window(placed: &[(i64, i64, EventKind)], start: i64, end: i64) -> Vec<EventKind> {
+fn kinds_in_window(placed: &[(i64, i64, i64, EventKind)], start: i64, end: i64) -> Vec<EventKind> {
     let mut hits: Vec<(i64, EventKind)> = placed
         .iter()
-        .filter(|&&(s, _, _)| s >= start - 1 && s <= end)
-        .map(|&(s, _, k)| (s, k))
+        .filter(|&&(s, _, _, _)| s >= start - 1 && s <= end)
+        .map(|&(s, _, _, k)| (s, k))
         .collect();
     hits.sort_by_key(|&(s, _)| s);
     let mut out: Vec<EventKind> = Vec::new();
@@ -413,22 +419,24 @@ fn kinds_in_window(placed: &[(i64, i64, EventKind)], start: i64, end: i64) -> Ve
 /// this keeps every occurrence (two kills → two markers) so the bar shows where
 /// each moment actually happened.
 fn marks_in_window(
-    placed: &[(i64, i64, EventKind)],
+    placed: &[(i64, i64, i64, EventKind)],
     start: i64,
     end: i64,
     fps: i64,
 ) -> Vec<crate::library::db::EventMark> {
     let fps = fps.max(1);
+    // Position each marker at the event's anchor (its actual moment), not the
+    // padded window start — the offset is measured from the clip's start `start`.
     let mut hits: Vec<(i64, EventKind)> = placed
         .iter()
-        .filter(|&&(s, _, _)| s >= start - 1 && s <= end)
-        .map(|&(s, _, k)| (s, k))
+        .filter(|&&(s, _, _, _)| s >= start - 1 && s <= end)
+        .map(|&(_, _, anchor, k)| (anchor, k))
         .collect();
-    hits.sort_by_key(|&(s, _)| s);
+    hits.sort_by_key(|&(a, _)| a);
     hits.into_iter()
-        .map(|(s, k)| crate::library::db::EventMark {
+        .map(|(a, k)| crate::library::db::EventMark {
             label: k.label().to_string(),
-            at: ((s - start).max(0) as f64) / fps as f64,
+            at: ((a - start).max(0) as f64) / fps as f64,
         })
         .collect()
 }
