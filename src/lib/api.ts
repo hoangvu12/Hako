@@ -47,6 +47,27 @@ export interface ClipRecord {
   /** Sprite-sheet filmstrip (one JPEG, N tiles) for the editor scrubber. */
   filmstrip_path: string | null;
   created_unix_ms: number;
+
+  // --- Valorant game context (all nullable) -----------------------------
+  // Filled for clips cut from a match: auto-clips carry everything; manual F9
+  // saves carry agent/map/mode (win + K/D/A are unknowable mid-match). All null
+  // for clips saved outside a match and for clips predating this metadata.
+  /** Agent display name (e.g. "Jett"). */
+  agent: string | null;
+  /** Agent UUID (`characterId`) — pairs with `agent` for artwork lookup. */
+  agent_id: string | null;
+  /** Map asset path (e.g. "/Game/Maps/Ascent/Ascent"); prettify for display. */
+  map: string | null;
+  /** Game-mode display name (e.g. "Competitive", "Standard"). */
+  mode: string | null;
+  /** Match result when known (auto-clips): true = win, false = loss. */
+  won: boolean | null;
+  /** Match K/D/A totals (auto-clips only). */
+  kills: number | null;
+  deaths: number | null;
+  assists: number | null;
+  /** Headshot % over recorded damage, 0–100 (auto-clips only). */
+  headshot_pct: number | null;
 }
 
 /** Invoke the stub `recorder_status` command. */

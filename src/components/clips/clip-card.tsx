@@ -34,6 +34,10 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import type { ClipRecord } from "@/lib/api";
+import {
+  mapNameFromPath,
+  type ValorantAssets,
+} from "@/hooks/use-valorant-assets";
 
 function fmtDuration(secs: number): string {
   const s = Math.round(secs);
@@ -344,14 +348,73 @@ function ClipPreview({ clip }: { clip: ClipRecord }) {
   );
 }
 
+/**
+ * Game-context overlay on the thumbnail: agent portrait + name, map, and a W/L
+ * pill — whatever the clip carries. Pointer-events-none so it never blocks the
+ * card's click target; degrades to text (or nothing) when artwork/fields are
+ * absent (old clips, manual saves outside a match).
+ */
+function ClipBadges({
+  clip,
+  assets,
+}: {
+  clip: ClipRecord;
+  assets?: ValorantAssets;
+}) {
+  const agent = assets?.agentFor(clip);
+  const mapName = assets?.mapFor(clip.map)?.name ?? mapNameFromPath(clip.map);
+  const agentName = agent?.name ?? clip.agent ?? null;
+  const hasResult = clip.won != null;
+
+  if (!agentName && !mapName && !hasResult) return null;
+
+  return (
+    <div className="pointer-events-none absolute inset-x-2 top-2 z-20 flex items-start justify-between gap-2">
+      <div className="flex max-w-[80%] flex-wrap items-center gap-1.5">
+        {agentName ? (
+          <span className="flex items-center gap-1 rounded-full bg-black/55 py-0.5 pr-2 pl-0.5 text-[10px] font-semibold text-white backdrop-blur-sm">
+            {agent?.icon ? (
+              <img
+                src={agent.icon}
+                alt=""
+                className="size-4 rounded-full object-cover"
+              />
+            ) : (
+              <span className="size-4" />
+            )}
+            {agentName}
+          </span>
+        ) : null}
+        {mapName ? (
+          <span className="rounded-full bg-black/55 px-2 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm">
+            {mapName}
+          </span>
+        ) : null}
+      </div>
+      {hasResult ? (
+        <span
+          className={cn(
+            "rounded-full px-2 py-0.5 text-[10px] font-bold text-white backdrop-blur-sm",
+            clip.won ? "bg-success/80" : "bg-destructive/80"
+          )}
+        >
+          {clip.won ? "WIN" : "LOSS"}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 export function ClipCard({
   clip,
   onDelete,
   onRename,
+  assets,
 }: {
   clip: ClipRecord;
   onDelete: () => void;
   onRename: () => void;
+  assets?: ValorantAssets;
 }) {
   const [copied, setCopied] = React.useState(false);
   const trimmed = clip.event != null;
@@ -368,8 +431,11 @@ export function ClipCard({
 
   return (
     <div className="group flex flex-col overflow-hidden rounded-xl border border-border/60 bg-card shadow-sm transition-colors hover:border-border">
-      {/* Thumbnail / hover-preview */}
-      <ClipPreview clip={clip} />
+      {/* Thumbnail / hover-preview, with the game-context overlay on top */}
+      <div className="relative">
+        <ClipPreview clip={clip} />
+        <ClipBadges clip={clip} assets={assets} />
+      </div>
 
       {/* Meta */}
       <div className="flex flex-1 flex-col gap-1.5 p-3.5">

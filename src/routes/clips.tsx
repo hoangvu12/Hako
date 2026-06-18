@@ -1,21 +1,10 @@
 import * as React from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import {
-  Scissors,
-  CaretDown,
-  ArrowsDownUp,
-  MagnifyingGlass,
-} from "@phosphor-icons/react";
+import { FilmStrip } from "@phosphor-icons/react";
 
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { ClipCard } from "@/components/clips/clip-card";
+import { ClipsToolbar } from "@/components/clips/clips-toolbar";
+import { useClipFilters } from "@/components/clips/use-clip-filters";
 import {
   useClips,
   useDeleteClip,
@@ -23,22 +12,16 @@ import {
   useSaveClip,
 } from "@/hooks/use-library";
 import { useSettings } from "@/hooks/use-settings";
+import { useValorantAssets } from "@/hooks/use-valorant-assets";
 import type { ClipRecord } from "@/lib/api";
-
-type SortKey = "newest" | "oldest" | "largest";
-const SORTS: { key: SortKey; label: string }[] = [
-  { key: "newest", label: "Newest first" },
-  { key: "oldest", label: "Oldest first" },
-  { key: "largest", label: "Largest first" },
-];
 
 // Grid metrics (kept in sync with the row layout below). `GAP` mirrors the old
 // `gap-5`; `MIN_CARD` is the smallest comfortable card width before we drop a
-// column. `EST_ROW` is the first-paint row-height guess — the real heights are
-// measured per row, this only seeds scroll math before measurement lands.
+// column. The row heights are measured per row; these only seed scroll math.
 const GAP = 20;
 const MIN_CARD = 240;
-const EST_ROW = 280;
+const EST_CLIP_ROW = 280;
+const EST_HEADER_ROW = 44;
 
 /**
  * Responsive column count derived from the scroll container's *content* width
@@ -63,16 +46,33 @@ function useGridColumns(ref: React.RefObject<HTMLElement | null>): number {
   return cols;
 }
 
-function sortClips(clips: ClipRecord[], key: SortKey): ClipRecord[] {
-  const copy = [...clips];
-  switch (key) {
-    case "oldest":
-      return copy.sort((a, b) => a.created_unix_ms - b.created_unix_ms);
-    case "largest":
-      return copy.sort((a, b) => b.size_bytes - a.size_bytes);
-    default:
-      return copy.sort((a, b) => b.created_unix_ms - a.created_unix_ms);
+/** A flattened virtual row: either a date header or a row of up to `columns`
+ * clips. Flattening lets one virtualizer drive the whole album view. */
+type VirtualRow =
+  | { type: "header"; key: string; label: string; count: number }
+  | { type: "clips"; key: string; clips: ClipRecord[] };
+
+function flattenSections(
+  sections: { key: string; label: string; clips: ClipRecord[] }[],
+  columns: number
+): VirtualRow[] {
+  const rows: VirtualRow[] = [];
+  for (const sec of sections) {
+    rows.push({
+      type: "header",
+      key: `h:${sec.key}`,
+      label: sec.label,
+      count: sec.clips.length,
+    });
+    for (let i = 0; i < sec.clips.length; i += columns) {
+      rows.push({
+        type: "clips",
+        key: `${sec.key}:${i}`,
+        clips: sec.clips.slice(i, i + columns),
+      });
+    }
   }
+  return rows;
 }
 
 export default function ClipsPage() {
@@ -82,92 +82,59 @@ export default function ClipsPage() {
   const save = useSaveClip();
   const del = useDeleteClip();
   const rename = useRenameClip();
+  const assets = useValorantAssets();
 
-  const [query, setQuery] = React.useState("");
-  const [sort, setSort] = React.useState<SortKey>("newest");
+  const allClips = React.useMemo(() => clips ?? [], [clips]);
+  const { filters, facets, sections, total, activeCount, update, toggle, reset } =
+    useClipFilters(allClips);
 
-  const visible = React.useMemo(() => {
-    const list = (clips ?? []).filter((c) =>
-      c.title.toLowerCase().includes(query.trim().toLowerCase())
-    );
-    return sortClips(list, sort);
-  }, [clips, query, sort]);
-
-  // Virtualized grid: render the clips as rows of `columns` cards and only mount
-  // the rows near the viewport. With hover-autoplay <video> previews per card,
-  // mounting an unbounded grid was the real cost as libraries grow — this caps
-  // the live DOM (and video elements) to a handful of rows.
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const columns = useGridColumns(scrollRef);
-  const rowCount = Math.ceil(visible.length / columns);
+
+  const rows = React.useMemo(
+    () => flattenSections(sections, columns),
+    [sections, columns]
+  );
 
   const rowVirtualizer = useVirtualizer({
-    count: rowCount,
+    count: rows.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => EST_ROW,
-    overscan: 3,
+    estimateSize: (i) =>
+      rows[i]?.type === "header" ? EST_HEADER_ROW : EST_CLIP_ROW,
+    overscan: 4,
+    getItemKey: (i) => rows[i]?.key ?? i,
   });
 
-  // A column-count change reflows every row to a new height; drop the cached
-  // measurements so the virtualizer re-measures instead of trusting stale sizes.
+  // A column-count or filter change reflows every row to a new height; drop the
+  // cached measurements so the virtualizer re-measures instead of trusting
+  // stale sizes.
   React.useEffect(() => {
     rowVirtualizer.measure();
-  }, [columns, rowVirtualizer]);
+  }, [columns, rows, rowVirtualizer]);
 
   function handleRename(clip: ClipRecord) {
     const next = window.prompt("Rename clip", clip.title);
     if (next && next !== clip.title) rename.mutate({ id: clip.id, title: next });
   }
 
+  const noClipsAtAll = !isLoading && allClips.length === 0;
+  const noMatches = !isLoading && allClips.length > 0 && total === 0;
+
   return (
     <div className="flex h-full flex-col">
-      {/* Toolbar */}
-      <div className="flex h-14 shrink-0 items-center justify-between border-b border-panel-border bg-panel px-6">
-        <Button
-          size="sm"
-          onClick={() => save.mutate(undefined)}
-          disabled={save.isPending}
-        >
-          <Scissors weight="bold" />
-          {save.isPending ? "Saving…" : `Save last ${clipSeconds}s`}
-        </Button>
-
-        <div className="flex items-center gap-4">
-          <span className="text-sm font-medium text-muted-foreground">
-            {visible.length} {visible.length === 1 ? "Clip" : "Clips"}
-          </span>
-
-          <DropdownMenu>
-            <DropdownMenuTrigger className="flex items-center gap-1 text-sm text-muted-foreground outline-none transition-colors hover:text-foreground">
-              <ArrowsDownUp className="size-4" />
-              <CaretDown className="size-3" />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {SORTS.map((s) => (
-                <DropdownMenuItem
-                  key={s.key}
-                  onSelect={() => setSort(s.key)}
-                  className={
-                    sort === s.key ? "text-foreground" : "text-muted-foreground"
-                  }
-                >
-                  {s.label}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          <div className="relative">
-            <MagnifyingGlass className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search"
-              className="h-8 w-48 rounded-full border-border/80 bg-field pl-9 placeholder:text-muted-foreground/70"
-            />
-          </div>
-        </div>
-      </div>
+      <ClipsToolbar
+        clipSeconds={clipSeconds}
+        onSave={() => save.mutate(undefined)}
+        saving={save.isPending}
+        total={total}
+        filters={filters}
+        facets={facets}
+        activeCount={activeCount}
+        update={update}
+        toggle={toggle}
+        reset={reset}
+        assets={assets}
+      />
 
       {save.error ? (
         <p className="shrink-0 bg-panel px-6 pb-2 text-sm text-destructive">
@@ -175,17 +142,31 @@ export default function ClipsPage() {
         </p>
       ) : null}
 
-      {/* Grid (virtualized) */}
+      {/* Grid (virtualized, grouped by date) */}
       <div
         ref={scrollRef}
         className="scrollbar-thin min-h-0 flex-1 overflow-y-auto p-6"
       >
         {isLoading ? (
           <p className="text-sm text-muted-foreground">Loading…</p>
-        ) : (clips?.length ?? 0) === 0 ? (
+        ) : noClipsAtAll ? (
           <div className="rounded-xl border border-dashed border-border/60 p-10 text-center text-sm text-muted-foreground">
-            No clips yet. Press <kbd>F9</kbd> in-game or hit “Save last 30s” to
-            capture a highlight.
+            No clips yet. Press <kbd>F9</kbd> in-game or hit “Save last{" "}
+            {clipSeconds}s” to capture a highlight.
+          </div>
+        ) : noMatches ? (
+          <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-border/60 p-10 text-center">
+            <FilmStrip className="size-8 text-muted-foreground/60" />
+            <p className="text-sm text-muted-foreground">
+              No clips match your filters.
+            </p>
+            <button
+              type="button"
+              onClick={reset}
+              className="text-sm font-medium text-primary transition-opacity hover:opacity-80"
+            >
+              Clear filters
+            </button>
           </div>
         ) : (
           <div
@@ -196,31 +177,43 @@ export default function ClipsPage() {
             }}
           >
             {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-              const start = virtualRow.index * columns;
-              const rowClips = visible.slice(start, start + columns);
+              const row = rows[virtualRow.index];
+              if (!row) return null;
               return (
                 <div
                   key={virtualRow.key}
                   data-index={virtualRow.index}
                   ref={rowVirtualizer.measureElement}
-                  // Static layout lives in the class (gap-5 / pb-5 == GAP); only
-                  // the genuinely per-row values (vertical offset + column track
-                  // count) stay inline. The trailing pb-5 keeps absolutely-
-                  // positioned rows from butting together with no spacing.
-                  className="absolute top-0 left-0 grid w-full gap-5 pb-5"
-                  style={{
-                    transform: `translateY(${virtualRow.start}px)`,
-                    gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-                  }}
+                  className="absolute top-0 left-0 w-full"
+                  style={{ transform: `translateY(${virtualRow.start}px)` }}
                 >
-                  {rowClips.map((clip) => (
-                    <ClipCard
-                      key={clip.id}
-                      clip={clip}
-                      onDelete={() => del.mutate(clip.id)}
-                      onRename={() => handleRename(clip)}
-                    />
-                  ))}
+                  {row.type === "header" ? (
+                    <div className="flex items-baseline gap-2 pb-3 pt-1">
+                      <h2 className="text-sm font-semibold text-foreground">
+                        {row.label}
+                      </h2>
+                      <span className="text-xs font-medium text-muted-foreground">
+                        {row.count} {row.count === 1 ? "clip" : "clips"}
+                      </span>
+                    </div>
+                  ) : (
+                    <div
+                      className="grid gap-5 pb-5"
+                      style={{
+                        gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+                      }}
+                    >
+                      {row.clips.map((clip) => (
+                        <ClipCard
+                          key={clip.id}
+                          clip={clip}
+                          assets={assets}
+                          onDelete={() => del.mutate(clip.id)}
+                          onRename={() => handleRename(clip)}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
               );
             })}
