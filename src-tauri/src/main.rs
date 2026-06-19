@@ -16,6 +16,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 mod commands;
 mod events;
 mod media;
+mod overlay;
 mod settings;
 
 // Performance-critical capture/encode pipeline.
@@ -47,7 +48,9 @@ fn main() {
                         | tauri_plugin_window_state::StateFlags::POSITION
                         | tauri_plugin_window_state::StateFlags::MAXIMIZED,
                 )
-                .with_denylist(&["updater"])
+                // The overlay's geometry tracks the game window at runtime, so
+                // it must never be persisted/restored either.
+                .with_denylist(&["updater", "overlay"])
                 .build(),
         )
         // Auto-update: the splash window checks GitHub Releases and installs a
@@ -85,6 +88,7 @@ fn main() {
             commands::get_settings,
             commands::update_settings,
             commands::valorant_status,
+            commands::overlay_test,
             finish_to_main
         ])
         .setup(|app| {
@@ -118,6 +122,9 @@ fn main() {
             // auto-cut highlight clips on match end (Mode B). Degrades to manual
             // clips if Riot/capture aren't available.
             valorant::orchestrator::spawn(app.handle().clone());
+            // In-game overlay: warn on the overlay when the clips drive runs low
+            // (edge-triggered, only while capturing).
+            overlay::spawn_disk_monitor(app.handle().clone());
             // Safety net for the update splash: if the `updater` window never
             // calls `finish_to_main` (e.g. its webview failed to load entirely),
             // reveal the main window anyway after a generous delay so the app can

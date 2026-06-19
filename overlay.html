@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hako Overlay</title>
+    <!-- Transparent, click-through canvas. Unlike the main/updater entries this
+         must NEVER paint an opaque background (it composites over the game), and
+         the whole surface ignores pointer events so clicks fall through to the
+         game behind it. Toasts re-enable nothing — they're display-only. -->
+    <style>
+      html,
+      body,
+      #overlay-root {
+        margin: 0;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+        user-select: none;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="overlay-root"></div>
+    <script type="module" src="/src/overlay/main.tsx"></script>
+  </body>
+</html>

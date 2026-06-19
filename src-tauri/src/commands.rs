@@ -283,25 +283,38 @@ pub fn start_capture_with(
         app.clone(), hwnd, fps, adapter_index, buffer_secs, disk_buffer_dir, audio_cfg, enc_cfg,
     )?;
     *guard = Some(running);
+    drop(guard);
+    // Show + position the in-game overlay over the captured window and toast
+    // "Now recording" (toasts only appear while capturing).
+    crate::overlay::on_capture_started(app, hwnd);
     Ok(())
 }
 
-/// Stop the running capture (no-op if none).
+/// Stop the running capture (no-op if none). Delegates to [`stop_capture_with`]
+/// so the UI-stop path runs the same overlay teardown as the orchestrator's.
 #[tauri::command]
-pub fn stop_capture(state: State<CaptureState>) -> Result<(), String> {
-    if let Some(mut running) = state.0.lock().map_err(|_| "capture state poisoned")?.take() {
-        running.stop();
-    }
+pub fn stop_capture(app: AppHandle) -> Result<(), String> {
+    stop_capture_with(&app);
     Ok(())
 }
 
 /// Stop the running capture from a plain `AppHandle` (no `State` extractor) —
-/// the orchestrator's auto-stop when the game exits. No-op if none.
+/// the orchestrator's auto-stop when the game exits, and the `stop_capture`
+/// command. No-op if none. Toasts "Recording stopped" and hides the overlay
+/// (on a short delay) when a capture was actually running.
 pub fn stop_capture_with(app: &AppHandle) {
-    if let Ok(mut guard) = app.state::<CaptureState>().0.lock() {
-        if let Some(mut running) = guard.take() {
-            running.stop();
-        }
+    let was_running = match app.state::<CaptureState>().0.lock() {
+        Ok(mut guard) => match guard.take() {
+            Some(mut running) => {
+                running.stop();
+                true
+            }
+            None => false,
+        },
+        Err(_) => false,
+    };
+    if was_running {
+        crate::overlay::on_capture_stopped(app);
     }
 }
 
@@ -393,6 +406,9 @@ pub fn save_clip_full(
     };
 
     let _ = app.emit(crate::events::CLIP_CREATED, &record);
+    // In-game overlay toast (manual F9 / UI saves only — auto-clips use the
+    // separate `finalize_auto_clip` path and don't toast).
+    crate::overlay::on_clip_saved(app, seconds);
     tracing::info!("saved clip ({seconds}s) → {}", record.path);
     Ok(record)
 }
@@ -813,6 +829,7 @@ pub fn update_settings(
     let path = settings_path(&app)?;
     next.save(&path)?;
     let new_hotkey = next.save_hotkey.clone();
+    let overlay_enabled = next.overlay_enabled;
     let (old_hotkey, capture_changed) = {
         let mut guard = settings.0.lock().map_err(|_| "settings poisoned")?;
         let prev_hotkey = guard.save_hotkey.clone();
@@ -830,6 +847,12 @@ pub fn update_settings(
     // changes apply when the next match's capture starts.
     if capture_changed {
         restart_capture_for_config_change(&app);
+    }
+    // Keep a live overlay in sync: re-push the corner placement, and clear the
+    // overlay immediately if the master switch was just turned off.
+    crate::overlay::push_config(&app);
+    if !overlay_enabled {
+        crate::overlay::hide_now(&app);
     }
     Ok(())
 }
@@ -870,6 +893,31 @@ fn restart_capture_for_config_change(app: &AppHandle) {
 #[tauri::command]
 pub async fn valorant_status() -> crate::valorant::service::ValorantStatus {
     crate::valorant::service::probe_status().await
+}
+
+/// Fire a sample in-game overlay toast (Settings → "Test overlay"). Force-shows
+/// the overlay positioned over Valorant — or the primary monitor when the game
+/// isn't running — regardless of capture state, so placement, transparency, and
+/// click-through can be verified without launching a match.
+#[tauri::command]
+pub fn overlay_test(app: AppHandle) {
+    use crate::overlay::{notify, show_overlay_over_game, OverlayKind, OverlayNotice, DEFAULT_TTL_MS};
+    show_overlay_over_game(&app);
+    notify(
+        &app,
+        OverlayNotice {
+            kind: OverlayKind::ClipSaved,
+            title: "Clip saved".into(),
+            subtitle: Some("Test overlay · last 30s".into()),
+            ttl_ms: DEFAULT_TTL_MS,
+        },
+    );
+}
+
+/// The directory clips are written to (`<Videos>/Hako`), for the overlay's
+/// disk-space monitor. `None` if the Videos dir can't be resolved.
+pub fn storage_root(app: &AppHandle) -> Option<PathBuf> {
+    clip_dir(app).ok()
 }
 
 /// `<Videos>/Hako`, created if needed (clip + thumbnail storage root).

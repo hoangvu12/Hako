@@ -33,13 +33,15 @@ export default defineConfig({
     // No sourcemaps in the shipped bundle (they're dead weight inside WebView2).
     sourcemap: false,
     rollupOptions: {
-      // Two windows, two entry HTMLs: the main app (index.html) and the
-      // lightweight auto-update splash (updater.html). Keeping the splash a
-      // separate entry means it doesn't pull in the router/query/app bundle, so
-      // it paints instantly on launch.
+      // Three windows, three entry HTMLs: the main app (index.html), the
+      // lightweight auto-update splash (updater.html), and the transparent
+      // in-game overlay (overlay.html). Each splash/overlay is a separate entry
+      // so it doesn't pull in the router/query/app bundle — it paints instantly
+      // and (for the overlay) never inherits an opaque background.
       input: {
         main: path.resolve(__dirname, "index.html"),
         updater: path.resolve(__dirname, "updater.html"),
+        overlay: path.resolve(__dirname, "overlay.html"),
       },
     },
   },

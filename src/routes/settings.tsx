@@ -22,11 +22,13 @@ import {
   Handshake,
   Bomb,
   Wrench,
+  Bell,
   type Icon,
 } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import {
@@ -43,6 +45,7 @@ import { useSettings, useUpdateSettings } from "@/hooks/use-settings";
 import {
   effectiveAudioConfig,
   getGpuInfo,
+  overlayTest,
   type AudioConfig,
   type AutoCaptureMode,
   type EventToggles,
@@ -56,6 +59,7 @@ type SectionKey =
   | "auto"
   | "capture"
   | "storage"
+  | "overlay"
   | "status";
 
 const SECTION_KEYS = new Set<SectionKey>([
@@ -65,6 +69,7 @@ const SECTION_KEYS = new Set<SectionKey>([
   "auto",
   "capture",
   "storage",
+  "overlay",
   "status",
 ]);
 const isSectionKey = (v: unknown): v is SectionKey =>
@@ -88,6 +93,7 @@ const NAV: {
     group: "System",
     items: [
       { key: "storage", label: "Storage", icon: HardDrives },
+      { key: "overlay", label: "Overlay", icon: Bell },
       { key: "status", label: "Status", icon: Pulse },
     ],
   },
@@ -181,6 +187,15 @@ const RESOLUTIONS: { value: string; label: string }[] = [
   { value: "1080p", label: "Full HD (1080p)" },
   { value: "1440p", label: "QHD (1440p)" },
   { value: "2160p", label: "UHD 4K (2160p)" },
+];
+
+// Corner placements for the in-game overlay toast stack (mirrors Rust
+// `overlay_position`).
+const OVERLAY_POSITIONS: { value: Settings["overlay_position"]; label: string }[] = [
+  { value: "top_left", label: "Top left" },
+  { value: "top_right", label: "Top right" },
+  { value: "bottom_left", label: "Bottom left" },
+  { value: "bottom_right", label: "Bottom right" },
 ];
 
 const FPS_OPTIONS = [24, 30, 60, 120, 144, 240];
@@ -974,6 +989,103 @@ function SettingsPage() {
                   />
                 </Row>
               </Panel>
+            </>
+          )}
+
+          {active === "overlay" && (
+            <>
+              <SectionHero
+                icon={Bell}
+                title="Overlay"
+                subtitle="In-game toasts for capture state, saved clips, and low disk space."
+              />
+              <Panel title="In-game overlay">
+                <Row
+                  label="Show overlay"
+                  hint="Pop toasts over the game while recording. Off hides them entirely."
+                >
+                  <Switch
+                    checked={draft.overlay_enabled}
+                    onCheckedChange={(v) => set("overlay_enabled", v)}
+                  />
+                </Row>
+                <Row
+                  label="Position"
+                  hint="Which corner the toasts stack in. Applies the next time the overlay shows."
+                >
+                  <Select
+                    value={draft.overlay_position}
+                    onValueChange={(v) =>
+                      set("overlay_position", v as Settings["overlay_position"])
+                    }
+                    disabled={!draft.overlay_enabled}
+                  >
+                    <SelectTrigger size="sm" className="w-36">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {OVERLAY_POSITIONS.map((p) => (
+                        <SelectItem key={p.value} value={p.value}>
+                          {p.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Row>
+                <Row
+                  label="Test overlay"
+                  hint="Fire a sample toast over Valorant, or your primary screen if it isn't running."
+                >
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      void overlayTest();
+                    }}
+                  >
+                    Test overlay
+                  </Button>
+                </Row>
+              </Panel>
+
+              <Panel title="Notifications">
+                <Row
+                  label="Recording started & stopped"
+                  hint="“Now recording” when capture starts, “Recording stopped” when it ends."
+                >
+                  <Switch
+                    checked={draft.overlay_on_capture_state}
+                    disabled={!draft.overlay_enabled}
+                    onCheckedChange={(v) => set("overlay_on_capture_state", v)}
+                  />
+                </Row>
+                <Row
+                  label="Clip saved"
+                  hint="When you save a clip with the hotkey or the save button."
+                >
+                  <Switch
+                    checked={draft.overlay_on_clip_saved}
+                    disabled={!draft.overlay_enabled}
+                    onCheckedChange={(v) => set("overlay_on_clip_saved", v)}
+                  />
+                </Row>
+                <Row
+                  label="Storage almost full"
+                  hint="When the clips drive drops below 5 GB free."
+                >
+                  <Switch
+                    checked={draft.overlay_on_disk_low}
+                    disabled={!draft.overlay_enabled}
+                    onCheckedChange={(v) => set("overlay_on_disk_low", v)}
+                  />
+                </Row>
+              </Panel>
+
+              <p className="px-1 text-xs text-muted-foreground">
+                Overlays show in Borderless and most Fullscreen modes. If they
+                don't appear in exclusive fullscreen, switch Valorant to
+                Borderless.
+              </p>
             </>
           )}
 

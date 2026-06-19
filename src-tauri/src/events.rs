@@ -29,3 +29,12 @@ pub const BUFFER_STATS: &str = "buffer-stats";
 
 /// Non-fatal recorder error to surface in the UI. Payload: TBD.
 pub const RECORDER_ERROR: &str = "recorder-error";
+
+/// In-game overlay toast, emitted only to the `overlay` window.
+/// Payload: [`crate::overlay::OverlayNotice`].
+pub const OVERLAY_NOTIFY: &str = "overlay-notify";
+
+/// Overlay window configuration (corner placement), emitted to the `overlay`
+/// window when it's shown and when settings change.
+/// Payload: [`crate::overlay::OverlayConfig`].
+pub const OVERLAY_CONFIG: &str = "overlay-config";

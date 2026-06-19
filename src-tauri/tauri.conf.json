@@ -39,6 +39,23 @@
         "skipTaskbar": true,
         "alwaysOnTop": true,
         "visible": true
+      },
+      {
+        "label": "overlay",
+        "url": "overlay.html",
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "focus": false,
+        "shadow": false,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "closable": false,
+        "visible": false,
+        "width": 400,
+        "height": 200
       }
     ],
     "security": {

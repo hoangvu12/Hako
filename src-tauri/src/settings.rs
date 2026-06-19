@@ -97,6 +97,19 @@ pub struct Settings {
     /// NVENC/QSV) is implemented; persisted so the dropdown round-trips and a
     /// future `cpu` (software x264/x265) path can slot in without a migration.
     pub video_encoder: String,
+    /// Master switch for the in-game overlay toasts. When false, nothing is ever
+    /// shown over the game (the per-trigger toggles below are then moot).
+    pub overlay_enabled: bool,
+    /// Per-trigger toggles, consulted only when `overlay_enabled`.
+    /// "Now recording" / "Recording stopped" on capture start/stop.
+    pub overlay_on_capture_state: bool,
+    /// "Clip saved" toast on a manual F9 / UI save.
+    pub overlay_on_clip_saved: bool,
+    /// "Storage almost full" toast when the clips drive runs low.
+    pub overlay_on_disk_low: bool,
+    /// Corner the toast stack sits in over the game:
+    /// `top_left` | `top_right` | `bottom_left` | `bottom_right`.
+    pub overlay_position: String,
 }
 
 impl Default for Settings {
@@ -123,6 +136,11 @@ impl Default for Settings {
             resolution: "native".into(),
             gpu_adapter: -1,
             video_encoder: "gpu".into(),
+            overlay_enabled: true,
+            overlay_on_capture_state: true,
+            overlay_on_clip_saved: true,
+            overlay_on_disk_low: true,
+            overlay_position: "top_right".into(),
         }
     }
 }
