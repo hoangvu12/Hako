@@ -182,6 +182,20 @@
     border-color: var(--border);
     outline-color: color-mix(in oklch, var(--ring) 50%, transparent);
   }
+  /* Respect the OS "reduce motion" / "disable animations" accessibility setting
+   * (Windows: Settings → Accessibility → Visual effects → Animation effects).
+   * Neutralizes every CSS animation/transition app-wide — spinners settle to a
+   * static frame, fades/slides become instant — without touching layout. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
   body {
     background-color: var(--background);
     color: var(--foreground);
