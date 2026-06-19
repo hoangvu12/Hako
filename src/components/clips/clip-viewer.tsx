@@ -1218,7 +1218,11 @@ const AudioSettingsPopover = React.memo(function AudioSettingsPopover({
                     </button>
                     <Slider
                       min={0}
-                      max={100}
+                      // 200% = +6 dB boost. gain (volume/100) is unclamped in
+                      // both preview (Web Audio GainNode) and export
+                      // (`remux_with_tracks`), so a stem can be amplified, not
+                      // just attenuated; >100% may clip if the stem is already hot.
+                      max={200}
                       value={[c.volume]}
                       onValueChange={([v]) => onVolume(s.index, v)}
                       disabled={!audible}
