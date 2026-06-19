@@ -448,7 +448,7 @@ function ViewerStage({
   }, [stems, ctlOf, soloActive]);
   // Top-bar mute/volume is the monitor level (preview-only; not in the export mix).
   const masterMonitorGain = muted ? 0 : volume;
-  const { active: liveMix } = useTrackMixer({
+  const { active: liveMix, decoding: mixDecoding } = useTrackMixer({
     clipId: clip.id,
     fileSize: clip.size_bytes,
     stems,
@@ -848,7 +848,7 @@ function ViewerStage({
                 onToggleAudio={toggleAudio}
                 hasStems={hasStems}
                 stems={stems}
-                live={liveMix}
+                decoding={mixDecoding}
                 ctlOf={ctlOf}
                 soloActive={soloActive}
                 onMute={onStemMute}
@@ -1074,7 +1074,7 @@ const AudioSettingsPopover = React.memo(function AudioSettingsPopover({
   onToggleAudio,
   hasStems,
   stems,
-  live,
+  decoding,
   ctlOf,
   soloActive,
   onMute,
@@ -1085,8 +1085,8 @@ const AudioSettingsPopover = React.memo(function AudioSettingsPopover({
   onToggleAudio: () => void;
   hasStems: boolean;
   stems: AudioTrackInfo[];
-  /** Whether changes are audible live in preview (else export-only fallback). */
-  live: boolean;
+  /** Decoding the stems for the live preview mix; controls aren't audible yet. */
+  decoding: boolean;
   ctlOf: (idx: number) => TrackCtl;
   soloActive: boolean;
   onMute: (idx: number) => void;
@@ -1152,11 +1152,24 @@ const AudioSettingsPopover = React.memo(function AudioSettingsPopover({
           <div className="border-t border-panel-border px-4 py-3">
             <div className="mb-2.5 flex items-center gap-2 text-xs font-medium text-muted-foreground">
               Tracks
-              <span className="font-normal text-muted-foreground/70">
-                {live ? "· mix live, saved on export" : "· mix what you export"}
-              </span>
+              {decoding ? (
+                <span className="flex items-center gap-1.5 font-normal text-muted-foreground/70">
+                  <CircleNotch weight="bold" className="size-3 animate-spin" />
+                  Decoding…
+                </span>
+              ) : null}
             </div>
-            <div className="flex flex-col gap-2.5">
+            <div
+              className={cn(
+                "flex flex-col gap-2.5",
+                // While decoding, the per-stem controls can't be *heard* yet
+                // (native master audio plays meanwhile) — blur + dim them so it
+                // reads as "preparing," not "broken." Snap it on/off: animating
+                // the `filter` repaints every frame and stutters.
+                decoding && "pointer-events-none select-none opacity-50 blur-[2px]",
+              )}
+              aria-busy={decoding}
+            >
               {stems.map((s) => {
                 const c = ctlOf(s.index);
                 const audible = soloActive ? c.solo : !c.muted;

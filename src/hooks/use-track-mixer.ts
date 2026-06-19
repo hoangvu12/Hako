@@ -114,8 +114,13 @@ export function useTrackMixer({
   videoRef,
   stemGains,
   masterGain,
-}: UseTrackMixerArgs): { active: boolean } {
+}: UseTrackMixerArgs): { active: boolean; decoding: boolean } {
   const [active, setActive] = React.useState(false);
+  // True while a stems clip's decode is in flight (before live mixing engages),
+  // so the UI can show a "preparing" state instead of silently-inert controls.
+  // Distinct from `!active`, which also covers the no-stems / decode-failed
+  // fallback where the native <video> audio is the (final) answer, not a wait.
+  const [decoding, setDecoding] = React.useState(false);
 
   const graphRef = React.useRef<Graph | null>(null);
   const sourcesRef = React.useRef<AudioBufferSourceNode[]>([]);
@@ -187,11 +192,13 @@ export function useTrackMixer({
   React.useEffect(() => {
     if (!hasStems) {
       setActive(false);
+      setDecoding(false);
       return;
     }
     let cancelled = false;
     let input: Input | null = null;
     let ctx: AudioContext | null = null;
+    setDecoding(true);
 
     (async () => {
       try {
@@ -269,6 +276,10 @@ export function useTrackMixer({
         console.warn("[track-mixer] live decode failed; keeping native audio", err);
         if (ctx) ctx.close().catch(() => {});
         ctx = null;
+      } finally {
+        // Settled (engaged, fell back, or early-returned). A cancelled run is
+        // mid-cleanup — leave the flag to the cleanup / next run to avoid a flash.
+        if (!cancelled) setDecoding(false);
       }
     })();
 
@@ -357,5 +368,5 @@ export function useTrackMixer({
     };
   }, [active, videoRef, resync, stopSources]);
 
-  return { active };
+  return { active, decoding };
 }
