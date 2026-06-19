@@ -117,7 +117,7 @@ fn main() {
                 .lock()
                 .map(|s| s.save_hotkey.clone())
                 .unwrap_or_else(|_| "F9".into());
-            set_clip_hotkey(app.handle(), None, &accel);
+            set_clip_hotkey(app.handle(), &accel);
             // Live Valorant detection: poll presence, record full matches, and
             // auto-cut highlight clips on match end (Mode B). Degrades to manual
             // clips if Riot/capture aren't available.
@@ -314,19 +314,31 @@ fn init_settings(app: &tauri::AppHandle) -> commands::SettingsState {
     commands::SettingsState(std::sync::Mutex::new(settings))
 }
 
-/// (Re-)register the global save-clip shortcut on the accelerator `accel`,
-/// unregistering `old` first when replacing an existing binding. `accel` is a
-/// `global-hotkey` accelerator string (e.g. `F9`, `Alt+F7`). Registration failure
-/// is logged, not fatal (e.g. another app already owns the key, or the string is
-/// invalid). The save runs on its own thread so the shortcut dispatcher is never
-/// blocked by mux IO, and the clip length is read live from settings each press
-/// (so the CLIPS duration dropdown takes effect without re-registering).
-pub(crate) fn set_clip_hotkey(app: &tauri::AppHandle, old: Option<&str>, accel: &str) {
+/// (Re-)register the global save-clip shortcut on the accelerator `accel`.
+/// `accel` is a `global-hotkey` accelerator string (e.g. `F9`, `Alt+F7`).
+/// Registration failure is logged, not fatal (e.g. another app already owns the
+/// key, or the string is invalid). The save runs on its own thread so the
+/// shortcut dispatcher is never blocked by mux IO, and the clip length is read
+/// live from settings each press (so the CLIPS duration dropdown takes effect
+/// without re-registering).
+///
+/// We own exactly one global shortcut, so every (re)bind first clears ALL prior
+/// registrations with `unregister_all` rather than a targeted `unregister(old)`.
+/// This matters on Windows: `global-hotkey`'s per-key `unregister` drops the
+/// plugin's handler-map entry only *after* the OS `UnregisterHotKey` succeeds, so
+/// a flaky OS unregister leaves the old key's handler live in the map and it
+/// keeps firing — the rebind silently "doesn't take" (old key still clips, and
+/// you can't bind back to it). `unregister_all` `mem::take`s the handler map
+/// before the OS call, so the old accelerator can never dispatch again even if
+/// the OS call hiccups.
+pub(crate) fn set_clip_hotkey(app: &tauri::AppHandle, accel: &str) {
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
     let gs = app.global_shortcut();
-    if let Some(old) = old {
-        let _ = gs.unregister(old); // silent if it wasn't registered
+    // Clear any previous binding first. Best-effort, but log failures — a stale
+    // registration outliving its rebind is exactly the bug this guards against.
+    if let Err(e) = gs.unregister_all() {
+        tracing::warn!("could not clear previous clip hotkey(s): {e}");
     }
 
     let handle = app.clone();

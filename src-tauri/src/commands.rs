@@ -838,7 +838,7 @@ pub fn update_settings(
         (prev_hotkey, capture_changed)
     };
     if old_hotkey != new_hotkey {
-        crate::set_clip_hotkey(&app, Some(&old_hotkey), &new_hotkey);
+        crate::set_clip_hotkey(&app, &new_hotkey);
     }
     // A running capture snapshots its fps/buffer/codec/audio config at start, so
     // a change (e.g. enabling the microphone) wouldn't apply to the live buffer.
