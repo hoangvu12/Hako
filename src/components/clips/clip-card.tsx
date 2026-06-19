@@ -77,6 +77,11 @@ function ClipPreview({ clip }: { clip: ClipRecord }) {
   const hoverTimer = React.useRef<number | null>(null);
 
   const [active, setActive] = React.useState(false); // hovered → video mounted
+  // Cursor over the card → mount the hover controls. Kept separate from `active`
+  // (which gates the heavier <video>): the controls appear instantly, while the
+  // video still waits out the dwell. Mounting them only on hover keeps their
+  // Phosphor icon trees off every card's scroll-mount path.
+  const [hovered, setHovered] = React.useState(false);
   const [muted, setMuted] = React.useState(true);
   const [playing, setPlaying] = React.useState(false);
   const [fullscreen, setFullscreen] = React.useState(false);
@@ -117,6 +122,7 @@ function ClipPreview({ clip }: { clip: ClipRecord }) {
   }, []);
 
   function handleEnter() {
+    setHovered(true);
     // Arm the dwell timer; the video only mounts (and autoplays) if the cursor
     // is still here after HOVER_PLAY_DELAY_MS — so scrolling past does nothing.
     if (hoverTimer.current != null) window.clearTimeout(hoverTimer.current);
@@ -126,6 +132,7 @@ function ClipPreview({ clip }: { clip: ClipRecord }) {
     }, HOVER_PLAY_DELAY_MS);
   }
   function handleLeave() {
+    setHovered(false);
     if (hoverTimer.current != null) {
       window.clearTimeout(hoverTimer.current);
       hoverTimer.current = null;
@@ -198,7 +205,9 @@ function ClipPreview({ clip }: { clip: ClipRecord }) {
         <img
           src={poster}
           alt={clip.title}
-          className="size-full object-cover opacity-90 transition-all duration-300 group-hover:scale-[1.02] group-hover:opacity-100"
+          decoding="async"
+          draggable={false}
+          className="size-full object-cover opacity-90 transition-[transform,opacity] duration-300 group-hover:scale-[1.02] group-hover:opacity-100"
           onError={(e) => {
             (e.currentTarget as HTMLImageElement).style.display = "none";
           }}
@@ -243,8 +252,9 @@ function ClipPreview({ clip }: { clip: ClipRecord }) {
         />
       ) : null}
 
-      {/* Hover play hint (only before the video starts) */}
-      {!fullscreen && !playing ? (
+      {/* Hover play hint (only before the video starts) — mounted only while
+          hovered so its icon stays off the scroll-mount path. */}
+      {hovered && !fullscreen && !playing ? (
         <span className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center opacity-0 transition-opacity group-hover/media:opacity-100">
           <span className="flex size-11 items-center justify-center rounded-full bg-black/55 backdrop-blur-sm">
             <Play weight="fill" className="size-5 text-white" />
@@ -252,8 +262,9 @@ function ClipPreview({ clip }: { clip: ClipRecord }) {
         </span>
       ) : null}
 
-      {/* Mute / fullscreen affordances (hover, hidden during fullscreen bar) */}
-      {!fullscreen ? (
+      {/* Mute / fullscreen affordances (hover, hidden during fullscreen bar) —
+          mounted only while hovered to keep their icons off the scroll path. */}
+      {hovered && !fullscreen ? (
         <div className="absolute inset-x-2 bottom-2 z-20 flex items-end justify-between opacity-0 transition-opacity group-hover/media:opacity-100">
           <button
             type="button"
@@ -280,7 +291,7 @@ function ClipPreview({ clip }: { clip: ClipRecord }) {
 
       {/* Duration badge (hidden in fullscreen — the bar shows time) */}
       {!fullscreen ? (
-        <span className="pointer-events-none absolute right-2 bottom-2 z-10 rounded bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm transition-opacity group-hover/media:opacity-0">
+        <span className="pointer-events-none absolute right-2 bottom-2 z-10 rounded bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-white transition-opacity group-hover/media:opacity-0">
           {fmtDuration(clip.duration_secs)}
         </span>
       ) : null}
@@ -383,7 +394,7 @@ function ClipBadges({
     <div className="pointer-events-none absolute inset-x-2 top-2 z-20 flex items-start justify-between gap-2">
       <div className="flex max-w-[80%] flex-wrap items-center gap-1.5">
         {agentName ? (
-          <span className="flex items-center gap-1 rounded-full bg-black/55 py-0.5 pr-2 pl-0.5 text-[10px] font-semibold text-white backdrop-blur-sm">
+          <span className="flex items-center gap-1 rounded-full bg-black/70 py-0.5 pr-2 pl-0.5 text-[10px] font-semibold text-white">
             {agent?.icon ? (
               <img
                 src={agent.icon}
@@ -397,7 +408,7 @@ function ClipBadges({
           </span>
         ) : null}
         {mapName ? (
-          <span className="rounded-full bg-black/55 px-2 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm">
+          <span className="rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-medium text-white">
             {mapName}
           </span>
         ) : null}
@@ -405,14 +416,74 @@ function ClipBadges({
       {hasResult ? (
         <span
           className={cn(
-            "rounded-full px-2 py-0.5 text-[10px] font-bold text-white backdrop-blur-sm",
-            clip.won ? "bg-success/80" : "bg-destructive/80"
+            "rounded-full px-2 py-0.5 text-[10px] font-bold text-white",
+            clip.won ? "bg-success/90" : "bg-destructive/90"
           )}
         >
           {clip.won ? "WIN" : "LOSS"}
         </span>
       ) : null}
     </div>
+  );
+}
+
+// Shared trigger styling for the "⋯" actions affordance, whether it's the cheap
+// placeholder button or the real Radix trigger.
+const ACTIONS_TRIGGER_CLASS =
+  "-mr-1 flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-[color,opacity] outline-none hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100";
+
+/**
+ * The per-card "⋯" actions menu, lazily upgraded. Until the user first opens it,
+ * this is a plain <button> — so a card mounting during scroll pays for one icon,
+ * not the full Radix DropdownMenu (Root + Popper + Portal + their effects, which
+ * run even while closed). On first click we mount the real menu and open it; it
+ * then behaves normally. Profiling showed the per-card Radix tree was the single
+ * largest scroll-mount cost.
+ */
+function ClipActionsMenu({
+  clip,
+  onRename,
+  onDelete,
+}: {
+  clip: ClipRecord;
+  onRename: (clip: ClipRecord) => void;
+  onDelete: (clip: ClipRecord) => void;
+}) {
+  const [mounted, setMounted] = React.useState(false);
+  const [open, setOpen] = React.useState(false);
+
+  if (!mounted) {
+    return (
+      <button
+        type="button"
+        aria-label="Clip actions"
+        className={ACTIONS_TRIGGER_CLASS}
+        onClick={() => {
+          setMounted(true);
+          setOpen(true);
+        }}
+      >
+        <DotsThree weight="bold" className="size-4" />
+      </button>
+    );
+  }
+
+  return (
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger aria-label="Clip actions" className={ACTIONS_TRIGGER_CLASS}>
+        <DotsThree weight="bold" className="size-4" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={() => onRename(clip)}>
+          <PencilSimple />
+          Rename
+        </DropdownMenuItem>
+        <DropdownMenuItem variant="destructive" onSelect={() => onDelete(clip)}>
+          <Trash />
+          Delete
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -441,7 +512,7 @@ export const ClipCard = React.memo(function ClipCard({
       : [];
 
   return (
-    <div className="group flex flex-col overflow-hidden rounded-xl border border-border/60 bg-card shadow-sm transition-colors hover:border-border">
+    <div className="group flex flex-col overflow-hidden rounded-xl border border-border/60 bg-card shadow-sm transition-colors hover:border-border [contain-intrinsic-size:auto_280px] [content-visibility:auto]">
       {/* Thumbnail / hover-preview, with the game-context overlay on top */}
       <div className="relative">
         <ClipPreview clip={clip} />
@@ -458,24 +529,7 @@ export const ClipCard = React.memo(function ClipCard({
             {clip.title || "Untitled"}
           </h3>
 
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              aria-label="Clip actions"
-              className="-mr-1 flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-[color,opacity] outline-none hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100"
-            >
-              <DotsThree weight="bold" className="size-4" />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={() => onRename(clip)}>
-                <PencilSimple />
-                Rename
-              </DropdownMenuItem>
-              <DropdownMenuItem variant="destructive" onSelect={() => onDelete(clip)}>
-                <Trash />
-                Delete
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <ClipActionsMenu clip={clip} onRename={onRename} onDelete={onDelete} />
         </div>
 
         {/* One quiet metadata line: the event(s) lead (slightly emphasized,

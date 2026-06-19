@@ -962,7 +962,10 @@ fn generate_thumbnail(app: &AppHandle, video: &Path) -> Option<String> {
     std::fs::create_dir_all(&dir).ok()?;
     let stem = video.file_stem()?.to_str()?;
     let out = dir.join(format!("{stem}.jpg"));
-    match crate::library::thumbs::extract_thumbnail(video, &out, 480) {
+    // Grid cards render ~340–600px wide; 400px keeps thumbnails sharp there while
+    // cutting decode work ~30% vs the old 480px (less to rasterize on the scroll
+    // path). Filmstrip tiles are sized separately, above.
+    match crate::library::thumbs::extract_thumbnail(video, &out, 400) {
         Ok(()) => Some(out.to_string_lossy().to_string()),
         Err(e) => {
             tracing::warn!("thumbnail failed for {}: {e}", video.display());
