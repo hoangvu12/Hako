@@ -18,7 +18,7 @@
 //! Mirrors Medal's `ValorantPostMatchHandler` + `EventManagementSystem` cut step
 //! (constants in `docs/valorant-detection-plan.md` §1).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -28,12 +28,25 @@ use crate::events;
 use crate::settings::AutoCaptureMode;
 use crate::valorant::local_api::LocalClient;
 use crate::valorant::model::{EventKind, MatchDetails};
+use crate::valorant::pending::{self, PendingMatch};
 use crate::valorant::reconcile::{
     self, EventTimings, EventToggles, RoundAnchor, TimelineIndex,
 };
 use crate::valorant::remote_api::{self, RemoteClient};
 use crate::valorant::service::{self, SessionData};
 use crate::valorant::summary;
+
+/// How long a pending match is retried before we give up and save the whole
+/// recording as a single fallback clip (footage is never silently lost). One day
+/// covers the common "finish a late match, reopen Valorant next morning" case
+/// without holding a full-match MP4 on disk for longer than necessary. Riot's
+/// match-history endpoint stays fetchable far longer, so this is a disk-hygiene
+/// cap, not a Riot limit.
+const MAX_PENDING_AGE_MS: u128 = 24 * 60 * 60 * 1000;
+/// Backstop on reconcile attempts (bumped once per pass while the Riot client is
+/// up) in case the clock is unreliable. Set above one day of 60 s retries so the
+/// age cap above is normally what governs, not this.
+const MAX_PENDING_ATTEMPTS: u32 = 2000;
 
 /// `MaxAutoClipLength` — clamp each merged window to 120 s.
 const MAX_AUTOCLIP_SECS: i64 = 120;
@@ -134,50 +147,306 @@ pub async fn post_match(input: CutInput) {
 }
 
 async fn run(input: &CutInput) -> Result<(), String> {
-    let remote = input.remote.as_ref().ok_or("no remote API (bootstrap failed)")?;
-    let match_id = remote.match_id.as_deref().ok_or("no match id captured during the match")?;
+    // FullMatch: the footage IS the product — keep the whole match no matter
+    // what. Details only enrich the title/summary, so fetch them best-effort and
+    // never let a details failure discard the recording.
+    if input.mode == AutoCaptureMode::FullMatch {
+        let details = fetch_details_opt(input).await;
+        return save_full_match(input, details.as_ref()).await;
+    }
 
-    // A local-API handle to refresh the RSO token before each match-details
-    // attempt — it expires during the match (a stale one returns 400 BAD_CLAIMS).
+    // Highlights: we need match-details to derive the events to cut.
+    let details = fetch_details_opt(input).await;
+    let Some(remote) = input.remote.as_ref() else {
+        // Bootstrap failed entirely (no client / match id ever captured): details
+        // can never be fetched, so don't discard the footage — save it whole.
+        tracing::warn!("auto-clip: no remote API (bootstrap failed) — saving whole match");
+        return save_full_match(input, details.as_ref()).await;
+    };
+    let Some(details) = details else {
+        // Details unavailable right now (kicked / token dead / match not yet
+        // finalized). Persist for later retry instead of throwing away footage.
+        return pend_for_retry(input, remote);
+    };
+
+    let params = CutParams {
+        app: &input.app,
+        session_path: &input.session_path,
+        timeline: &input.timeline,
+        frozen_spans: &input.frozen_spans,
+        anchors: &input.anchors,
+        fps: input.fps,
+        game_start_ticks: input.game_start_ticks,
+        puuid: &remote.data.puuid,
+    };
+    cut_highlights(&params, &details).await
+}
+
+/// Fetch match-details for the cut (6 × 20 s, refreshing the RSO token before
+/// each attempt — it expires during a long match; a stale one returns 400
+/// BAD_CLAIMS). `None` when no match id was ever captured or Riot never
+/// finalized/served the match within the budget.
+async fn fetch_details_opt(input: &CutInput) -> Option<MatchDetails> {
+    let remote = input.remote.as_ref()?;
+    let match_id = remote.match_id.as_deref()?;
     let local = LocalClient::connect().ok();
     if local.is_none() {
         tracing::warn!("auto-clip: local API unavailable — can't refresh the match-details token");
     }
-    let details = fetch_match_details_retry(&remote.data.remote, local.as_ref(), match_id)
-        .await
-        .ok_or("match-details never became available")?;
+    fetch_match_details_retry(&remote.data.remote, local.as_ref(), match_id).await
+}
 
+/// The pieces the highlight cut needs, shared by the live path and the pending
+/// reconciler (which rebuilds them from a [`PendingMatch`]).
+struct CutParams<'a> {
+    app: &'a AppHandle,
+    session_path: &'a Path,
+    timeline: &'a TimelineIndex,
+    frozen_spans: &'a [(i64, i64)],
+    anchors: &'a [RoundAnchor],
+    fps: u32,
+    game_start_ticks: i64,
+    puuid: &'a str,
+}
+
+/// Save the whole recording as one library clip, using match-details (when
+/// available) for the title + game-context tags. FullMatch mode's normal path,
+/// and the footage-preserving fallback when highlights can't be produced.
+async fn save_full_match(input: &CutInput, details: Option<&MatchDetails>) -> Result<(), String> {
+    let (title, context) = match details {
+        Some(d) => {
+            let puuid = input.remote.as_ref().map(|r| r.data.puuid.as_str()).unwrap_or("");
+            let mut summary = summary::build_summary(d, puuid);
+            if let Some(name) = remote_api::fetch_agent_name(&summary.agent_id).await {
+                summary.agent = name;
+            }
+            summary.title = summary.build_title();
+            let _ = input.app.emit(events::MATCH_SUMMARY, &summary);
+            let title = if summary.title.is_empty() {
+                "Full Match".to_string()
+            } else {
+                summary.title.clone()
+            };
+            (title, summary.clip_context())
+        }
+        None => {
+            tracing::warn!("auto-clip: match-details unavailable — saving whole match without summary");
+            (
+                "Full Match".to_string(),
+                crate::library::db::NewClip::default(),
+            )
+        }
+    };
+    save_whole_session(&input.app, &input.session_path, &title, "Full Match", context)
+}
+
+/// Persist a Highlights match whose details we couldn't fetch into the durable
+/// pending store, to retry from [`reconcile_pending`] once the Riot client is
+/// reachable again. Falls back to a whole-match save when there's no match id to
+/// retry with, or the store itself is unavailable — footage is never discarded.
+fn pend_for_retry(input: &CutInput, remote: &RemoteReady) -> Result<(), String> {
+    let whole_match = || {
+        save_whole_session(
+            &input.app,
+            &input.session_path,
+            "Full Match",
+            "Full Match",
+            crate::library::db::NewClip::default(),
+        )
+    };
+    let Some(match_id) = remote.match_id.as_deref() else {
+        tracing::warn!("auto-clip: no match id captured — saving whole match instead of pending");
+        return whole_match();
+    };
+    let entry = PendingMatch {
+        session_file: String::new(), // filled in by pending::save
+        timeline: input.timeline.clone(),
+        frozen_spans: input.frozen_spans.clone(),
+        anchors: input.anchors.clone(),
+        fps: input.fps,
+        game_start_ticks: input.game_start_ticks,
+        puuid: remote.data.puuid.clone(),
+        match_id: match_id.to_string(),
+        region: remote.data.region.clone(),
+        shard: remote.data.shard.clone(),
+        client_version: remote.data.client_version.clone(),
+        created_unix_ms: pending::now_unix_ms(),
+        attempts: 0,
+    };
+    let stem = format!("{}_{}", sanitize_stem(match_id), pending::now_unix_ms());
+    match pending::save(&input.app, &stem, &input.session_path, entry) {
+        Ok(p) => {
+            tracing::info!(
+                "auto-clip: match-details unavailable — queued match {match_id} for retry ({})",
+                p.display()
+            );
+            Ok(())
+        }
+        Err(e) => {
+            tracing::warn!("auto-clip: could not queue pending match ({e}) — saving whole match");
+            whole_match()
+        }
+    }
+}
+
+/// Retry every pending match once. Called periodically by the orchestrator when
+/// the Riot client is up: rebuilds a fresh-token remote client, fetches the
+/// (now-finalized) details and cuts the highlights, removing the entry on
+/// success. Entries past [`MAX_PENDING_AGE_MS`] / [`MAX_PENDING_ATTEMPTS`] are
+/// flushed to a whole-match clip so footage is never lost and the store can't
+/// grow unbounded.
+pub async fn reconcile_pending(app: AppHandle) {
+    let entries = pending::list(&app);
+    if entries.is_empty() {
+        return;
+    }
+
+    // Flush aged-out entries first. This is purely local (copy footage → clips,
+    // no Riot API), so it runs even when the client is closed — otherwise a match
+    // whose client never reopens would keep its full MP4 on disk forever.
+    let mut live = Vec::new();
+    for (sidecar, entry) in entries {
+        if pending_expired(&entry) {
+            flush_expired(&app, &sidecar, &entry);
+        } else {
+            live.push((sidecar, entry));
+        }
+    }
+    if live.is_empty() {
+        return;
+    }
+
+    // The rest need the Riot client (fresh tokens + the details fetch). If it's
+    // down, every entry fails identically — skip cheaply and retry next cycle.
+    let local = match LocalClient::connect() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let ent = match local.entitlements().await {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::debug!("reconcile: entitlements unavailable: {e}");
+            return;
+        }
+    };
+
+    for (sidecar, mut entry) in live {
+        let remote = match RemoteClient::with_region_shard(
+            &entry.region,
+            &entry.shard,
+            &ent.access_token,
+            &ent.token,
+            &entry.client_version,
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!("reconcile: build remote client: {e}");
+                continue;
+            }
+        };
+
+        let details = match remote.match_details(&entry.match_id).await {
+            Ok(d) => d,
+            Err(e) => {
+                entry.attempts += 1;
+                tracing::debug!(
+                    "reconcile: match-details {} not ready (attempt {}): {e}",
+                    entry.match_id,
+                    entry.attempts
+                );
+                pending::update(&sidecar, &entry);
+                continue;
+            }
+        };
+
+        let Some(mp4) = pending::session_path(&app, &entry) else {
+            pending::remove(&app, &sidecar, &entry);
+            continue;
+        };
+        let params = CutParams {
+            app: &app,
+            session_path: &mp4,
+            timeline: &entry.timeline,
+            frozen_spans: &entry.frozen_spans,
+            anchors: &entry.anchors,
+            fps: entry.fps,
+            game_start_ticks: entry.game_start_ticks,
+            puuid: &entry.puuid,
+        };
+        match cut_highlights(&params, &details).await {
+            Ok(()) => tracing::info!("auto-clip: reconciled pending match {}", entry.match_id),
+            Err(e) => {
+                // Details arrived but no highlight landed in this footage (e.g. a
+                // pre-crash fragment) — keep the footage whole rather than
+                // retrying forever.
+                tracing::warn!(
+                    "auto-clip: pending match {} produced no highlights ({e}) — saving whole match",
+                    entry.match_id
+                );
+                let _ = save_whole_session(
+                    &app,
+                    &mp4,
+                    "Full Match",
+                    "Full Match",
+                    crate::library::db::NewClip::default(),
+                );
+            }
+        }
+        pending::remove(&app, &sidecar, &entry);
+    }
+}
+
+/// Give up on a pending match: preserve its footage as a whole-match clip and
+/// drop the entry. Purely local (no Riot API), so it works with the client down.
+fn flush_expired(app: &AppHandle, sidecar: &Path, entry: &PendingMatch) {
+    tracing::warn!(
+        "auto-clip: pending match {} expired ({} attempts) — saving whole match",
+        entry.match_id,
+        entry.attempts
+    );
+    if let Some(mp4) = pending::session_path(app, entry) {
+        let _ = save_whole_session(
+            app,
+            &mp4,
+            "Full Match",
+            "Full Match",
+            crate::library::db::NewClip::default(),
+        );
+    }
+    pending::remove(app, sidecar, entry);
+}
+
+/// Whether a pending entry has exhausted its retry budget (age or attempts).
+fn pending_expired(entry: &PendingMatch) -> bool {
+    entry.attempts >= MAX_PENDING_ATTEMPTS
+        || pending::now_unix_ms().saturating_sub(entry.created_unix_ms) >= MAX_PENDING_AGE_MS
+}
+
+/// Sanitize a match id into a safe filename stem (UUIDs already are; this guards
+/// against anything unexpected).
+fn sanitize_stem(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .collect()
+}
+
+/// Derive + reconcile + cut the per-event highlights for a finished match, and
+/// emit its summary. Shared by the live path and the pending reconciler.
+async fn cut_highlights(cx: &CutParams<'_>, details: &MatchDetails) -> Result<(), String> {
     // Post-match summary (K/D/A, headshot %, agent, win/loss, title). Built +
     // emitted independently of clips so a match with no enabled highlights still
     // surfaces its result on the panel.
-    let mut summary = summary::build_summary(&details, &remote.data.puuid);
+    let mut summary = summary::build_summary(details, cx.puuid);
     if let Some(name) = remote_api::fetch_agent_name(&summary.agent_id).await {
         summary.agent = name;
     }
     summary.title = summary.build_title();
     tracing::info!("auto-clip: match summary — {}", summary.title);
-    let _ = input.app.emit(events::MATCH_SUMMARY, &summary);
+    let _ = cx.app.emit(events::MATCH_SUMMARY, &summary);
 
-    // Full-match mode keeps the whole session as a single clip — no event
-    // derivation or cutting. The summary above still fires for the panel.
-    if input.mode == AutoCaptureMode::FullMatch {
-        let title = if summary.title.is_empty() {
-            "Full Match".to_string()
-        } else {
-            summary.title.clone()
-        };
-        return save_whole_session(
-            &input.app,
-            &input.session_path,
-            &title,
-            "Full Match",
-            summary.clip_context(),
-        );
-    }
-
-    let toggles = load_toggles(&input.app);
-    let timings = load_timings(&input.app);
-    let events = reconcile::derive_events(&details, &remote.data.puuid, &toggles);
+    let toggles = load_toggles(cx.app);
+    let timings = load_timings(cx.app);
+    let events = reconcile::derive_events(details, cx.puuid, &toggles);
     if events.is_empty() {
         tracing::info!("auto-clip: no enabled highlights in this match");
         return Ok(());
@@ -194,9 +463,9 @@ async fn run(input: &CutInput) -> Result<(), String> {
     // Medal-faithful single match-start calibration from the logged round
     // anchors (falls back to the match-found anchor + per-event game time).
     let match_start =
-        reconcile::calibrate_match_start(&events, &input.anchors).map(|ms| ms + skirmish_offset);
-    let game_start_ticks = input.game_start_ticks + skirmish_offset;
-    let fps = input.fps.max(1);
+        reconcile::calibrate_match_start(&events, cx.anchors).map(|ms| ms + skirmish_offset);
+    let game_start_ticks = cx.game_start_ticks + skirmish_offset;
+    let fps = cx.fps.max(1);
     let max_len_pts = MAX_AUTOCLIP_SECS * fps as i64;
     let place_tol = PLACEMENT_TOL_SECS * TICKS_PER_SECOND;
 
@@ -218,9 +487,9 @@ async fn run(input: &CutInput) -> Result<(), String> {
         let Some((start_pts, end_pts)) = reconcile::event_span_pts(
             e,
             match_start,
-            &input.anchors,
+            cx.anchors,
             Some(game_start_ticks),
-            &input.timeline,
+            cx.timeline,
             place_tol,
         ) else {
             dropped += 1;
@@ -241,9 +510,9 @@ async fn run(input: &CutInput) -> Result<(), String> {
                 mk,
                 e.round,
                 match_start,
-                &input.anchors,
+                cx.anchors,
                 Some(game_start_ticks),
-                &input.timeline,
+                cx.timeline,
             ) {
                 marks_all.push((p.clamp(s, end), mk.kind));
                 any = true;
@@ -300,7 +569,7 @@ async fn run(input: &CutInput) -> Result<(), String> {
         // swapchain) — it would be a dead, single-frame clip. Both the window and
         // the spans are in session-PTS (1/fps) units, so they compare directly.
         let span_pts = end - s;
-        let frozen_pts = frozen_overlap(&input.frozen_spans, s, end);
+        let frozen_pts = frozen_overlap(cx.frozen_spans, s, end);
         if span_pts > 0 && frozen_pts * 2 > span_pts {
             tracing::warn!(
                 "auto-clip: skipping {start_sec:.1}-{end_sec:.1}s — {}% frozen \
@@ -311,7 +580,7 @@ async fn run(input: &CutInput) -> Result<(), String> {
             continue;
         }
 
-        let out = match commands::auto_clip_output_path(&input.app) {
+        let out = match commands::auto_clip_output_path(cx.app) {
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!("auto-clip: output path: {e}");
@@ -319,7 +588,7 @@ async fn run(input: &CutInput) -> Result<(), String> {
             }
         };
         // Stream-copy the window out of the session file (no re-encode).
-        match crate::library::trim::trim_clip(&input.session_path, &out, start_sec, end_sec, false) {
+        match crate::library::trim::trim_clip(cx.session_path, &out, start_sec, end_sec, false) {
             Ok(res) => {
                 // Stream copy snaps the cut start forward to the nearest keyframe;
                 // rebase the markers (measured from the *requested* start) by that
@@ -336,7 +605,7 @@ async fn run(input: &CutInput) -> Result<(), String> {
                     format!("{} — {}", label, summary.agent)
                 };
                 if let Err(err) = commands::finalize_auto_clip(
-                    &input.app,
+                    cx.app,
                     out,
                     title,
                     kind.label(),
@@ -368,7 +637,7 @@ async fn run(input: &CutInput) -> Result<(), String> {
             format!("Skipped {skipped_frozen} clip(s) — the game was minimized during those moments.")
         };
         tracing::warn!("auto-clip: {msg}");
-        let _ = input.app.emit(events::RECORDER_ERROR, &msg);
+        let _ = cx.app.emit(events::RECORDER_ERROR, &msg);
     }
     Ok(())
 }

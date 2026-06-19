@@ -506,7 +506,7 @@ fn detect_victory(details: &MatchDetails, our_team: &str) -> Option<GameEvent> {
 }
 
 /// A round's start wall-clock, logged live when the presence score changes.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct RoundAnchor {
     pub round: i32,
     pub start_wallclock_ticks: i64,
@@ -515,7 +515,7 @@ pub struct RoundAnchor {
 /// Maps wall-clock (100-ns ticks) ↔ session-file PTS. Built by the Mode-B
 /// session writer as it muxes packets: each entry pairs a packet's capture
 /// timestamp with its PTS. Lookups linearly interpolate and clamp to the ends.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct TimelineIndex {
     /// `(wallclock_ticks, pts)` pairs, kept sorted by wall-clock.
     samples: Vec<(i64, i64)>,
