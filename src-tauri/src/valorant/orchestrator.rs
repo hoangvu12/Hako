@@ -114,6 +114,15 @@ async fn run(app: AppHandle) {
     // True once we've kicked off the (best-effort, once-per-match) live-agent
     // resolver for the current match; reset when we leave the match.
     let mut live_resolver_spawned = false;
+    // Set when a match starts but the session writer couldn't open yet (encoder
+    // not warm — app opened mid-game). Latches the intent so we keep retrying
+    // start_match each tick until it succeeds or the match ends, instead of
+    // losing the whole match because `MatchStarted` is a one-shot edge.
+    let mut want_match_record = false;
+    // Periodic retry of matches whose post-match details fetch failed (pending
+    // queue), and the in-flight reconcile task (so passes never overlap).
+    let mut next_reconcile = Instant::now();
+    let mut reconcile_task: Option<JoinHandle<()>> = None;
     tracing::info!("valorant orchestrator started");
 
     loop {
@@ -123,6 +132,11 @@ async fn run(app: AppHandle) {
         // appears (encoder is warm before any match) and auto-stop when it exits.
         // Independent of presence so it works even if the local API is flaky.
         auto_manage_capture(&app, &mut auto_capturing, &mut next_capture_attempt);
+
+        // Retry any matches whose details fetch failed earlier, whenever the Riot
+        // client is reachable again. Throttled + non-overlapping; cheap no-op when
+        // nothing is pending or the client is down.
+        maybe_reconcile_pending(&app, &mut next_reconcile, &mut reconcile_task);
 
         // The user's capture mode (Manual / Highlights / FullMatch / Session).
         // Read each tick so changing it in settings takes effect without restart.
@@ -137,8 +151,26 @@ async fn run(app: AppHandle) {
 
         // Resolve the local API + our presence; transient failures just skip the
         // tick (Riot not up yet, account switching, etc.).
-        let Some((presence, puuid)) = poll_presence().await else {
-            continue;
+        let (presence, puuid) = match poll_presence().await {
+            Some(p) => p,
+            None => {
+                // Local API gone. If Valorant is *also* gone while we were
+                // recording a match, the game crashed / we were kicked to desktop
+                // — finalize what we captured instead of holding it until the next
+                // match discards it, and reset the machine so a reconnect to the
+                // same match registers as a fresh start (recorded again by #1's
+                // latch). A still-running game with a flaky local API is left
+                // alone (we keep recording and retry the presence next tick).
+                if active.is_some() && !crate::valorant::service::valorant_running() {
+                    if let Some(am) = active.take() {
+                        tracing::warn!("auto-clip: game vanished mid-match — finalizing recording");
+                        end_match(&app, am, mode);
+                    }
+                    want_match_record = false;
+                    sm = StateMachine::new();
+                }
+                continue;
+            }
         };
         let loop_state = presence.loop_state();
         let rounds_played = presence.score_ally + presence.score_enemy;
@@ -161,25 +193,34 @@ async fn run(app: AppHandle) {
                         tracing::warn!("auto-clip: new match started over an unfinished one");
                         stale.discard();
                     }
-                    match start_match(&app, &puuid, &presence) {
-                        Some(am) => {
-                            tracing::info!("auto-clip: recording match → {}", am.session_path.display());
-                            active = Some(am);
-                        }
-                        None => tracing::warn!(
-                            "auto-clip: match started but recording could not begin \
-                             (capture not running or encoder not ready)"
-                        ),
-                    }
+                    // Latch the intent; the writer is actually opened below (this
+                    // same tick when the encoder is warm, or on a later tick if we
+                    // started mid-game and it isn't producing frames yet).
+                    want_match_record = true;
                 }
                 Action::RoundBoundary { rounds_played } => {
                     tracing::debug!("auto-clip: round boundary ({rounds_played} played)");
                 }
                 Action::MatchEnded => {
+                    want_match_record = false;
                     if let Some(am) = active.take() {
                         end_match(&app, am, mode);
                     }
                 }
+            }
+        }
+
+        // Open the session writer for a latched match start. On a normal start
+        // the encoder is already warm and this runs the same tick as MatchStarted;
+        // when the app was opened mid-game, capture only just began, so we keep
+        // retrying here until the encoder produces frames (or the match ends and
+        // `MatchEnded` clears the latch). Re-checks the mode so switching to a
+        // non-recording mode mid-match stops the attempts.
+        if want_match_record && active.is_none() && mode.records_match() {
+            if let Some(am) = start_match(&app, &puuid, &presence) {
+                tracing::info!("auto-clip: recording match → {}", am.session_path.display());
+                active = Some(am);
+                want_match_record = false;
             }
         }
 
@@ -190,6 +231,31 @@ async fn run(app: AppHandle) {
 
         emit_state(&app, &presence, active.is_some());
     }
+}
+
+/// Cadence for retrying pending (details-fetch-failed) matches.
+const RECONCILE_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Spawn a [`cut::reconcile_pending`] pass if it's due, none is already running,
+/// and there's actually something queued. Spawned (not awaited) so a slow Riot
+/// round-trip never blocks presence polling.
+fn maybe_reconcile_pending(
+    app: &AppHandle,
+    next: &mut Instant,
+    task: &mut Option<JoinHandle<()>>,
+) {
+    if Instant::now() < *next {
+        return;
+    }
+    // Don't start a new pass while the previous one is still running.
+    if task.as_ref().map_or(false, |t| !t.is_finished()) {
+        return;
+    }
+    *next = Instant::now() + RECONCILE_INTERVAL;
+    if !crate::valorant::pending::any(app) {
+        return;
+    }
+    *task = Some(tokio::spawn(cut::reconcile_pending(app.clone())));
 }
 
 /// Connect to the local API and read our decoded presence + puuid. `None` on any
