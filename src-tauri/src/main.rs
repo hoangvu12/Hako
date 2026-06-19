@@ -142,6 +142,20 @@ fn main() {
             // In-game overlay: warn on the overlay when the clips drive runs low
             // (edge-triggered, only while capturing).
             overlay::spawn_disk_monitor(app.handle().clone());
+            // The overlay boots hidden but its WebView2 renderer is live (~75MB).
+            // Suspend it shortly after launch so that memory is reclaimed while
+            // idle; it auto-resumes when first shown over a capture (see overlay.rs).
+            // Delayed so the overlay's mount (event listeners, settings seed) runs
+            // first; guarded on still-hidden so an immediate capture doesn't race it.
+            let overlay_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                if let Some(win) = overlay_handle.get_webview_window("overlay") {
+                    if !win.is_visible().unwrap_or(false) {
+                        suspend_window_webview(&win, true);
+                    }
+                }
+            });
             // Safety net for the update splash: if the `updater` window never
             // calls `finish_to_main` (e.g. its webview failed to load entirely),
             // reveal the main window anyway after a generous delay so the app can
@@ -212,6 +226,38 @@ fn set_webview_suspended(app: &tauri::AppHandle, suspend: bool) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
+    if !suspend {
+        suspend_window_webview(&window, false);
+        return;
+    }
+    // Hiding to tray. Microsoft's WebView2 perf guidance recommends periodically
+    // reloading a long-lived webview to return its renderer to a clean memory
+    // baseline. We do that here *only when idle* (not capturing): reload the UI,
+    // then suspend after a short beat so the reload can settle. During a match the
+    // reload would steal CPU the game wants, so we skip it and suspend at once.
+    if crate::commands::is_capturing(app) {
+        suspend_window_webview(&window, true);
+        return;
+    }
+    let _ = window.eval("window.location.reload()");
+    let w = window.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        // Skip if the user reopened the window meanwhile (TrySuspend no-ops on a
+        // visible controller anyway; this just avoids the wasted call).
+        if !w.is_visible().unwrap_or(false) {
+            suspend_window_webview(&w, true);
+        }
+    });
+}
+
+/// Suspend or resume a single window's WebView2 renderer (the COM call only;
+/// callers own visibility/EcoQoS/reload policy). `TrySuspend` pauses the
+/// renderer's script timers + animations and lets the OS reclaim its memory;
+/// `Resume` undoes it. `TrySuspend` requires the controller to be invisible, so
+/// callers must `hide()` the window before calling with `suspend=true`.
+/// Best-effort: no-op off Windows or if the WebView2 3+ interface is missing.
+pub(crate) fn suspend_window_webview(window: &tauri::WebviewWindow, suspend: bool) {
     let _ = window.with_webview(move |webview| {
         #[cfg(windows)]
         {

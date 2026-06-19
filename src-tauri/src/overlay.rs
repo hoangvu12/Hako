@@ -85,6 +85,8 @@ pub fn push_config(app: &AppHandle) {
 pub fn hide_now(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("overlay") {
         let _ = win.hide();
+        // Suspend the (now invisible) renderer so its ~75MB is reclaimed while idle.
+        crate::suspend_window_webview(&win, true);
     }
 }
 
@@ -116,6 +118,9 @@ pub fn fit_overlay_to_rect(app: &AppHandle, x: i32, y: i32, w: i32, h: i32) {
             height: h as u32,
         });
         let _ = win.show();
+        // Resume the renderer now that it's visible (it's suspended while hidden
+        // to reclaim its ~75MB; see `hide_now` / `hide_overlay_after`).
+        crate::suspend_window_webview(&win, false);
     }
 }
 
@@ -138,6 +143,7 @@ pub fn show_overlay_over_game(app: &AppHandle) {
         fit_overlay_to_rect(app, pos.x, pos.y, size.width as i32, size.height as i32);
     } else if let Some(win) = app.get_webview_window("overlay") {
         let _ = win.show();
+        crate::suspend_window_webview(&win, false);
     }
 }
 
@@ -149,6 +155,7 @@ pub fn show_overlay_over_hwnd(app: &AppHandle, hwnd: i64) {
         fit_overlay_to_rect(app, x, y, w, h);
     } else if let Some(win) = app.get_webview_window("overlay") {
         let _ = win.show();
+        crate::suspend_window_webview(&win, false);
     }
 }
 
@@ -162,6 +169,7 @@ fn hide_overlay_after(app: &AppHandle, delay_ms: u64) {
         if !crate::commands::is_capturing(&app) {
             if let Some(win) = app.get_webview_window("overlay") {
                 let _ = win.hide();
+                crate::suspend_window_webview(&win, true);
             }
         }
     });
