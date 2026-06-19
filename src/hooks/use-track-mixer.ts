@@ -8,6 +8,7 @@ import {
 } from "mediabunny";
 
 import { readClipRange, type AudioTrackInfo } from "@/lib/api";
+import { denoiseAudioBufferForPreview } from "@/lib/denoise-preview";
 
 /**
  * Live per-stem audio mixing for the clip editor.
@@ -47,6 +48,9 @@ export interface UseTrackMixerArgs {
   stemGains: Map<number, number>;
   /** Master monitor gain (0..1) from the top-bar mute/volume. */
   masterGain: number;
+  /** Stem indices to noise-cancel in the preview (RNNoise) — kept in lockstep
+   *  with the export's per-stem denoise flag so preview ≈ what you save. */
+  denoiseStemIdx: number[];
 }
 
 /** One playing buffer-source set's time anchor, for drift math. */
@@ -114,18 +118,33 @@ export function useTrackMixer({
   videoRef,
   stemGains,
   masterGain,
-}: UseTrackMixerArgs): { active: boolean; decoding: boolean } {
+  denoiseStemIdx,
+}: UseTrackMixerArgs): {
+  active: boolean;
+  decoding: boolean;
+  denoisingIdx: number[];
+} {
   const [active, setActive] = React.useState(false);
   // True while a stems clip's decode is in flight (before live mixing engages),
   // so the UI can show a "preparing" state instead of silently-inert controls.
   // Distinct from `!active`, which also covers the no-stems / decode-failed
   // fallback where the native <video> audio is the (final) answer, not a wait.
   const [decoding, setDecoding] = React.useState(false);
+  // Stem indices whose RNNoise preview buffer is currently being computed (wasm
+  // load + the per-frame pass). Drives the per-stem "denoising…" spinner so the
+  // first noise-cancel toggle reads as working, not frozen.
+  const [denoisingIdx, setDenoisingIdx] = React.useState<number[]>([]);
 
   const graphRef = React.useRef<Graph | null>(null);
   const sourcesRef = React.useRef<AudioBufferSourceNode[]>([]);
   const anchorRef = React.useRef<Anchor | null>(null);
   const rafRef = React.useRef<number | null>(null);
+  // Denoise (RNNoise) preview: the set of stem indices currently noise-cancelled,
+  // plus a cache of each stem's denoised buffer (computed lazily, reused across
+  // toggles). `resync` reads these to pick the raw vs cleaned buffer per stem, so
+  // toggling denoise just re-points the sources — no re-decode, no re-IPC.
+  const denoiseSetRef = React.useRef<Set<number>>(new Set());
+  const denoisedRef = React.useRef<Map<number, AudioBuffer>>(new Map());
   // Latest gain targets, read when a decode finishes (async, long after commit)
   // so a stem the user already muted starts at the right level. Synced in an
   // effect, not during render: writing a ref mid-render is a Rules-of-React
@@ -142,6 +161,9 @@ export function useTrackMixer({
   // Stable key so the decode effect re-runs only when the clip or its stem set
   // actually changes (not on every gain tweak).
   const stemKey = stems.map((s) => s.index).join(",");
+  // Stable key for the denoise selection, so the denoise effect fires only when
+  // the set of cancelled stems changes (order-independent).
+  const denoiseKey = [...denoiseStemIdx].sort((a, b) => a - b).join(",");
 
   // --- Stop / (re)start the per-stem buffer sources, anchored to the video. ---
   const stopSources = React.useCallback(() => {
@@ -172,8 +194,13 @@ export function useTrackMixer({
       // up instead of starting a lookahead behind.
       const startMedia = mediaTime + START_LOOKAHEAD * rate;
       const started: AudioBufferSourceNode[] = [];
-      for (const [idx, buffer] of graph.buffers) {
+      for (const [idx, rawBuffer] of graph.buffers) {
         const gain = graph.gains.get(idx);
+        // Use the cleaned buffer when this stem is noise-cancelled and its
+        // denoised version is ready; otherwise fall back to the raw decode.
+        const buffer =
+          (denoiseSetRef.current.has(idx) && denoisedRef.current.get(idx)) ||
+          rawBuffer;
         if (!gain || startMedia >= buffer.duration) continue;
         const node = graph.ctx.createBufferSource();
         node.buffer = buffer;
@@ -295,10 +322,56 @@ export function useTrackMixer({
       graphRef.current = null;
       setActive(false);
       input?.dispose();
+      // Denoised buffers belong to the closing context — drop them so the next
+      // clip recomputes against its own graph.
+      denoisedRef.current.clear();
       (built?.ctx ?? ctx)?.close().catch(() => {});
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clipId, fileSize, stemKey, hasStems]);
+
+  // --- Denoise (RNNoise) preview: compute cleaned buffers + re-point sources. --
+  // Lazily denoises each newly-selected stem (cached for reuse), tracks the live
+  // selection in a ref `resync` reads, then re-anchors so the change is heard.
+  // Decode is untouched: toggling denoise never re-reads or re-decodes the stem.
+  React.useEffect(() => {
+    // Indices come from the stable key, not the prop array — so a volume drag
+    // (new array, same selection) doesn't re-run this and restart the sources.
+    const indices = denoiseKey ? denoiseKey.split(",").map(Number) : [];
+    denoiseSetRef.current = new Set(indices);
+    const graph = graphRef.current;
+    if (!graph || !active) {
+      setDenoisingIdx([]);
+      return;
+    }
+    let cancelled = false;
+
+    // Stems that still need their cleaned buffer computed — the ones to spin on.
+    const todo = indices.filter(
+      (idx) => !denoisedRef.current.has(idx) && graph.buffers.has(idx),
+    );
+    setDenoisingIdx(todo);
+
+    (async () => {
+      for (const idx of indices) {
+        if (denoisedRef.current.has(idx)) continue; // already cleaned
+        const raw = graph.buffers.get(idx);
+        if (!raw) continue;
+        const cleaned = await denoiseAudioBufferForPreview(graph.ctx, raw);
+        if (cancelled || graphRef.current !== graph) return; // clip changed
+        denoisedRef.current.set(idx, cleaned);
+        setDenoisingIdx((cur) => cur.filter((i) => i !== idx));
+      }
+      // Re-point the running sources at the right buffers (denoise on → cleaned,
+      // off → raw). A no-op while paused; the next play resyncs from scratch.
+      const v = videoRef.current;
+      if (!cancelled && v && !v.paused) resync(v.currentTime);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [denoiseKey, active, videoRef, resync]);
 
   // --- Live gain updates (cheap; no resync needed — gains are AudioParams). ---
   React.useEffect(() => {
@@ -368,5 +441,5 @@ export function useTrackMixer({
     };
   }, [active, videoRef, resync, stopSources]);
 
-  return { active, decoding };
+  return { active, decoding, denoisingIdx };
 }

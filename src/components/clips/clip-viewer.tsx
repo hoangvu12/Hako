@@ -23,6 +23,7 @@ import {
   ArrowCounterClockwise,
   FolderOpen,
   Faders,
+  Sparkle,
   Skull,
   Knife,
   Bomb,
@@ -65,8 +66,13 @@ interface TrackCtl {
   solo: boolean;
   /** 0–100. */
   volume: number;
+  /** Offline noise suppression (RNNoise) on this stem — the mic's "noise
+   *  cancel". Applied in the live preview *and* baked into the export. */
+  denoise: boolean;
 }
-const DEFAULT_CTL: TrackCtl = { muted: false, solo: false, volume: 100 };
+// Noise cancel is opt-in (off by default) on every stem — the editor never
+// re-encodes or loads the denoiser unless the user turns it on for a track.
+const DEFAULT_CTL: TrackCtl = { muted: false, solo: false, volume: 100, denoise: false };
 
 const SPEEDS = [1, 1.5, 2, 0.5] as const;
 const MIN_TRIM = 0.3; // shortest selectable range, seconds
@@ -418,20 +424,32 @@ function ViewerStage({
     (idx: number, v: number) => patchTrack(idx, { volume: v }),
     [patchTrack],
   );
+  const onStemDenoise = React.useCallback(
+    (idx: number) => patchTrack(idx, { denoise: !ctlOf(idx).denoise }),
+    [patchTrack, ctlOf],
+  );
 
   const soloActive = stems.some((s) => ctlOf(s.index).solo);
   // A stem is audible when soloed (if any solo is active) or simply un-muted.
   const audibleStems = stems.filter((s) =>
     soloActive ? ctlOf(s.index).solo : !ctlOf(s.index).muted,
   );
-  // The mix differs from the recorded master only when a stem is muted/soloed
-  // or its volume moved — otherwise we keep the loss-less stream copy.
+  // The mix differs from the recorded master when a stem is muted/soloed, its
+  // volume moved, or noise cancel is on — otherwise we keep the loss-less stream
+  // copy. Uses `ctlOf` (not raw `trackCtl`) so the mic's default-on noise cancel
+  // counts even before the user touches anything.
   const tracksEdited =
     hasStems &&
     stems.some((s) => {
-      const c = trackCtl[s.index];
-      return c && (c.muted || c.solo || c.volume !== 100);
+      const c = ctlOf(s.index);
+      return c.muted || c.solo || c.volume !== 100 || c.denoise;
     });
+  // Stem indices to noise-cancel in the live preview — kept in lockstep with the
+  // export's per-stem `denoise` flag so what you hear matches what you save.
+  const denoiseStemIdx = React.useMemo(
+    () => stems.filter((s) => ctlOf(s.index).denoise).map((s) => s.index),
+    [stems, ctlOf],
+  );
 
   // Live per-stem mixing: decode the stems and play them through a Web Audio
   // gain graph synced to the (muted) <video>, so mute/solo/volume are *heard*
@@ -448,13 +466,18 @@ function ViewerStage({
   }, [stems, ctlOf, soloActive]);
   // Top-bar mute/volume is the monitor level (preview-only; not in the export mix).
   const masterMonitorGain = muted ? 0 : volume;
-  const { active: liveMix, decoding: mixDecoding } = useTrackMixer({
+  const {
+    active: liveMix,
+    decoding: mixDecoding,
+    denoisingIdx,
+  } = useTrackMixer({
     clipId: clip.id,
     fileSize: clip.size_bytes,
     stems,
     videoRef,
     stemGains,
     masterGain: masterMonitorGain,
+    denoiseStemIdx,
   });
 
   // Reflect muted/volume onto the element (React doesn't track these). While live
@@ -849,11 +872,13 @@ function ViewerStage({
                 hasStems={hasStems}
                 stems={stems}
                 decoding={mixDecoding}
+                denoisingIdx={denoisingIdx}
                 ctlOf={ctlOf}
                 soloActive={soloActive}
                 onMute={onStemMute}
                 onSolo={onStemSolo}
                 onVolume={onStemVolume}
+                onDenoise={onStemDenoise}
               />
 
               <div className="flex items-center gap-1.5 font-mono text-xs tabular-nums text-muted-foreground">
@@ -920,15 +945,19 @@ function ViewerStage({
           audioSummary={
             !audioEnabled
               ? "audio removed"
-              : tracksEdited
-                ? audibleStems.length === 0
-                  ? "all tracks muted"
-                  : `${audibleStems.length} of ${stems.length} audio track${
-                      stems.length === 1 ? "" : "s"
-                    } mixed`
-                : hasStems
-                  ? "all audio tracks kept"
-                  : "audio kept"
+              : (tracksEdited
+                  ? audibleStems.length === 0
+                    ? "all tracks muted"
+                    : `${audibleStems.length} of ${stems.length} audio track${
+                        stems.length === 1 ? "" : "s"
+                      } mixed`
+                  : hasStems
+                    ? "all audio tracks kept"
+                    : "audio kept") +
+                // Note noise cancel when it's on for a stem that'll be heard.
+                (audibleStems.some((s) => ctlOf(s.index).denoise)
+                  ? " · noise cancelled"
+                  : "")
           }
           pending={exportPending}
           error={exportError}
@@ -946,7 +975,11 @@ function ViewerStage({
             // keeps every existing audio track.
             const tracks: TrackVolume[] | null =
               audioEnabled && hasStems && tracksEdited
-                ? audibleStems.map((s) => ({ index: s.index, volume: ctlOf(s.index).volume }))
+                ? audibleStems.map((s) => ({
+                    index: s.index,
+                    volume: ctlOf(s.index).volume,
+                    denoise: ctlOf(s.index).denoise,
+                  }))
                 : null;
             try {
               await onExport({
@@ -1075,11 +1108,13 @@ const AudioSettingsPopover = React.memo(function AudioSettingsPopover({
   hasStems,
   stems,
   decoding,
+  denoisingIdx,
   ctlOf,
   soloActive,
   onMute,
   onSolo,
   onVolume,
+  onDenoise,
 }: {
   audioEnabled: boolean;
   onToggleAudio: () => void;
@@ -1087,11 +1122,14 @@ const AudioSettingsPopover = React.memo(function AudioSettingsPopover({
   stems: AudioTrackInfo[];
   /** Decoding the stems for the live preview mix; controls aren't audible yet. */
   decoding: boolean;
+  /** Stem indices whose noise-cancel preview is still being computed (spinner). */
+  denoisingIdx: number[];
   ctlOf: (idx: number) => TrackCtl;
   soloActive: boolean;
   onMute: (idx: number) => void;
   onSolo: (idx: number) => void;
   onVolume: (idx: number, v: number) => void;
+  onDenoise: (idx: number) => void;
 }) {
   return (
     <Popover>
@@ -1157,6 +1195,14 @@ const AudioSettingsPopover = React.memo(function AudioSettingsPopover({
                   <CircleNotch weight="bold" className="size-3 animate-spin" />
                   Decoding…
                 </span>
+              ) : denoisingIdx.length ? (
+                // Text, not just the spinner: the OS "reduce motion" setting
+                // freezes every CSS animation, so a lone spinner reads as idle —
+                // the label is what tells the user noise cancel is working.
+                <span className="flex items-center gap-1.5 font-normal text-info/80">
+                  <CircleNotch weight="bold" className="size-3 animate-spin" />
+                  Cancelling noise…
+                </span>
               ) : null}
             </div>
             <div
@@ -1173,6 +1219,7 @@ const AudioSettingsPopover = React.memo(function AudioSettingsPopover({
               {stems.map((s) => {
                 const c = ctlOf(s.index);
                 const audible = soloActive ? c.solo : !c.muted;
+                const denoising = denoisingIdx.includes(s.index);
                 return (
                   <div key={s.index} className="flex items-center gap-2">
                     <span
@@ -1215,6 +1262,35 @@ const AudioSettingsPopover = React.memo(function AudioSettingsPopover({
                       )}
                     >
                       S
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onDenoise(s.index)}
+                      aria-label={c.denoise ? "Disable noise cancel" : "Enable noise cancel"}
+                      aria-pressed={c.denoise}
+                      aria-busy={denoising}
+                      title={
+                        denoising
+                          ? "Preparing noise cancel…"
+                          : c.denoise
+                            ? "Noise cancel on (removes background noise on export)"
+                            : "Noise cancel off"
+                      }
+                      className={cn(
+                        "flex size-7 shrink-0 items-center justify-center rounded-md border transition-colors",
+                        c.denoise
+                          ? "border-info/50 bg-info/15 text-info"
+                          : "border-border/70 bg-card/50 text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      {denoising ? (
+                        <CircleNotch weight="bold" className="size-3.5 animate-spin" />
+                      ) : (
+                        <Sparkle
+                          weight={c.denoise ? "fill" : "regular"}
+                          className="size-3.5"
+                        />
+                      )}
                     </button>
                     <Slider
                       min={0}

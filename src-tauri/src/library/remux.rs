@@ -60,12 +60,16 @@ pub struct AudioTrackInfo {
     pub name: String,
 }
 
-/// A selected stem to mix into the exported master: its [`AudioTrackInfo::index`]
-/// and a linear `gain` (0..1, the editor's 0–100 volume ÷ 100).
+/// A selected stem to mix into the exported master: its [`AudioTrackInfo::index`],
+/// a linear `gain` (0..1, the editor's 0–100 volume ÷ 100), and whether to run
+/// offline noise suppression on it (the editor's per-stem "noise cancel", used
+/// for the mic stem). A denoised stem can never take the stream-copy fast path —
+/// its samples are rewritten, so it's always decoded and re-encoded.
 #[derive(Debug, Clone, Copy)]
 pub struct TrackSel {
     pub index: u32,
     pub gain: f32,
+    pub denoise: bool,
 }
 
 /// Probe `input` for its audio streams (count + names), in file order. Audio
@@ -152,18 +156,20 @@ pub fn remux_with_tracks(
     // dropping any that don't exist (the file may have fewer tracks than the UI
     // last saw). Track 0 is the master; the editor normally selects stems (≥1).
     let audio_abs = audio_stream_indices(input)?;
-    let mut sel: Vec<(i32, f32)> = Vec::new();
+    let mut sel: Vec<(i32, f32, bool)> = Vec::new();
     for s in selections {
         if let Some(&abs) = audio_abs.get(s.index as usize) {
-            sel.push((abs, s.gain.max(0.0)));
+            sel.push((abs, s.gain.max(0.0), s.denoise));
         }
     }
 
-    // 0 stems → video-only. 1 stem at unity gain → loss-less stream copy.
+    // 0 stems → video-only. 1 stem at unity gain *and not denoised* → loss-less
+    // stream copy. A denoised stem rewrites its samples, so it must go through
+    // the decode→enhance→re-encode path even at unity gain.
     if sel.is_empty() {
         return trim::trim_clip(input, output, start, end, true);
     }
-    if sel.len() == 1 && (sel[0].1 - 1.0).abs() < 1e-3 {
+    if sel.len() == 1 && (sel[0].1 - 1.0).abs() < 1e-3 && !sel[0].2 {
         return trim::trim_keeping_audio(input, output, start, end, sel[0].0);
     }
 
@@ -219,7 +225,7 @@ fn remux_mix(
     output: &Path,
     start: f64,
     end: f64,
-    sel: &[(i32, f32)],
+    sel: &[(i32, f32, bool)],
 ) -> Result<TrimResult, String> {
     let c_in = CString::new(input.to_str().ok_or("input path not UTF-8")?)
         .map_err(|_| "input path has NUL")?;
@@ -561,6 +567,8 @@ unsafe fn collect_video_ops(
 struct StemDecoder {
     stream_idx: i32,
     gain: f32,
+    /// Run offline noise suppression on this stem's PCM before mixing (the mic).
+    denoise: bool,
     ctx: *mut ffi::AVCodecContext,
     swr: *mut ffi::SwrContext,
     out: Vec<f32>,
@@ -571,12 +579,12 @@ struct StemDecoder {
 /// buffer (length = the longest stem). Seeks `ic` back to the start first.
 unsafe fn decode_and_mix(
     ic: *mut ffi::AVFormatContext,
-    sel: &[(i32, f32)],
+    sel: &[(i32, f32, bool)],
 ) -> Result<Vec<f32>, String> {
     let mut decoders: Vec<StemDecoder> = Vec::new();
     // Build a decoder + resampler per selected stream.
     let build = (|| -> Result<(), String> {
-        for &(abs, gain) in sel {
+        for &(abs, gain, denoise) in sel {
             let st = *(*ic).streams.offset(abs as isize);
             let par = (*st).codecpar;
             let codec = ffi::avcodec_find_decoder((*par).codec_id);
@@ -609,6 +617,7 @@ unsafe fn decode_and_mix(
             decoders.push(StemDecoder {
                 stream_idx: abs,
                 gain,
+                denoise,
                 ctx,
                 swr,
                 out: Vec::new(),
@@ -658,6 +667,14 @@ unsafe fn decode_and_mix(
     if let Err(e) = decode {
         free_decoders(&mut decoders);
         return Err(e);
+    }
+
+    // Offline noise suppression on each flagged stem (the mic), on its decoded
+    // 48 kHz stereo PCM — before mixing, so the cleaned signal is what gets
+    // gain-scaled and re-encoded. Runs per stem; a failure is a no-op inside
+    // `denoise` (keeps the original samples), so the export never loses audio.
+    for d in decoders.iter_mut().filter(|d| d.denoise) {
+        crate::core::denoise::denoise_interleaved_stereo_48k(&mut d.out);
     }
 
     // Mix (gain-scaled) into one buffer the length of the longest stem.
@@ -905,7 +922,7 @@ mod tests {
         make_two_track_clip(&src);
 
         // Track index 1 = the "Microphone" stem.
-        let sel = [TrackSel { index: 1, gain: 1.0 }];
+        let sel = [TrackSel { index: 1, gain: 1.0, denoise: false }];
         let res = remux_with_tracks(&src, &out, 0.0, 1.4, &sel).expect("remux copy");
         assert!(res.width > 0 && res.height > 0, "video lost in export");
         assert!(res.duration_secs > 0.0);
@@ -926,8 +943,8 @@ mod tests {
         make_two_track_clip(&src);
 
         let sel = [
-            TrackSel { index: 0, gain: 0.5 },
-            TrackSel { index: 1, gain: 0.8 },
+            TrackSel { index: 0, gain: 0.5, denoise: false },
+            TrackSel { index: 1, gain: 0.8, denoise: false },
         ];
         let res = remux_with_tracks(&src, &out, 0.0, 1.4, &sel).expect("remux mix");
         assert!(res.width > 0 && res.height > 0, "video lost in export");
@@ -936,6 +953,28 @@ mod tests {
         let tracks = probe_audio_tracks(&out).expect("probe out");
         assert_eq!(tracks.len(), 1, "expected one mixed master, got {tracks:?}");
         assert_eq!(tracks[0].name, "All Audio");
+
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&out);
+    }
+
+    /// A denoised single stem at unity gain skips the stream-copy fast path
+    /// (its samples are rewritten) and re-encodes one master without panicking.
+    #[test]
+    fn remux_denoise_reencodes_master() {
+        let src = std::env::temp_dir().join("hako_remux_dn_src.mp4");
+        let out = std::env::temp_dir().join("hako_remux_dn_out.mp4");
+        make_two_track_clip(&src);
+
+        // Mic stem (index 1) at unity gain but with noise suppression on — must
+        // decode → denoise → re-encode, not stream-copy.
+        let sel = [TrackSel { index: 1, gain: 1.0, denoise: true }];
+        let res = remux_with_tracks(&src, &out, 0.0, 1.4, &sel).expect("remux denoise");
+        assert!(res.width > 0 && res.height > 0, "video lost in export");
+        assert!(res.duration_secs > 0.0, "no duration");
+
+        let tracks = probe_audio_tracks(&out).expect("probe out");
+        assert_eq!(tracks.len(), 1, "expected one denoised master, got {tracks:?}");
 
         let _ = std::fs::remove_file(&src);
         let _ = std::fs::remove_file(&out);

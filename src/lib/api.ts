@@ -331,10 +331,15 @@ export async function readClipRange(
   return invoke<ArrayBuffer>("read_clip_range", { id, start, end });
 }
 
-/** A stem selected for export, with its 0–100 volume (mirrors `TrackVolume`). */
+/**
+ * A stem selected for export (mirrors Rust `TrackVolume`): its 0–100 volume and
+ * whether to apply offline noise suppression (the mic stem's "noise cancel").
+ */
 export interface TrackVolume {
   index: number;
   volume: number;
+  /** Run RNNoise noise suppression on this stem when re-mixing the export. */
+  denoise?: boolean;
 }
 
 /**

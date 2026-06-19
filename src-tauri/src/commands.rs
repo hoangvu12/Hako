@@ -727,11 +727,15 @@ pub async fn read_clip_range(
     Ok(tauri::ipc::Response::new(buf))
 }
 
-/// One selected stem from the editor: its audio-track index + 0–100 volume.
+/// One selected stem from the editor: its audio-track index, 0–100 volume, and
+/// whether to apply offline noise suppression to it (the mic stem's "noise
+/// cancel"). `denoise` defaults to false for older callers (serde default).
 #[derive(Debug, Clone, Copy, serde::Deserialize)]
 pub struct TrackVolume {
     pub index: u32,
     pub volume: f32,
+    #[serde(default)]
+    pub denoise: bool,
 }
 
 /// Export a clip to `[start, end)` with its audio being the chosen `tracks`
@@ -780,6 +784,7 @@ fn remux_with_tracks_blocking(
         .map(|t| crate::library::remux::TrackSel {
             index: t.index,
             gain: (t.volume.max(0.0)) / 100.0,
+            denoise: t.denoise,
         })
         .collect();
 
