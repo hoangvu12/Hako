@@ -119,13 +119,22 @@ async function windowAction(action: "minimize" | "toggleMaximize" | "close") {
 
 export function WindowTitlebar() {
   const router = useRouter();
-  // Subscribe to location so the nav arrows re-evaluate on every navigation.
-  const location = useRouterState({ select: (s) => s.location });
-  const canBack = router.history.canGoBack();
-  // No `canGoForward` in the history API — derive it: a forward entry exists
-  // when the current index isn't the last one in the session history.
-  const tsrIndex = (location.state as { __TSR_index?: number }).__TSR_index ?? 0;
-  const canForward = tsrIndex < router.history.length - 1;
+  // `router.history` is a stable object whose `canGoBack()`/`length` mutate in
+  // place — impure reads. Computing them in the render body lets React Compiler
+  // cache them against the (never-changing) `router`, freezing the arrows. Doing
+  // it inside `useRouterState`'s selector instead recomputes on every router
+  // state change (structural sharing keeps the result stable when unchanged).
+  const { canBack, canForward } = useRouterState({
+    select: (s) => {
+      // No `canGoForward` in the history API — derive it: a forward entry exists
+      // when the current index isn't the last one in the session history.
+      const idx = (s.location.state as { __TSR_index?: number }).__TSR_index ?? 0;
+      return {
+        canBack: router.history.canGoBack(),
+        canForward: idx < router.history.length - 1,
+      };
+    },
+  });
 
   // Mirror the OS window's maximized state so the control swaps maximize/restore.
   const [maximized, setMaximized] = useState(false);

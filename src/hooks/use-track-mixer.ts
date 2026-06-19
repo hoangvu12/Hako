@@ -121,12 +121,17 @@ export function useTrackMixer({
   const sourcesRef = React.useRef<AudioBufferSourceNode[]>([]);
   const anchorRef = React.useRef<Anchor | null>(null);
   const rafRef = React.useRef<number | null>(null);
-  // Latest gain targets, read on every (re)mount of the graph so a decode that
-  // finishes after the user already muted a stem starts at the right levels.
+  // Latest gain targets, read when a decode finishes (async, long after commit)
+  // so a stem the user already muted starts at the right level. Synced in an
+  // effect, not during render: writing a ref mid-render is a Rules-of-React
+  // violation that React Compiler miscompiles (it broke live mixing). A commit's
+  // worth of lag is irrelevant here — decode completion is seconds away.
   const stemGainsRef = React.useRef(stemGains);
   const masterGainRef = React.useRef(masterGain);
-  stemGainsRef.current = stemGains;
-  masterGainRef.current = masterGain;
+  React.useEffect(() => {
+    stemGainsRef.current = stemGains;
+    masterGainRef.current = masterGain;
+  });
 
   const hasStems = stems.length > 0;
   // Stable key so the decode effect re-runs only when the clip or its stem set
