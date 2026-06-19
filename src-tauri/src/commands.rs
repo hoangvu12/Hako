@@ -416,15 +416,21 @@ pub fn save_clip_full(
 /// Save the last `seconds` of buffered gameplay (defaults to the configured clip
 /// length, clamped to the buffer depth). Returns the record.
 #[tauri::command]
-pub fn save_clip(app: AppHandle, seconds: Option<u32>) -> Result<ClipRecord, String> {
-    let seconds = seconds.unwrap_or_else(|| {
-        app.state::<SettingsState>()
-            .0
-            .lock()
-            .map(|s| s.clip_capture_seconds())
-            .unwrap_or(30)
-    });
-    save_clip_full(&app, seconds, None)
+pub async fn save_clip(app: AppHandle, seconds: Option<u32>) -> Result<ClipRecord, String> {
+    // Muxing the buffered clip + rendering its thumbnail/filmstrip is heavy IO;
+    // off the main thread so a manual save (UI button / F9) doesn't freeze the app.
+    tauri::async_runtime::spawn_blocking(move || {
+        let seconds = seconds.unwrap_or_else(|| {
+            app.state::<SettingsState>()
+                .0
+                .lock()
+                .map(|s| s.clip_capture_seconds())
+                .unwrap_or(30)
+        });
+        save_clip_full(&app, seconds, None)
+    })
+    .await
+    .map_err(|e| format!("save task failed: {e}"))?
 }
 
 /// A fresh `<Videos>/Hako/hako_clip_<ms>.mp4` path (for the auto-clipper to cut
@@ -574,15 +580,33 @@ pub enum TrimMode {
 /// The FFmpeg remux is slow IO, so the library lock is only held to read the
 /// source row and to commit the result — never across the trim itself.
 #[tauri::command]
-pub fn trim_clip(
+pub async fn trim_clip(
     app: AppHandle,
-    library: State<LibraryState>,
     id: i64,
     start: f64,
     end: f64,
     drop_audio: bool,
     mode: TrimMode,
 ) -> Result<ClipRecord, String> {
+    // Off the main thread (see `remux_with_tracks`): the FFmpeg stream-copy, the
+    // thumbnail/filmstrip render, and the overwrite retry-sleep would otherwise
+    // freeze the UI for the duration of the save.
+    tauri::async_runtime::spawn_blocking(move || {
+        trim_clip_blocking(app, id, start, end, drop_audio, mode)
+    })
+    .await
+    .map_err(|e| format!("trim task failed: {e}"))?
+}
+
+fn trim_clip_blocking(
+    app: AppHandle,
+    id: i64,
+    start: f64,
+    end: f64,
+    drop_audio: bool,
+    mode: TrimMode,
+) -> Result<ClipRecord, String> {
+    let library = app.state::<LibraryState>();
     let rec = {
         let lib = library.0.lock().map_err(|_| "library poisoned")?;
         lib.get(id)?.ok_or("clip not found")?
@@ -653,15 +677,23 @@ pub fn trim_clip(
 /// mute/solo/volume controls. Audio track 0 is the master "All Audio" mix;
 /// 1..N are the stems. A clip with ≤1 track shows no per-track UI.
 #[tauri::command]
-pub fn clip_audio_tracks(
-    library: State<LibraryState>,
+pub async fn clip_audio_tracks(
+    app: AppHandle,
     id: i64,
 ) -> Result<Vec<crate::library::remux::AudioTrackInfo>, String> {
-    let rec = {
-        let lib = library.0.lock().map_err(|_| "library poisoned")?;
-        lib.get(id)?.ok_or("clip not found")?
-    };
-    crate::library::remux::probe_audio_tracks(&PathBuf::from(&rec.path))
+    // `probe_audio_tracks` opens the file with FFmpeg — file IO + demux setup that
+    // runs on the main thread for a sync command. This fires the moment a clip is
+    // opened in the editor, so do it on the blocking pool to keep the open snappy.
+    tauri::async_runtime::spawn_blocking(move || {
+        let library = app.state::<LibraryState>();
+        let rec = {
+            let lib = library.0.lock().map_err(|_| "library poisoned")?;
+            lib.get(id)?.ok_or("clip not found")?
+        };
+        crate::library::remux::probe_audio_tracks(&PathBuf::from(&rec.path))
+    })
+    .await
+    .map_err(|e| format!("probe task failed: {e}"))?
 }
 
 /// Read a byte range `[start, end)` of a clip file for the editor's live
@@ -708,16 +740,36 @@ pub struct TrackVolume {
 /// `tracks` ⇒ video-only; one stem at full volume ⇒ loss-less stream copy;
 /// otherwise the stems are decoded, mixed, and re-encoded to one master track.
 /// `Copy` writes a new library clip; `Overwrite` replaces the original.
+/// The FFmpeg decode/mix/re-encode (and, on overwrite, the retry-sleep loop in
+/// `replace_file_retrying`) is heavy, blocking work. A synchronous `#[command]`
+/// runs on the app's main thread, so doing this inline froze the whole UI while a
+/// clip exported. The command (below) runs this on the blocking pool instead, so
+/// the main thread stays free and the webview's "Saving…" state keeps animating.
 #[tauri::command]
-pub fn remux_with_tracks(
+pub async fn remux_with_tracks(
     app: AppHandle,
-    library: State<LibraryState>,
     id: i64,
     start: f64,
     end: f64,
     tracks: Vec<TrackVolume>,
     mode: TrimMode,
 ) -> Result<ClipRecord, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        remux_with_tracks_blocking(app, id, start, end, tracks, mode)
+    })
+    .await
+    .map_err(|e| format!("export task failed: {e}"))?
+}
+
+fn remux_with_tracks_blocking(
+    app: AppHandle,
+    id: i64,
+    start: f64,
+    end: f64,
+    tracks: Vec<TrackVolume>,
+    mode: TrimMode,
+) -> Result<ClipRecord, String> {
+    let library = app.state::<LibraryState>();
     let rec = {
         let lib = library.0.lock().map_err(|_| "library poisoned")?;
         lib.get(id)?.ok_or("clip not found")?
