@@ -184,8 +184,8 @@
   }
   /* Respect the OS "reduce motion" / "disable animations" accessibility setting
    * (Windows: Settings → Accessibility → Visual effects → Animation effects).
-   * Neutralizes every CSS animation/transition app-wide — spinners settle to a
-   * static frame, fades/slides become instant — without touching layout. */
+   * Neutralizes every CSS animation/transition app-wide — fades/slides become
+   * instant — without touching layout. */
   @media (prefers-reduced-motion: reduce) {
     *,
     *::before,
@@ -194,6 +194,15 @@
       animation-iteration-count: 1 !important;
       transition-duration: 0.01ms !important;
       scroll-behavior: auto !important;
+    }
+    /* …except loading spinners. A spinner is a functional progress indicator,
+     * not decorative motion — freezing it to a static frame reads as "idle/
+     * broken" exactly when something is actually working (decode, export, noise
+     * cancel). Re-assert its spin so it keeps conveying "busy". The class
+     * selector outranks the `*` reset, so this wins. */
+    .animate-spin {
+      animation-duration: 1s !important;
+      animation-iteration-count: infinite !important;
     }
   }
   body {
