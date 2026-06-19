@@ -203,6 +203,20 @@ export function useTrackMixer({
             read: (start, end) =>
               readClipRange(clipId, start, end).then((b) => new Uint8Array(b)),
             getSize: () => fileSize,
+            // Audio is finely interleaved with 20 Mbps video, so decoding a stem
+            // touches byte ranges spanning the *whole* file. mediabunny's default
+            // ("none") issues one IPC round-trip per granular read — thousands of
+            // tiny `read_clip_range` invokes (~30s). "fileSystem" (fixed 64 KiB
+            // windows) barely helped because each window still holds ~1 audio
+            // frame. "network" instead grows the read-ahead exponentially up to
+            // 8 MiB for the sequential forward scan a full-track decode is,
+            // collapsing thousands of reads into a few dozen big ones. Padded
+            // ranges are clamped to the file size by the orchestrator, so they
+            // never exceed EOF (the backend would otherwise return a short
+            // buffer). The big cache lets the parallel per-stem scans (below)
+            // share fetched windows instead of each re-reading the whole file.
+            prefetchProfile: "network",
+            maxCacheSize: 64 * 2 ** 20,
           }),
           formats: ALL_FORMATS,
         });
@@ -216,21 +230,31 @@ export function useTrackMixer({
 
         const gains = new Map<number, GainNode>();
         const buffers = new Map<number, AudioBuffer>();
-        for (const s of stems) {
-          // Audio ordinal (0 = master, 1..N stems) indexes the track list 1:1
-          // with the backend's `audio_stream_indices` ordering.
-          const track = audioTracks[s.index];
-          if (!track) continue;
-          const buffer = await decodeStem(ctx, track);
-          if (cancelled) return;
-          if (!buffer) continue;
+        // Decode every stem concurrently. They share one `input`/source, so the
+        // scans advance through the file together and hit the orchestrator cache
+        // for each other's windows — the file is read ~once, not once per stem
+        // (sequential decode rescanned the whole file N times). `decodeStem` only
+        // touches its own track + the shared (thread-safe) source.
+        const decoded = await Promise.all(
+          stems.map(async (s) => {
+            // Audio ordinal (0 = master, 1..N stems) indexes the track list 1:1
+            // with the backend's `audio_stream_indices` ordering.
+            const track = audioTracks[s.index];
+            if (!track) return null;
+            const buffer = await decodeStem(ctx!, track);
+            return buffer ? { index: s.index, buffer } : null;
+          }),
+        );
+        if (cancelled) return;
+        for (const d of decoded) {
+          if (!d) continue;
           const gain = ctx.createGain();
-          gain.gain.value = stemGainsRef.current.get(s.index) ?? 1;
+          gain.gain.value = stemGainsRef.current.get(d.index) ?? 1;
           gain.connect(master);
-          gains.set(s.index, gain);
-          buffers.set(s.index, buffer);
+          gains.set(d.index, gain);
+          buffers.set(d.index, d.buffer);
         }
-        if (cancelled || !buffers.size) return;
+        if (!buffers.size) return;
 
         graphRef.current = { ctx, master, gains, buffers };
         const v = videoRef.current;
