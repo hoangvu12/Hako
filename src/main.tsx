@@ -5,7 +5,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { router } from "./router";
+import { initReactScan } from "./perf/react-scan";
 import "./styles.css";
+
+// Dev-only React render profiling (overlay + agent-readable JSON dump).
+// Must run before createRoot so it instruments the very first render.
+initReactScan();
 
 const queryClient = new QueryClient();
 

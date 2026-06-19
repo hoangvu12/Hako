@@ -12,7 +12,10 @@ import {
   useSaveClip,
 } from "@/hooks/use-library";
 import { useSettings } from "@/hooks/use-settings";
-import { useValorantAssets } from "@/hooks/use-valorant-assets";
+import {
+  useValorantAssets,
+  type ValorantAssets,
+} from "@/hooks/use-valorant-assets";
 import type { ClipRecord } from "@/lib/api";
 
 // Grid metrics (kept in sync with the row layout below). `GAP` mirrors the old
@@ -75,13 +78,71 @@ function flattenSections(
   return rows;
 }
 
+// Memoized row pieces. The virtualizer re-renders `ClipsPage` on every scroll
+// tick; with these boundaries (and stable props — the `rows`/`row.clips` arrays
+// are memoized, the handlers and `assets` are stable) an already-mounted header
+// or clip row short-circuits instead of re-rendering as you scroll.
+const HeaderRow = React.memo(function HeaderRow({
+  label,
+  count,
+}: {
+  label: string;
+  count: number;
+}) {
+  return (
+    <div className="flex items-baseline gap-2 pb-3 pt-1">
+      <h2 className="text-sm font-semibold text-foreground">{label}</h2>
+      <span className="text-xs font-medium text-muted-foreground">
+        {count} {count === 1 ? "clip" : "clips"}
+      </span>
+    </div>
+  );
+});
+
+const ClipRow = React.memo(function ClipRow({
+  clips,
+  columns,
+  assets,
+  onDelete,
+  onRename,
+}: {
+  clips: ClipRecord[];
+  columns: number;
+  assets: ValorantAssets;
+  onDelete: (clip: ClipRecord) => void;
+  onRename: (clip: ClipRecord) => void;
+}) {
+  return (
+    <div
+      className="grid gap-3 pb-3"
+      style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+    >
+      {clips.map((clip) => (
+        <ClipCard
+          key={clip.id}
+          clip={clip}
+          assets={assets}
+          onDelete={onDelete}
+          onRename={onRename}
+        />
+      ))}
+    </div>
+  );
+});
+
 export default function ClipsPage() {
   const { data: clips, isLoading } = useClips();
   const { data: settings } = useSettings();
   const clipSeconds = settings?.clip_seconds ?? 30;
-  const save = useSaveClip();
-  const del = useDeleteClip();
-  const rename = useRenameClip();
+  // Destructure the (referentially stable) mutate fns so the handlers below can
+  // be memoized without re-binding when a mutation's state changes.
+  const {
+    mutate: saveClip,
+    isPending: saving,
+    error: saveError,
+  } = useSaveClip();
+  const { mutate: deleteClip } = useDeleteClip();
+  const { mutate: renameClip } = useRenameClip();
   const assets = useValorantAssets();
 
   const allClips = React.useMemo(() => clips ?? [], [clips]);
@@ -112,10 +173,20 @@ export default function ClipsPage() {
     rowVirtualizer.measure();
   }, [columns, rows, rowVirtualizer]);
 
-  function handleRename(clip: ClipRecord) {
-    const next = window.prompt("Rename clip", clip.title);
-    if (next && next !== clip.title) rename.mutate({ id: clip.id, title: next });
-  }
+  // Stable per-card handlers (each takes the clip) so `ClipCard`'s `React.memo`
+  // isn't defeated by fresh closures on every grid render.
+  const handleRename = React.useCallback(
+    (clip: ClipRecord) => {
+      const next = window.prompt("Rename clip", clip.title);
+      if (next && next !== clip.title) renameClip({ id: clip.id, title: next });
+    },
+    [renameClip]
+  );
+  const handleDelete = React.useCallback(
+    (clip: ClipRecord) => deleteClip(clip.id),
+    [deleteClip]
+  );
+  const handleSave = React.useCallback(() => saveClip(undefined), [saveClip]);
 
   const noClipsAtAll = !isLoading && allClips.length === 0;
   const noMatches = !isLoading && allClips.length > 0 && total === 0;
@@ -124,8 +195,8 @@ export default function ClipsPage() {
     <div className="flex h-full flex-col">
       <ClipsToolbar
         clipSeconds={clipSeconds}
-        onSave={() => save.mutate(undefined)}
-        saving={save.isPending}
+        onSave={handleSave}
+        saving={saving}
         total={total}
         filters={filters}
         facets={facets}
@@ -136,9 +207,9 @@ export default function ClipsPage() {
         assets={assets}
       />
 
-      {save.error ? (
+      {saveError ? (
         <p className="shrink-0 bg-panel px-6 pb-2 text-sm text-destructive">
-          {String(save.error)}
+          {String(saveError)}
         </p>
       ) : null}
 
@@ -188,31 +259,15 @@ export default function ClipsPage() {
                   style={{ transform: `translateY(${virtualRow.start}px)` }}
                 >
                   {row.type === "header" ? (
-                    <div className="flex items-baseline gap-2 pb-3 pt-1">
-                      <h2 className="text-sm font-semibold text-foreground">
-                        {row.label}
-                      </h2>
-                      <span className="text-xs font-medium text-muted-foreground">
-                        {row.count} {row.count === 1 ? "clip" : "clips"}
-                      </span>
-                    </div>
+                    <HeaderRow label={row.label} count={row.count} />
                   ) : (
-                    <div
-                      className="grid gap-3 pb-3"
-                      style={{
-                        gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-                      }}
-                    >
-                      {row.clips.map((clip) => (
-                        <ClipCard
-                          key={clip.id}
-                          clip={clip}
-                          assets={assets}
-                          onDelete={() => del.mutate(clip.id)}
-                          onRename={() => handleRename(clip)}
-                        />
-                      ))}
-                    </div>
+                    <ClipRow
+                      clips={row.clips}
+                      columns={columns}
+                      assets={assets}
+                      onDelete={handleDelete}
+                      onRename={handleRename}
+                    />
                   )}
                 </div>
               );

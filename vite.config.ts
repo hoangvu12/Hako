@@ -8,7 +8,14 @@ const host = process.env.TAURI_DEV_HOST;
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react({
+      // React Compiler auto-memoizes components/values at build time, replacing
+      // most manual React.memo/useCallback/useMemo. Targets React 19 by default.
+      babel: { plugins: [["babel-plugin-react-compiler", {}]] },
+    }),
+    tailwindcss(),
+  ],
   resolve: {
     alias: { "@": path.resolve(__dirname, "./src") },
   },

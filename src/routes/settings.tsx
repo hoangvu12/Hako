@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createLazyRoute, useSearch } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -407,7 +407,9 @@ export const Route = createLazyRoute("/settings")({
 
 function SettingsPage() {
   const { data } = useSettings();
-  const update = useUpdateSettings();
+  // `mutate`/`error` are pulled out individually: `mutate` is referentially
+  // stable (react-query), so the mutators below stay stable too.
+  const { mutate: saveSettings, error: saveError } = useUpdateSettings();
   const qc = useQueryClient();
   // GPU list for the "Selected GPU" dropdown. Cheap, cached; failure just leaves
   // the dropdown with the Auto option.
@@ -419,6 +421,14 @@ function SettingsPage() {
   });
   const search = useSearch({ from: "/settings" });
   const [draft, setDraft] = useState<Settings | null>(null);
+  // Latest draft mirrored into a ref so the mutators can read it without closing
+  // over `draft` — that keeps their identity stable across renders, which lets
+  // the React Compiler memoize each Row/Switch/Select so only the control you
+  // touched re-renders instead of the whole page.
+  const draftRef = useRef<Settings | null>(null);
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
   const [active, setActive] = useState<SectionKey>(
     isSectionKey(search.section) ? search.section : "clip"
   );
@@ -435,10 +445,10 @@ function SettingsPage() {
   // that into the draft so the UI stops showing the value that didn't save.
   // Keyed on the error edge (not `data`) so it can't clobber in-flight edits.
   useEffect(() => {
-    if (!update.error) return;
+    if (!saveError) return;
     const persisted = qc.getQueryData<Settings>(["settings"]);
     if (persisted) setDraft(persisted);
-  }, [update.error, qc]);
+  }, [saveError, qc]);
 
   // Deep-link: jump to a section when navigated with `?section=` (e.g. from the
   // recorder popover) — including while the page is already mounted.
@@ -452,54 +462,77 @@ function SettingsPage() {
     );
   }
 
+  // All mutators read the live draft from `draftRef` rather than the `draft`
+  // closure, so their identity is stable render-to-render. Each guards on a
+  // non-null draft (we're past the loading return, so it's always set in
+  // practice) to satisfy the type and the impossible early-call case.
   const persist = (next: Settings) => {
     setDraft(next);
-    update.mutate(next);
+    saveSettings(next);
   };
   // Instant-apply for toggles/selects.
-  const set = <K extends keyof Settings>(key: K, value: Settings[K]) =>
-    persist({ ...draft, [key]: value });
+  const set = <K extends keyof Settings>(key: K, value: Settings[K]) => {
+    const d = draftRef.current;
+    if (d) persist({ ...d, [key]: value });
+  };
   // Local edit (number/text) — committed on blur to avoid a save per keystroke.
-  const setLocal = <K extends keyof Settings>(key: K, value: Settings[K]) =>
-    setDraft({ ...draft, [key]: value });
-  const commit = () => update.mutate(draft);
+  const setLocal = <K extends keyof Settings>(key: K, value: Settings[K]) => {
+    const d = draftRef.current;
+    if (d) setDraft({ ...d, [key]: value });
+  };
+  const commit = () => {
+    const d = draftRef.current;
+    if (d) saveSettings(d);
+  };
   // Apply a preset: highlight its card and write its concrete knobs at once.
-  const applyPreset = (p: (typeof PRESETS)[number]) =>
-    persist({
-      ...draft,
-      quality_preset: p.key,
-      resolution: p.resolution,
-      target_fps: p.fps,
-      bitrate_mbps: p.bitrate,
-    });
-  const toggleEvent = (key: keyof EventToggles) =>
-    persist({ ...draft, events: { ...draft.events, [key]: !draft.events[key] } });
+  const applyPreset = (p: (typeof PRESETS)[number]) => {
+    const d = draftRef.current;
+    if (d)
+      persist({
+        ...d,
+        quality_preset: p.key,
+        resolution: p.resolution,
+        target_fps: p.fps,
+        bitrate_mbps: p.bitrate,
+      });
+  };
+  const toggleEvent = (key: keyof EventToggles) => {
+    const d = draftRef.current;
+    if (d) persist({ ...d, events: { ...d.events, [key]: !d.events[key] } });
+  };
   // Per-event timing edits. `setTimingLocal` updates the draft live while
   // dragging (no save per pixel); `commitTiming` persists the final value on
   // release. The commit takes the explicit value (not a stale closure read) so a
   // single click — where onValueChange + onValueCommit fire in the same tick —
   // still saves the new value.
   const timingNext = (
+    d: Settings,
     key: keyof EventToggles,
     field: "before" | "after",
     value: number
   ): Settings => ({
-    ...draft,
+    ...d,
     event_timings: {
-      ...draft.event_timings,
-      [key]: { ...draft.event_timings[key], [field]: value },
+      ...d.event_timings,
+      [key]: { ...d.event_timings[key], [field]: value },
     },
   });
   const setTimingLocal = (
     key: keyof EventToggles,
     field: "before" | "after",
     value: number
-  ) => setDraft(timingNext(key, field, value));
+  ) => {
+    const d = draftRef.current;
+    if (d) setDraft(timingNext(d, key, field, value));
+  };
   const commitTiming = (
     key: keyof EventToggles,
     field: "before" | "after",
     value: number
-  ) => persist(timingNext(key, field, value));
+  ) => {
+    const d = draftRef.current;
+    if (d) persist(timingNext(d, key, field, value));
+  };
 
   const q = navQuery.trim().toLowerCase();
   // Single pass: filter each group's items and keep only non-empty groups in one
@@ -1100,8 +1133,8 @@ function SettingsPage() {
             </>
           )}
 
-          {update.error ? (
-            <p className="text-sm text-destructive">{String(update.error)}</p>
+          {saveError ? (
+            <p className="text-sm text-destructive">{String(saveError)}</p>
           ) : null}
         </div>
       </div>

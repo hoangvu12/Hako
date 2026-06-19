@@ -1,3 +1,4 @@
+import * as React from "react";
 import {
   Scissors,
   CaretDown,
@@ -269,7 +270,13 @@ function SingleSelectFilter<T extends string>({
   );
 }
 
-export function ClipsToolbar({
+// Memoized: the clips grid re-renders `ClipsPage` on every scroll tick (the
+// virtualizer's own state). Without this boundary, each of those re-rendered the
+// whole toolbar and every filter Popover/Popper subtree — scroll state the
+// toolbar doesn't care about. All props from `useClipFilters` are already stable
+// (useMemo/useCallback), so this holds as long as the parent passes a stable
+// `onSave` too.
+export const ClipsToolbar = React.memo(function ClipsToolbar({
   clipSeconds,
   onSave,
   saving,
@@ -466,4 +473,4 @@ export function ClipsToolbar({
       </div>
     </div>
   );
-}
+});

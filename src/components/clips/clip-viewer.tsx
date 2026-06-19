@@ -128,6 +128,81 @@ function rulerStep(duration: number): number {
   return steps.find((s) => s >= target) ?? Math.ceil(target);
 }
 
+/**
+ * Subscribe to a <video>'s playback position. Returns the current time, updated
+ * from the element's own `timeupdate` (during playback) and `seeking`/`seeked`
+ * (during scrubbing). Keeping this in small leaf components — instead of one
+ * `current` state on `ViewerStage` — means the heavy editor (filmstrip, ruler,
+ * details panel) no longer re-renders ~10×/sec while a clip plays; only the
+ * playhead, the time readout, and the overlay seek bar do.
+ */
+function useVideoTime(
+  videoRef: React.RefObject<HTMLVideoElement | null>,
+): number {
+  const [time, setTime] = React.useState(0);
+  React.useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const sync = () => setTime(v.currentTime);
+    sync();
+    v.addEventListener("timeupdate", sync);
+    v.addEventListener("seeking", sync);
+    v.addEventListener("seeked", sync);
+    return () => {
+      v.removeEventListener("timeupdate", sync);
+      v.removeEventListener("seeking", sync);
+      v.removeEventListener("seeked", sync);
+    };
+  }, [videoRef]);
+  return time;
+}
+
+/** Live `0:03 / 0:12` readout — isolated so it, not the player, ticks. */
+function TimeReadout({
+  videoRef,
+  duration,
+}: {
+  videoRef: React.RefObject<HTMLVideoElement | null>;
+  duration: number;
+}) {
+  const current = useVideoTime(videoRef);
+  return (
+    <span className="font-mono text-xs tabular-nums text-white/85">
+      {fmtTime(current)} / {fmtTime(duration)}
+    </span>
+  );
+}
+
+/** The draggable filmstrip playhead — positioned from the live playback time. */
+function Playhead({
+  videoRef,
+  duration,
+  onPointerDown,
+}: {
+  videoRef: React.RefObject<HTMLVideoElement | null>;
+  duration: number;
+  onPointerDown: (e: React.PointerEvent) => void;
+}) {
+  const current = useVideoTime(videoRef);
+  const progress = duration > 0 ? (current / duration) * 100 : 0;
+  return (
+    <div
+      onPointerDown={onPointerDown}
+      role="slider"
+      aria-label="Playhead"
+      aria-valuemin={0}
+      aria-valuemax={Math.round(duration)}
+      aria-valuenow={Math.round(current)}
+      aria-valuetext={fmtTime(current)}
+      className="pointer-events-auto absolute -top-2 -bottom-2 z-40 flex w-5 -translate-x-1/2 cursor-ew-resize justify-center touch-none"
+      style={{ left: `${progress}%` }}
+    >
+      <span className="h-full w-0.5 bg-primary shadow-[0_0_8px] shadow-primary/50" />
+      <span className="absolute -top-1 left-1/2 h-3.5 w-3 -translate-x-1/2 rounded-sm bg-primary shadow" />
+    </div>
+  );
+}
+
 export function ClipViewer({ clipId }: { clipId: string }) {
   const navigate = useNavigate();
   const { data: clips, isLoading } = useClips();
@@ -285,17 +360,17 @@ function ViewerStage({
     ? `${convertFileSrc(clip.filmstrip_path)}?v=${clip.size_bytes}`
     : undefined;
 
-  const [playing, setPlaying] = React.useState(false);
-  const [muted, setMuted] = React.useState(false);
-  const [volume, setVolume] = React.useState(1);
-  const [current, setCurrent] = React.useState(0);
   // Stored duration is the render-time fallback; the <video>'s reported duration
   // (genuinely new data) wins once loaded. Reading the prop directly avoids the
   // stale copy a `useState(clip.duration_secs)` would hold if `clip` changed.
+  const [muted, setMuted] = React.useState(false);
+  const [volume, setVolume] = React.useState(1);
   const [videoDuration, setVideoDuration] = React.useState<number | null>(null);
   const duration = videoDuration ?? clip.duration_secs;
   const [fullscreen, setFullscreen] = React.useState(false);
-  const [speedIdx, setSpeedIdx] = React.useState(0);
+  // Speed lives in <SpeedButton> (it has no audio coupling), but mute/volume stay
+  // here: they feed the live audio mixer's master gain *and* the "m" shortcut, so
+  // isolating them safely needs a shared store rather than a ref bridge.
 
   // Editor state
   const [trimStart, setTrimStart] = React.useState(0);
@@ -326,6 +401,22 @@ function ViewerStage({
         [idx]: { ...(prev[idx] ?? DEFAULT_CTL), ...patch },
       })),
     [],
+  );
+  // Stable handlers so the memoized <AudioSettingsPopover> doesn't re-render on
+  // unrelated stage updates (trim drags, etc.) — only when the stem state it
+  // actually reads changes.
+  const toggleAudio = React.useCallback(() => setAudioEnabled((a) => !a), []);
+  const onStemMute = React.useCallback(
+    (idx: number) => patchTrack(idx, { muted: !ctlOf(idx).muted }),
+    [patchTrack, ctlOf],
+  );
+  const onStemSolo = React.useCallback(
+    (idx: number) => patchTrack(idx, { solo: !ctlOf(idx).solo }),
+    [patchTrack, ctlOf],
+  );
+  const onStemVolume = React.useCallback(
+    (idx: number, v: number) => patchTrack(idx, { volume: v }),
+    [patchTrack],
   );
 
   const soloActive = stems.some((s) => ctlOf(s.index).solo);
@@ -366,18 +457,15 @@ function ViewerStage({
     masterGain: masterMonitorGain,
   });
 
-  // Reflect muted/volume/speed onto the element (React doesn't track these).
-  // While live mixing is active the element stays muted (Web Audio carries the
-  // sound); the top-bar mute/volume then drives the graph's master gain instead.
+  // Reflect muted/volume onto the element (React doesn't track these). While live
+  // mixing is active the element stays muted (Web Audio carries the sound); the
+  // top-bar mute/volume then drives the graph's master gain instead.
   React.useEffect(() => {
     if (videoRef.current) videoRef.current.muted = liveMix || muted;
   }, [muted, liveMix]);
   React.useEffect(() => {
     if (videoRef.current) videoRef.current.volume = volume;
   }, [volume]);
-  React.useEffect(() => {
-    if (videoRef.current) videoRef.current.playbackRate = SPEEDS[speedIdx];
-  }, [speedIdx]);
 
   const togglePlay = React.useCallback(() => {
     const v = videoRef.current;
@@ -419,8 +507,9 @@ function ViewerStage({
     if (!v) return;
     // Keep the playhead inside the selection — the selection IS the clip now.
     const t = Math.min(Math.max(timeFromX(clientX), trimStart), trimEnd);
+    // Setting currentTime fires `seeking`/`seeked`, which the playhead, readout,
+    // and overlay seek bar subscribe to — no `current` state to push here.
     v.currentTime = t;
-    setCurrent(t);
   }
 
   // Seek to an absolute time, clamped to the selection. Used by the fullscreen
@@ -430,7 +519,6 @@ function ViewerStage({
     if (!v) return;
     const clamped = Math.min(Math.max(t, trimStart), trimEnd);
     v.currentTime = clamped;
-    setCurrent(clamped);
   }
 
   // --- playhead / trim-handle pointer handling ---
@@ -445,10 +533,8 @@ function ViewerStage({
     if (!v) return;
     if (v.currentTime < start) {
       v.currentTime = start;
-      setCurrent(start);
     } else if (v.currentTime > end) {
       v.currentTime = end;
-      setCurrent(end);
     }
   }
   function onBarPointerMove(e: React.PointerEvent) {
@@ -528,24 +614,27 @@ function ViewerStage({
         case "f":
           void toggleFullscreen();
           break;
-        case "i":
+        case "i": {
+          const t = videoRef.current?.currentTime ?? 0;
           setTouched(true);
-          setTrimStart(Math.min(current, trimEnd - MIN_TRIM));
+          setTrimStart(Math.min(t, trimEnd - MIN_TRIM));
           break;
-        case "o":
+        }
+        case "o": {
+          const t = videoRef.current?.currentTime ?? 0;
           setTouched(true);
-          setTrimEnd(Math.max(current, trimStart + MIN_TRIM));
+          setTrimEnd(Math.max(t, trimStart + MIN_TRIM));
           break;
+        }
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [
     hasPrev, hasNext, onPrev, onNext, onClose, onDelete, togglePlay,
-    toggleFullscreen, saveOpen, current, trimStart, trimEnd,
+    toggleFullscreen, saveOpen, trimStart, trimEnd,
   ]);
 
-  const progress = duration > 0 ? (current / duration) * 100 : 0;
   const startPct = duration > 0 ? (trimStart / duration) * 100 : 0;
   const endPct = duration > 0 ? (trimEnd / duration) * 100 : 100;
   // Ruler ticks depend only on duration — memoize so playhead updates (which fire
@@ -563,7 +652,6 @@ function ViewerStage({
     return { ticks, minorTicks };
   }, [duration]);
 
-  const trimmed = clip.event != null;
   const selDuration = trimEnd - trimStart;
   const edited =
     trimStart > 0.05 || trimEnd < duration - 0.05 || !audioEnabled || tracksEdited;
@@ -599,14 +687,13 @@ function ViewerStage({
             }}
             onTimeUpdate={(e) => {
               const v = e.currentTarget;
-              if (drag !== "seek") setCurrent(v.currentTime);
-              // Confine playback to the selection: loop at the out point, and
+              // The playhead/readout/seek bar track time via their own
+              // `useVideoTime` subscription — nothing to push here. We only
+              // confine playback to the selection: loop at the out point, and
               // never play through the trimmed-away head.
               if (!v.paused && !drag && (v.currentTime >= trimEnd - 0.02 || v.currentTime < trimStart))
                 v.currentTime = trimStart;
             }}
-            onPlay={() => setPlaying(true)}
-            onPause={() => setPlaying(false)}
             className={cn(
               "bg-black",
               fullscreen
@@ -620,20 +707,14 @@ function ViewerStage({
               filmstrip editor below is the precise scrubber; this is the quick one). */}
           <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex flex-col gap-1.5 rounded-b-lg bg-gradient-to-t from-black/85 via-black/35 to-transparent px-4 pt-12 pb-3 text-white [&>*]:pointer-events-auto">
             <OverlaySeekBar
-              current={current}
+              videoRef={videoRef}
               start={trimStart}
               end={trimEnd}
               marks={clip.event_marks}
               onSeek={seekToTime}
             />
             <div className="flex items-center gap-3">
-            <CtrlButton label={playing ? "Pause" : "Play"} onClick={togglePlay}>
-              {playing ? (
-                <Pause weight="fill" className="size-5" />
-              ) : (
-                <Play weight="fill" className="size-5" />
-              )}
-            </CtrlButton>
+            <PlayPauseButton videoRef={videoRef} onToggle={togglePlay} />
 
             <div className="group/vol flex items-center gap-2">
               <CtrlButton
@@ -662,21 +743,11 @@ function ViewerStage({
               />
             </div>
 
-            <span className="font-mono text-xs tabular-nums text-white/85">
-              {fmtTime(current)} / {fmtTime(duration)}
-            </span>
+            <TimeReadout videoRef={videoRef} duration={duration} />
 
             <span className="flex-1" />
 
-            <CtrlButton
-              label={`Speed ${SPEEDS[speedIdx]}×`}
-              onClick={() => setSpeedIdx((i) => (i + 1) % SPEEDS.length)}
-            >
-              <Gauge weight="bold" className="size-5" />
-              <span className="ml-1 text-xs font-semibold tabular-nums">
-                {SPEEDS[speedIdx]}×
-              </span>
-            </CtrlButton>
+            <SpeedButton videoRef={videoRef} />
             <CtrlButton
               label={fullscreen ? "Exit fullscreen" : "Fullscreen"}
               onClick={toggleFullscreen}
@@ -761,20 +832,11 @@ function ViewerStage({
                   <TrimHandle side="end" pct={endPct} onPointerDown={(e) => startHandle("end", e)} />
 
                   {/* Draggable playhead (flag + needle) */}
-                  <div
+                  <Playhead
+                    videoRef={videoRef}
+                    duration={duration}
                     onPointerDown={startSeek}
-                    role="slider"
-                    aria-label="Playhead"
-                    aria-valuemin={0}
-                    aria-valuemax={Math.round(duration)}
-                    aria-valuenow={Math.round(current)}
-                    aria-valuetext={fmtTime(current)}
-                    className="pointer-events-auto absolute -top-2 -bottom-2 z-40 flex w-5 -translate-x-1/2 cursor-ew-resize justify-center touch-none"
-                    style={{ left: `${progress}%` }}
-                  >
-                    <span className="h-full w-0.5 bg-primary shadow-[0_0_8px] shadow-primary/50" />
-                    <span className="absolute -top-1 left-1/2 h-3.5 w-3 -translate-x-1/2 rounded-sm bg-primary shadow" />
-                  </div>
+                  />
                 </div>
               </div>
             </div>
@@ -783,15 +845,15 @@ function ViewerStage({
             <div className="mt-3 flex items-center gap-2.5 px-4">
               <AudioSettingsPopover
                 audioEnabled={audioEnabled}
-                onToggleAudio={() => setAudioEnabled((a) => !a)}
+                onToggleAudio={toggleAudio}
                 hasStems={hasStems}
                 stems={stems}
                 live={liveMix}
                 ctlOf={ctlOf}
                 soloActive={soloActive}
-                onMute={(idx) => patchTrack(idx, { muted: !ctlOf(idx).muted })}
-                onSolo={(idx) => patchTrack(idx, { solo: !ctlOf(idx).solo })}
-                onVolume={(idx, v) => patchTrack(idx, { volume: v })}
+                onMute={onStemMute}
+                onSolo={onStemSolo}
+                onVolume={onStemVolume}
               />
 
               <div className="flex items-center gap-1.5 font-mono text-xs tabular-nums text-muted-foreground">
@@ -843,87 +905,12 @@ function ViewerStage({
       </div>
 
       {/* ---- Details panel ---- */}
-      <aside className="scrollbar-thin flex w-[340px] shrink-0 flex-col overflow-y-auto border-l border-panel-border bg-panel">
-        <div className="flex items-center justify-between border-b border-panel-border px-5 py-4">
-          <h2 className="text-sm font-semibold">Details</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
-          >
-            <X weight="bold" className="size-4" />
-          </button>
-        </div>
-
-        <div className="flex flex-1 flex-col gap-5 p-5">
-          <EditableTitle title={clip.title} onCommit={onRename} />
-
-          {/* One compact spec line — date, size, length, resolution */}
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-            <span>{fmtDate(clip.created_unix_ms)}</span>
-            <span className="size-[3px] rounded-full bg-muted-foreground/40" />
-            <span className="font-mono tabular-nums">{fmtSize(clip.size_bytes)}</span>
-            <span className="size-[3px] rounded-full bg-muted-foreground/40" />
-            <span className="font-mono tabular-nums">{fmtTime(clip.duration_secs)}</span>
-            <span className="size-[3px] rounded-full bg-muted-foreground/40" />
-            <span className="font-mono tabular-nums">
-              {clip.width}×{clip.height}
-            </span>
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            {trimmed ? (
-              // One badge per event the clip's window covered (a merged window
-              // can hold several, e.g. a spike-defuse and a kill).
-              (clip.events.length ? clip.events : [clip.event ?? ""]).map((ev, i) => (
-                <span
-                  key={`${ev}-${i}`}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-warning/15 px-2.5 py-1 text-xs font-medium text-warning"
-                >
-                  <Scissors weight="fill" className="size-3.5" />
-                  {ev}
-                </span>
-              ))
-            ) : (
-              <span className="inline-flex items-center gap-1.5 rounded-md bg-info/15 px-2.5 py-1 text-xs font-medium text-info">
-                <Lightning weight="fill" className="size-3.5" />
-                Auto Clip
-              </span>
-            )}
-          </div>
-
-          {/* Valorant match context — silent for clips cut outside a match */}
-          <ClipGameContext clip={clip} />
-
-          <div className="flex flex-col gap-2">
-            <span className="text-[11px] font-semibold tracking-wide text-muted-foreground/70 uppercase">
-              File
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                void revealClip(clip.id).catch(() => {});
-              }}
-              className="flex items-center justify-center gap-2 rounded-lg border border-border/60 bg-card/40 px-4 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
-            >
-              <FolderOpen className="size-4" />
-              Open in folder
-            </button>
-            <CopyPath path={clip.path} />
-          </div>
-
-          <div className="mt-auto" />
-          <button
-            type="button"
-            onClick={onDelete}
-            className="flex items-center justify-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-2.5 text-sm font-medium text-destructive transition-colors hover:bg-destructive/20"
-          >
-            <Trash weight="bold" className="size-4" />
-            Delete clip
-          </button>
-        </div>
-      </aside>
+      <DetailsPanel
+        clip={clip}
+        onClose={onClose}
+        onRename={onRename}
+        onDelete={onDelete}
+      />
 
       {/* ---- Save dialog ---- */}
       {saveOpen ? (
@@ -1082,7 +1069,7 @@ function TrimHandle({
  * stems; these controls choose how the stems are re-mixed into the export. Solo
  * overrides mute: if any stem is soloed, only soloed stems are audible.
  */
-function AudioSettingsPopover({
+const AudioSettingsPopover = React.memo(function AudioSettingsPopover({
   audioEnabled,
   onToggleAudio,
   hasStems,
@@ -1237,7 +1224,7 @@ function AudioSettingsPopover({
       </PopoverContent>
     </Popover>
   );
-}
+});
 
 function SaveDialog({
   title,
@@ -1371,6 +1358,68 @@ function CtrlButton({
   );
 }
 
+/**
+ * Play/pause button — owns the `playing` flag itself, subscribed to the video's
+ * own `play`/`pause` events. Keeping it here (instead of as `ViewerStage` state)
+ * means toggling playback re-renders only this button, not the whole player +
+ * editor + details panel.
+ */
+function PlayPauseButton({
+  videoRef,
+  onToggle,
+}: {
+  videoRef: React.RefObject<HTMLVideoElement | null>;
+  onToggle: () => void;
+}) {
+  const [playing, setPlaying] = React.useState(false);
+  React.useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const onPlay = () => setPlaying(true);
+    const onPause = () => setPlaying(false);
+    setPlaying(!v.paused);
+    v.addEventListener("play", onPlay);
+    v.addEventListener("pause", onPause);
+    return () => {
+      v.removeEventListener("play", onPlay);
+      v.removeEventListener("pause", onPause);
+    };
+  }, [videoRef]);
+  return (
+    <CtrlButton label={playing ? "Pause" : "Play"} onClick={onToggle}>
+      {playing ? (
+        <Pause weight="fill" className="size-5" />
+      ) : (
+        <Play weight="fill" className="size-5" />
+      )}
+    </CtrlButton>
+  );
+}
+
+/** Playback-speed cycle button — owns `speedIdx` so it doesn't re-render the
+ *  stage; writes `playbackRate` straight onto the element. */
+function SpeedButton({
+  videoRef,
+}: {
+  videoRef: React.RefObject<HTMLVideoElement | null>;
+}) {
+  const [speedIdx, setSpeedIdx] = React.useState(0);
+  React.useEffect(() => {
+    if (videoRef.current) videoRef.current.playbackRate = SPEEDS[speedIdx];
+  }, [speedIdx, videoRef]);
+  return (
+    <CtrlButton
+      label={`Speed ${SPEEDS[speedIdx]}×`}
+      onClick={() => setSpeedIdx((i) => (i + 1) % SPEEDS.length)}
+    >
+      <Gauge weight="bold" className="size-5" />
+      <span className="ml-1 text-xs font-semibold tabular-nums">
+        {SPEEDS[speedIdx]}×
+      </span>
+    </CtrlButton>
+  );
+}
+
 function EditableTitle({
   title,
   onCommit,
@@ -1431,19 +1480,20 @@ function EditableTitle({
  * 100% the out-point.
  */
 function OverlaySeekBar({
-  current,
+  videoRef,
   start,
   end,
   marks,
   onSeek,
 }: {
-  current: number;
+  videoRef: React.RefObject<HTMLVideoElement | null>;
   start: number;
   end: number;
   /** Event positions (absolute clip seconds); shown as icon markers. */
   marks: EventMark[];
   onSeek: (t: number) => void;
 }) {
+  const current = useVideoTime(videoRef);
   const ref = React.useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = React.useState(false);
   const span = Math.max(0.0001, end - start);
@@ -1518,6 +1568,109 @@ function OverlaySeekBar({
     </div>
   );
 }
+
+/**
+ * The right-hand details sidebar (title, spec line, event badges, match context,
+ * file actions, delete). It depends only on `clip` + the action callbacks — none
+ * of the player/editor state — so it's memoized: playing, scrubbing, mute,
+ * speed, and trim edits no longer re-render it.
+ */
+const DetailsPanel = React.memo(function DetailsPanel({
+  clip,
+  onClose,
+  onRename,
+  onDelete,
+}: {
+  clip: ClipRecord;
+  onClose: () => void;
+  onRename: (title: string) => void;
+  onDelete: () => void;
+}) {
+  const trimmed = clip.event != null;
+  return (
+    <aside className="scrollbar-thin flex w-[340px] shrink-0 flex-col overflow-y-auto border-l border-panel-border bg-panel">
+      <div className="flex items-center justify-between border-b border-panel-border px-5 py-4">
+        <h2 className="text-sm font-semibold">Details</h2>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
+        >
+          <X weight="bold" className="size-4" />
+        </button>
+      </div>
+
+      <div className="flex flex-1 flex-col gap-5 p-5">
+        <EditableTitle title={clip.title} onCommit={onRename} />
+
+        {/* One compact spec line — date, size, length, resolution */}
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+          <span>{fmtDate(clip.created_unix_ms)}</span>
+          <span className="size-[3px] rounded-full bg-muted-foreground/40" />
+          <span className="font-mono tabular-nums">{fmtSize(clip.size_bytes)}</span>
+          <span className="size-[3px] rounded-full bg-muted-foreground/40" />
+          <span className="font-mono tabular-nums">{fmtTime(clip.duration_secs)}</span>
+          <span className="size-[3px] rounded-full bg-muted-foreground/40" />
+          <span className="font-mono tabular-nums">
+            {clip.width}×{clip.height}
+          </span>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {trimmed ? (
+            // One badge per event the clip's window covered (a merged window
+            // can hold several, e.g. a spike-defuse and a kill).
+            (clip.events.length ? clip.events : [clip.event ?? ""]).map((ev, i) => (
+              <span
+                key={`${ev}-${i}`}
+                className="inline-flex items-center gap-1.5 rounded-md bg-warning/15 px-2.5 py-1 text-xs font-medium text-warning"
+              >
+                <Scissors weight="fill" className="size-3.5" />
+                {ev}
+              </span>
+            ))
+          ) : (
+            <span className="inline-flex items-center gap-1.5 rounded-md bg-info/15 px-2.5 py-1 text-xs font-medium text-info">
+              <Lightning weight="fill" className="size-3.5" />
+              Auto Clip
+            </span>
+          )}
+        </div>
+
+        {/* Valorant match context — silent for clips cut outside a match */}
+        <ClipGameContext clip={clip} />
+
+        <div className="flex flex-col gap-2">
+          <span className="text-[11px] font-semibold tracking-wide text-muted-foreground/70 uppercase">
+            File
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              void revealClip(clip.id).catch(() => {});
+            }}
+            className="flex items-center justify-center gap-2 rounded-lg border border-border/60 bg-card/40 px-4 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <FolderOpen className="size-4" />
+            Open in folder
+          </button>
+          <CopyPath path={clip.path} />
+        </div>
+
+        <div className="mt-auto" />
+        <button
+          type="button"
+          onClick={onDelete}
+          className="flex items-center justify-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-2.5 text-sm font-medium text-destructive transition-colors hover:bg-destructive/20"
+        >
+          <Trash weight="bold" className="size-4" />
+          Delete clip
+        </button>
+      </div>
+    </aside>
+  );
+});
 
 /**
  * Valorant match context for the open clip — agent, map, mode, result and

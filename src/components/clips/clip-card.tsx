@@ -60,6 +60,12 @@ function Dot() {
   return <span className="size-[3px] shrink-0 rounded-full bg-secondary" />;
 }
 
+// Dwell time before a hovered card mounts + autoplays its preview video.
+// Scrolling sweeps the cursor across many cards; without a dwell gate each
+// mouseenter would spin up a <video> decoder, and a burst of those tanks FPS. A
+// quick scroll-over never lingers this long, so it triggers nothing.
+const HOVER_PLAY_DELAY_MS = 180;
+
 /**
  * Thumbnail that autoplays (muted) on hover, with mute + fullscreen affordances.
  * In fullscreen we render our own clean controls bar instead of the native one.
@@ -68,6 +74,7 @@ function ClipPreview({ clip }: { clip: ClipRecord }) {
   const containerRef = React.useRef<HTMLDivElement>(null);
   const videoRef = React.useRef<HTMLVideoElement>(null);
   const barRef = React.useRef<HTMLDivElement>(null);
+  const hoverTimer = React.useRef<number | null>(null);
 
   const [active, setActive] = React.useState(false); // hovered → video mounted
   const [muted, setMuted] = React.useState(true);
@@ -110,14 +117,31 @@ function ClipPreview({ clip }: { clip: ClipRecord }) {
   }, []);
 
   function handleEnter() {
-    setActive(true);
-    // play() runs once the element mounts (see autoPlay-on-mount below)
+    // Arm the dwell timer; the video only mounts (and autoplays) if the cursor
+    // is still here after HOVER_PLAY_DELAY_MS — so scrolling past does nothing.
+    if (hoverTimer.current != null) window.clearTimeout(hoverTimer.current);
+    hoverTimer.current = window.setTimeout(() => {
+      hoverTimer.current = null;
+      setActive(true);
+    }, HOVER_PLAY_DELAY_MS);
   }
   function handleLeave() {
+    if (hoverTimer.current != null) {
+      window.clearTimeout(hoverTimer.current);
+      hoverTimer.current = null;
+    }
     if (fullscreen) return;
     setActive(false);
     setPlaying(false);
   }
+
+  // Don't leave a pending dwell timer behind when the card unmounts (e.g. the
+  // virtualizer recycles it as you scroll).
+  React.useEffect(() => {
+    return () => {
+      if (hoverTimer.current != null) window.clearTimeout(hoverTimer.current);
+    };
+  }, []);
 
   function togglePlay(e?: React.MouseEvent) {
     e?.preventDefault();
@@ -392,15 +416,20 @@ function ClipBadges({
   );
 }
 
-export function ClipCard({
+// Memoized: the clips grid re-renders on every scroll tick (virtualizer state),
+// hover, and resize. Without this, each of those re-rendered all ~25 visible
+// cards and their full Radix dropdown + icon subtrees. With stable props (see
+// the parent's `useCallback` handlers + the session-stable `assets`), a card
+// now re-renders only when its own `clip` changes.
+export const ClipCard = React.memo(function ClipCard({
   clip,
   onDelete,
   onRename,
   assets,
 }: {
   clip: ClipRecord;
-  onDelete: () => void;
-  onRename: () => void;
+  onDelete: (clip: ClipRecord) => void;
+  onRename: (clip: ClipRecord) => void;
   assets?: ValorantAssets;
 }) {
   // Every event the clip's window covered, falling back to the headline tag for
@@ -437,11 +466,11 @@ export function ClipCard({
               <DotsThree weight="bold" className="size-4" />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={onRename}>
+              <DropdownMenuItem onSelect={() => onRename(clip)}>
                 <PencilSimple />
                 Rename
               </DropdownMenuItem>
-              <DropdownMenuItem variant="destructive" onSelect={onDelete}>
+              <DropdownMenuItem variant="destructive" onSelect={() => onDelete(clip)}>
                 <Trash />
                 Delete
               </DropdownMenuItem>
@@ -471,4 +500,4 @@ export function ClipCard({
       </div>
     </div>
   );
-}
+});
