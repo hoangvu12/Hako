@@ -438,10 +438,16 @@ fn remux_mix(
             } else {
                 end - start
             };
+            // Video is stream-copied, so the kept start (`offset_us`) snaps forward
+            // to the first keyframe ≥ the requested start — same as `trim`. Report
+            // the gap so markers rebase onto the written clip.
+            let start_global = (start * AV_TIME_BASE as f64) as i64;
+            let start_shift_secs = ((offset_us - start_global).max(0)) as f64 / AV_TIME_BASE as f64;
             Ok(TrimResult {
                 width: vw,
                 height: vh,
                 duration_secs,
+                start_shift_secs,
             })
         })();
 

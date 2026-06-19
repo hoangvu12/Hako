@@ -552,6 +552,21 @@ impl EventKind {
     }
 }
 
+/// One seek-bar marker within an event: its own label + match-relative time. A
+/// single-action event (a lone kill, a death, a spike) carries exactly one; a
+/// multi-kill carries one *per kill* (cumulative tiers — Kill, Double Kill, …)
+/// and a clutch one per clutch kill, so the bar shows every moment rather than
+/// just the clip's anchor. The reconciler maps each to a session PTS on its own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EventMoment {
+    /// Label for this marker (e.g. the running multi-kill tier of this kill).
+    pub kind: EventKind,
+    /// ms since the game started (anchor for the match-start calibration path).
+    pub game_millis: i64,
+    /// ms since this round started (anchor for the per-round path).
+    pub round_millis: i64,
+}
+
 /// A derived in-match highlight, positioned in match-relative time. The
 /// reconciler (`reconcile.rs`) later maps these to session-file PTS.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -571,6 +586,10 @@ pub struct GameEvent {
     /// e.g. an Ace spans its first kill, not just a fixed pad around the last.
     /// Identical in game- and round-time (both differ by the same round offset).
     pub lead_in_millis: i64,
+    /// Per-action seek-bar markers. Defaults to a single marker at the anchor;
+    /// multi-action events ([`Self::with_marks`]) carry one per constituent kill
+    /// so a double kill shows two markers, an ace five.
+    pub marks: Vec<EventMoment>,
 }
 
 impl GameEvent {
@@ -583,6 +602,11 @@ impl GameEvent {
             time_since_game_start_millis: game_millis,
             time_since_round_start_millis: round_millis,
             lead_in_millis: 0,
+            marks: vec![EventMoment {
+                kind,
+                game_millis,
+                round_millis,
+            }],
         }
     }
 
@@ -602,7 +626,23 @@ impl GameEvent {
             time_since_game_start_millis: game_millis,
             time_since_round_start_millis: round_millis,
             lead_in_millis: lead_in_millis.max(0),
+            marks: vec![EventMoment {
+                kind,
+                game_millis,
+                round_millis,
+            }],
         }
+    }
+
+    /// Replace the default single-anchor marker with explicit per-action moments
+    /// — e.g. one marker per kill of a multi-kill, each with its own time and
+    /// (cumulative tier) label. An empty list is ignored so every event keeps at
+    /// least its anchor marker.
+    pub fn with_marks(mut self, marks: Vec<EventMoment>) -> Self {
+        if !marks.is_empty() {
+            self.marks = marks;
+        }
+        self
     }
 }
 

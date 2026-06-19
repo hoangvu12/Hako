@@ -19,7 +19,7 @@
 
 #![allow(dead_code)]
 
-use crate::valorant::model::{EventKind, GameEvent, MatchDetails};
+use crate::valorant::model::{EventKind, EventMoment, GameEvent, MatchDetails};
 
 /// 100-ns ticks per millisecond (Riot times are ms; our clock is 100-ns ticks).
 const TICKS_PER_MS: i64 = 10_000;
@@ -226,13 +226,29 @@ pub fn derive_events(details: &MatchDetails, puuid: &str, toggles: &EventToggles
         if let (Some(first), Some(last)) = (our_kills.first(), our_kills.last()) {
             let lead_in =
                 last.time_since_round_start_millis - first.time_since_round_start_millis;
-            events.push(GameEvent::span(
-                EventKind::for_multikill(our_kills.len()),
-                round.round_num,
-                last.time_since_game_start_millis,
-                last.time_since_round_start_millis,
-                lead_in,
-            ));
+            // One seek-bar marker per kill, labelled with its running tier (1st →
+            // Kill, 2nd → Double Kill, …) the way Medal emits a cumulative event
+            // per kill — so a double kill shows two markers, an ace five, each at
+            // the moment it actually happened.
+            let marks: Vec<EventMoment> = our_kills
+                .iter()
+                .enumerate()
+                .map(|(i, k)| EventMoment {
+                    kind: EventKind::for_multikill(i + 1),
+                    game_millis: k.time_since_game_start_millis,
+                    round_millis: k.time_since_round_start_millis,
+                })
+                .collect();
+            events.push(
+                GameEvent::span(
+                    EventKind::for_multikill(our_kills.len()),
+                    round.round_num,
+                    last.time_since_game_start_millis,
+                    last.time_since_round_start_millis,
+                    lead_in,
+                )
+                .with_marks(marks),
+            );
         }
 
         // Knife kills are their own highlight regardless of the round's tier.
@@ -387,6 +403,8 @@ fn detect_clutch(
     // its opening kills).
     let mut first_clutch: Option<&crate::valorant::model::Kill> = None;
     let mut clinch: Option<&crate::valorant::model::Kill> = None;
+    // Every kill we land once the clutch is on — one seek-bar marker each.
+    let mut clutch_kills: Vec<&crate::valorant::model::Kill> = Vec::new();
 
     for k in &kills {
         // Tally an enemy elimination (victim is on the other team).
@@ -404,6 +422,7 @@ fn detect_clutch(
             our_kills_after_alone += 1;
             first_clutch = first_clutch.or(Some(k));
             clinch = Some(k);
+            clutch_kills.push(k);
         }
         // The instant our side is reduced to exactly us, with enemies remaining,
         // the clutch is on.
@@ -419,6 +438,7 @@ fn detect_clutch(
                 our_kills_after_alone += 1;
                 first_clutch = first_clutch.or(Some(k));
                 clinch = Some(k);
+                clutch_kills.push(k);
             }
         }
     }
@@ -432,13 +452,27 @@ fn detect_clutch(
     let lead_in = first_clutch
         .map(|f| clinch.time_since_round_start_millis - f.time_since_round_start_millis)
         .unwrap_or(0);
-    Some(GameEvent::span(
-        EventKind::Clutch,
-        round.round_num,
-        clinch.time_since_game_start_millis,
-        clinch.time_since_round_start_millis,
-        lead_in,
-    ))
+    // A marker per clutch kill. When the round is also a multi-kill these land on
+    // the same PTS as the tier markers and are de-duplicated downstream (the cut
+    // keeps the higher-priority Clutch label), so each kill shows exactly once.
+    let marks: Vec<EventMoment> = clutch_kills
+        .iter()
+        .map(|k| EventMoment {
+            kind: EventKind::Clutch,
+            game_millis: k.time_since_game_start_millis,
+            round_millis: k.time_since_round_start_millis,
+        })
+        .collect();
+    Some(
+        GameEvent::span(
+            EventKind::Clutch,
+            round.round_num,
+            clinch.time_since_game_start_millis,
+            clinch.time_since_round_start_millis,
+            lead_in,
+        )
+        .with_marks(marks),
+    )
 }
 
 /// The match Victory event: emitted when our team is flagged `won`, anchored at
@@ -636,6 +670,34 @@ pub fn event_span_pts(
     Some((start_pts, end_pts))
 }
 
+/// Reconcile a single marker moment to a session PTS, the same way the anchor is
+/// placed in [`event_span_pts`]: prefer Medal's `match_start` calibration, else
+/// the per-round anchor, else the game-start anchor. Works for **every** event
+/// kind — a kill, a death, an assist, a spike detonation/defuse, a clutch kill,
+/// a victory — since each only needs its game-/round-relative time. Uses the
+/// lenient [`pts_at`] clamp: the event's anchor already passed the in-range gate
+/// and a marker sits within (or right at) that same captured window.
+pub fn moment_pts(
+    moment: &EventMoment,
+    round: i32,
+    match_start: Option<i64>,
+    anchors: &[RoundAnchor],
+    game_start_ticks: Option<i64>,
+    timeline: &TimelineIndex,
+) -> Option<i64> {
+    let wall = match match_start {
+        Some(ms) => ms + moment.game_millis * TICKS_PER_MS,
+        None => {
+            if let Some(a) = anchors.iter().find(|a| a.round == round) {
+                a.start_wallclock_ticks + moment.round_millis * TICKS_PER_MS
+            } else {
+                game_start_ticks? + moment.game_millis * TICKS_PER_MS
+            }
+        }
+    };
+    timeline.pts_at(wall)
+}
+
 /// Clip window `[center − before, center + after]` in PTS units, clamped to ≥ 0.
 pub fn clip_window(center_pts: i64, pad_before_secs: u32, pad_after_secs: u32, fps: u32) -> (i64, i64) {
     clip_window_span(center_pts, center_pts, pad_before_secs, pad_after_secs, fps)
@@ -741,6 +803,65 @@ mod tests {
         // ...but reaching back to the first kill (5 s − 1 s = 4 s lead-in) so the
         // window pads outward from the first kill, not just the last.
         assert_eq!(aces[0].lead_in_millis, 4000);
+    }
+
+    #[test]
+    fn multikill_carries_one_marker_per_kill_with_cumulative_tiers() {
+        let me = "ME";
+        // A real spread-out triple kill: kills 15.3 / 25.7 / 26.9 s into the round
+        // (the markers must land at each, not collapse onto the last).
+        let r = round(
+            6,
+            me,
+            vec![
+                kill(me, "v1", 15_261, 565_276),
+                kill(me, "v2", 25_705, 575_720),
+                kill(me, "v3", 26_868, 576_883),
+            ],
+        );
+        let details = MatchDetails {
+            match_info: MatchInfo::default(),
+            players: vec![],
+            teams: vec![],
+            round_results: vec![r],
+        };
+        // triple_kill is on by default.
+        let ev = derive_events(&details, me, &EventToggles::default());
+        let tk = ev
+            .iter()
+            .find(|e| e.kind == EventKind::TripleKill)
+            .expect("triple kill derived");
+        // Still one event (clean "Triple Kill" tag + window) but three markers...
+        assert_eq!(tk.marks.len(), 3);
+        // ...each labelled with its running tier, at each kill's own moment.
+        assert_eq!(tk.marks[0].kind, EventKind::Kill);
+        assert_eq!(tk.marks[1].kind, EventKind::DoubleKill);
+        assert_eq!(tk.marks[2].kind, EventKind::TripleKill);
+        assert_eq!(tk.marks[0].round_millis, 15_261);
+        assert_eq!(tk.marks[2].round_millis, 26_868);
+        // The event itself is still anchored at the last kill, spanning the first.
+        assert_eq!(tk.time_since_round_start_millis, 26_868);
+        assert_eq!(tk.lead_in_millis, 26_868 - 15_261);
+    }
+
+    #[test]
+    fn moment_pts_places_each_marker_independently() {
+        // Linear 60 fps timeline; match_start = 0 ⇒ event wall-clock = game time.
+        let mut tl = TimelineIndex::new();
+        tl.push(0, 0);
+        tl.push(300_000_000, 1800); // 30 s → PTS 1800
+        let m1 = EventMoment {
+            kind: EventKind::Kill,
+            game_millis: 10_000,
+            round_millis: 10_000,
+        };
+        let m2 = EventMoment {
+            kind: EventKind::DoubleKill,
+            game_millis: 20_000,
+            round_millis: 20_000,
+        };
+        assert_eq!(moment_pts(&m1, 0, Some(0), &[], None, &tl), Some(600)); // 10 s
+        assert_eq!(moment_pts(&m2, 0, Some(0), &[], None, &tl), Some(1200)); // 20 s
     }
 
     #[test]

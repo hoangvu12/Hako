@@ -36,6 +36,23 @@ pub fn rebase_marks(marks: &[EventMark], start: f64, end: f64) -> Vec<EventMark>
         .collect()
 }
 
+/// Pull every mark earlier by `shift` seconds (clamped ≥ 0). A stream-copy trim
+/// snaps the cut start *forward* to the nearest keyframe; `shift` is that snap,
+/// so a marker measured from the requested start lands at `at − shift` in the
+/// clip that was actually written. A no-op when `shift <= 0`.
+pub fn shift_marks(marks: &[EventMark], shift: f64) -> Vec<EventMark> {
+    if shift <= 0.0 {
+        return marks.to_vec();
+    }
+    marks
+        .iter()
+        .map(|m| EventMark {
+            label: m.label.clone(),
+            at: (m.at - shift).max(0.0),
+        })
+        .collect()
+}
+
 /// A clip row as stored / returned. Mirrors `ClipRecord` in api.ts.
 #[derive(Debug, Clone, Serialize)]
 pub struct ClipRecord {

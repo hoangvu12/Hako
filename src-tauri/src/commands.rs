@@ -9,7 +9,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::core::capture::{self, RunningCapture, WindowTarget};
 use crate::core::device::{self, GpuInfo};
 use crate::core::encode::{self, FfmpegProbe};
-use crate::library::db::{rebase_marks, ClipRecord, EventMark, Library, NewClip};
+use crate::library::db::{rebase_marks, shift_marks, ClipRecord, EventMark, Library, NewClip};
 use crate::settings::Settings;
 
 /// Managed state holding the currently running capture, if any.
@@ -625,7 +625,7 @@ fn trim_clip_blocking(
                 title: format!("{} (trim)", rec.title),
                 event: rec.event.clone(),
                 events: rec.events.clone(),
-                event_marks: rebase_marks(&rec.event_marks, start, end),
+                event_marks: shift_marks(&rebase_marks(&rec.event_marks, start, end), res.start_shift_secs),
                 duration_secs: res.duration_secs,
                 width: res.width,
                 height: res.height,
@@ -664,7 +664,7 @@ fn trim_clip_blocking(
                     thumb.as_deref(),
                     filmstrip.as_deref(),
                 )?;
-                lib.update_event_marks(id, &rebase_marks(&rec.event_marks, start, end))?;
+                lib.update_event_marks(id, &shift_marks(&rebase_marks(&rec.event_marks, start, end), res.start_shift_secs))?;
                 lib.get(id)?.ok_or("clip vanished after trim")?
             };
             tracing::info!("trimmed clip {id} → overwrite {}", record.path);
@@ -801,7 +801,7 @@ fn remux_with_tracks_blocking(
                 title: format!("{} (export)", rec.title),
                 event: rec.event.clone(),
                 events: rec.events.clone(),
-                event_marks: rebase_marks(&rec.event_marks, start, end),
+                event_marks: shift_marks(&rebase_marks(&rec.event_marks, start, end), res.start_shift_secs),
                 duration_secs: res.duration_secs,
                 width: res.width,
                 height: res.height,
@@ -838,7 +838,7 @@ fn remux_with_tracks_blocking(
                     thumb.as_deref(),
                     filmstrip.as_deref(),
                 )?;
-                lib.update_event_marks(id, &rebase_marks(&rec.event_marks, start, end))?;
+                lib.update_event_marks(id, &shift_marks(&rebase_marks(&rec.event_marks, start, end), res.start_shift_secs))?;
                 lib.get(id)?.ok_or("clip vanished after remux")?
             };
             tracing::info!("remuxed clip {id} → overwrite {}", record.path);

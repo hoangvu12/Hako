@@ -201,9 +201,12 @@ async fn run(input: &CutInput) -> Result<(), String> {
     let place_tol = PLACEMENT_TOL_SECS * TICKS_PER_SECOND;
 
     // Reconcile each event to a session PTS span and build its padded window.
-    // (window_start, window_end, anchor_pts, kind) — anchor_pts is the event's
-    // actual moment (used for seek-bar markers), distinct from the padded window.
-    let mut placed: Vec<(i64, i64, i64, EventKind)> = Vec::new();
+    // `placed` (window_start, window_end, kind) drives clip windowing + tagging;
+    // `marks_all` (pts, kind) collects every seek-bar marker — one per kill of a
+    // multi-kill, one per clutch kill, else the single moment — so the bar shows
+    // where each action actually happened, not just the clip anchor.
+    let mut placed: Vec<(i64, i64, EventKind)> = Vec::new();
+    let mut marks_all: Vec<(i64, EventKind)> = Vec::new();
     let mut dropped = 0usize;
     for e in &events {
         // Reconcile the event's [first-action, last-action] span to PTS. A
@@ -228,11 +231,27 @@ async fn run(input: &CutInput) -> Result<(), String> {
         let t = timings.for_kind(e.kind);
         let (s, end) = reconcile::clip_window_span(start_pts, end_pts, t.before, t.after, fps);
         let end = end.min(s + max_len_pts);
-        // Anchor the seek-bar marker at the event's actual moment (end_pts — the
-        // kill / last action), clamped into the window. Using the padded window
-        // start `s` instead would land every marker at the clip's 0:00 in-point.
-        let anchor = end_pts.clamp(s, end);
-        placed.push((s, end, anchor, e.kind));
+        placed.push((s, end, e.kind));
+        // Reconcile every marker moment of this event independently (each kill of
+        // a multi-kill, each clutch kill, or the single anchor) and clamp it into
+        // the event's own window. Falls back to the anchor if none reconcile.
+        let mut any = false;
+        for mk in &e.marks {
+            if let Some(p) = reconcile::moment_pts(
+                mk,
+                e.round,
+                match_start,
+                &input.anchors,
+                Some(game_start_ticks),
+                &input.timeline,
+            ) {
+                marks_all.push((p.clamp(s, end), mk.kind));
+                any = true;
+            }
+        }
+        if !any {
+            marks_all.push((end_pts.clamp(s, end), e.kind));
+        }
     }
     if dropped > 0 {
         tracing::info!(
@@ -249,7 +268,7 @@ async fn run(input: &CutInput) -> Result<(), String> {
     // tol = the widest after-pad among enabled kinds so near events still fuse).
     let (_, max_after) = timings.max_pad(&toggles);
     let tol_pts = max_after.max(1) as i64 * fps as i64;
-    let windows: Vec<(i64, i64)> = placed.iter().map(|&(s, e, _, _)| (s, e)).collect();
+    let windows: Vec<(i64, i64)> = placed.iter().map(|&(s, e, _)| (s, e)).collect();
     let merged = reconcile::merge_windows_tol(windows, tol_pts);
 
     tracing::info!(
@@ -270,7 +289,7 @@ async fn run(input: &CutInput) -> Result<(), String> {
         let event_labels: Vec<String> = kinds.iter().map(|k| k.label().to_string()).collect();
         // Per-event positions within this clip (offset from its start), for the
         // editor's seek-bar markers.
-        let event_marks = marks_in_window(&placed, s, end, fps as i64);
+        let event_marks = marks_in_window(&marks_all, s, end, fps as i64);
         let start_sec = s as f64 / fps as f64;
         let end_sec = end as f64 / fps as f64;
         if end_sec <= start_sec {
@@ -302,6 +321,11 @@ async fn run(input: &CutInput) -> Result<(), String> {
         // Stream-copy the window out of the session file (no re-encode).
         match crate::library::trim::trim_clip(&input.session_path, &out, start_sec, end_sec, false) {
             Ok(res) => {
+                // Stream copy snaps the cut start forward to the nearest keyframe;
+                // rebase the markers (measured from the *requested* start) by that
+                // snap so every event lines up with the clip the user actually sees.
+                let event_marks =
+                    crate::library::db::shift_marks(&event_marks, res.start_shift_secs);
                 // Tag the clip with all its events + the match's agent when
                 // known (e.g. "Spike Defused + Kill — Jett"), else events +
                 // duration.
@@ -387,22 +411,22 @@ async fn fetch_match_details_retry(
 
 /// The strongest highlight kind whose anchor falls inside `[start, end]` (so the
 /// merged clip is tagged by its best moment, e.g. an Ace over a stray Kill).
-fn dominant_kind(placed: &[(i64, i64, i64, EventKind)], start: i64, end: i64) -> Option<EventKind> {
+fn dominant_kind(placed: &[(i64, i64, EventKind)], start: i64, end: i64) -> Option<EventKind> {
     placed
         .iter()
-        .filter(|&&(s, _, _, _)| s >= start - 1 && s <= end)
-        .map(|&(_, _, _, k)| k)
+        .filter(|&&(s, _, _)| s >= start - 1 && s <= end)
+        .map(|&(_, _, k)| k)
         .max_by_key(|k| kind_priority(*k))
 }
 
 /// Every distinct event kind anchored inside `[start, end]`, in time order — so
 /// a merged window lists its events as they happened (e.g. spike-defuse → kill).
 /// Deduplicated by label so repeated kinds (two kills) collapse to one tag.
-fn kinds_in_window(placed: &[(i64, i64, i64, EventKind)], start: i64, end: i64) -> Vec<EventKind> {
+fn kinds_in_window(placed: &[(i64, i64, EventKind)], start: i64, end: i64) -> Vec<EventKind> {
     let mut hits: Vec<(i64, EventKind)> = placed
         .iter()
-        .filter(|&&(s, _, _, _)| s >= start - 1 && s <= end)
-        .map(|&(s, _, _, k)| (s, k))
+        .filter(|&&(s, _, _)| s >= start - 1 && s <= end)
+        .map(|&(s, _, k)| (s, k))
         .collect();
     hits.sort_by_key(|&(s, _)| s);
     let mut out: Vec<EventKind> = Vec::new();
@@ -414,29 +438,44 @@ fn kinds_in_window(placed: &[(i64, i64, i64, EventKind)], start: i64, end: i64) 
     out
 }
 
-/// Each event anchored inside `[start, end]` as a seek-bar marker — its label
-/// plus its offset (seconds) from the clip's start. Unlike [`kinds_in_window`]
-/// this keeps every occurrence (two kills → two markers) so the bar shows where
-/// each moment actually happened.
+/// The seek-bar markers landing inside `[start, end]` — each reconciled marker's
+/// label plus its offset (seconds) from the clip's start. Keeps every occurrence
+/// (two kills → two markers) so the bar shows where each moment actually
+/// happened. Markers at (near-)identical times are de-duplicated, keeping the
+/// higher-priority label — a clutch kill and the multi-kill tier it also belongs
+/// to reconcile to the same PTS, and should show as one marker, not two stacked.
 fn marks_in_window(
-    placed: &[(i64, i64, i64, EventKind)],
+    marks: &[(i64, EventKind)],
     start: i64,
     end: i64,
     fps: i64,
 ) -> Vec<crate::library::db::EventMark> {
     let fps = fps.max(1);
-    // Position each marker at the event's anchor (its actual moment), not the
-    // padded window start — the offset is measured from the clip's start `start`.
-    let mut hits: Vec<(i64, EventKind)> = placed
+    let mut hits: Vec<(i64, EventKind)> = marks
         .iter()
-        .filter(|&&(s, _, _, _)| s >= start - 1 && s <= end)
-        .map(|&(_, _, anchor, k)| (anchor, k))
+        .filter(|&&(p, _)| p >= start && p <= end)
+        .copied()
         .collect();
-    hits.sort_by_key(|&(a, _)| a);
-    hits.into_iter()
-        .map(|(a, k)| crate::library::db::EventMark {
+    hits.sort_by_key(|&(p, _)| p);
+    // Collapse markers within ~0.2 s of each other (distinct kills are ≥ ~1 s
+    // apart in practice, so this only fuses two labels for the *same* moment).
+    let tol = (fps / 5).max(1);
+    let mut deduped: Vec<(i64, EventKind)> = Vec::new();
+    for (p, k) in hits {
+        match deduped.last_mut() {
+            Some(last) if (p - last.0).abs() <= tol => {
+                if kind_priority(k) > kind_priority(last.1) {
+                    *last = (p, k);
+                }
+            }
+            _ => deduped.push((p, k)),
+        }
+    }
+    deduped
+        .into_iter()
+        .map(|(p, k)| crate::library::db::EventMark {
             label: k.label().to_string(),
-            at: ((a - start).max(0) as f64) / fps as f64,
+            at: ((p - start).max(0) as f64) / fps as f64,
         })
         .collect()
 }
@@ -509,4 +548,42 @@ pub fn save_whole_session(
     )?;
     tracing::info!("auto-clip: saved {event} ({:.0}s)", res.duration_secs);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marks_dedup_keeps_higher_priority_at_same_moment() {
+        // A clutch kill that is also the 2nd kill of a double lands on the same PTS
+        // from both events; the two labels collapse to the higher-priority one so
+        // each kill shows exactly one marker. (60 fps; PTS 600 = 10 s, 1200 = 20 s.)
+        let marks = vec![
+            (600, EventKind::Kill),
+            (600, EventKind::Clutch),
+            (1200, EventKind::DoubleKill),
+        ];
+        let out = marks_in_window(&marks, 0, 2000, 60);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].label, "Clutch"); // Clutch outranks Kill at the same time
+        assert_eq!(out[0].at, 10.0);
+        assert_eq!(out[1].label, "Double Kill");
+        assert_eq!(out[1].at, 20.0);
+    }
+
+    #[test]
+    fn marks_keep_distinct_close_kills() {
+        // Two kills ~1.16 s apart (70 frames @ 60 fps) stay two markers — the dedup
+        // tolerance (~0.2 s) only fuses labels for the *same* instant.
+        let marks = vec![(1540, EventKind::Kill), (1610, EventKind::DoubleKill)];
+        assert_eq!(marks_in_window(&marks, 0, 5000, 60).len(), 2);
+    }
+
+    #[test]
+    fn marks_outside_window_are_dropped() {
+        let marks = vec![(100, EventKind::Kill), (9000, EventKind::Ace)];
+        let out = marks_in_window(&marks, 500, 2000, 60);
+        assert_eq!(out.len(), 0);
+    }
 }

@@ -42,6 +42,12 @@ pub struct TrimResult {
     pub width: i64,
     pub height: i64,
     pub duration_secs: f64,
+    /// How far the stream-copy start snapped *forward* past the requested start,
+    /// in seconds (the cut begins at the first keyframe ≥ `start`). Callers
+    /// rebase seek-bar markers by this so a marker measured from the requested
+    /// start lines up with the clip that was actually written. 0 for whole-file /
+    /// 0-second-start copies.
+    pub start_shift_secs: f64,
 }
 
 /// Which audio streams a trim keeps in the output.
@@ -347,10 +353,20 @@ fn trim_inner(
                 end - start
             };
 
+            // The kept start (`offset`, global µs of the first written keyframe)
+            // snaps forward to ≥ the requested start; report that gap so markers
+            // can be rebased onto the clip we actually wrote.
+            let start_shift_secs = if offset != AV_NOPTS_VALUE {
+                ((offset - start_global).max(0)) as f64 / AV_TIME_BASE as f64
+            } else {
+                0.0
+            };
+
             Ok(TrimResult {
                 width: vw,
                 height: vh,
                 duration_secs,
+                start_shift_secs,
             })
         })();
 
