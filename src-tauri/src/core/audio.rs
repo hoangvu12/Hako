@@ -2,8 +2,10 @@
 //!
 //! Two shared-mode WASAPI capture clients run on one dedicated thread:
 //! - **Loopback** of the default render endpoint (`eRender`) — everything the
-//!   user hears: the game, Discord, music. Shared-mode loopback can't be
-//!   event-driven, so we poll (`GetNextPacketSize`/`GetBuffer`/`ReleaseBuffer`).
+//!   user hears: the game, Discord, music. We drive it by polling
+//!   (`GetNextPacketSize`/`GetBuffer`/`ReleaseBuffer`) on a fixed cadence —
+//!   simpler than event-driven and fine for a recorder. (Event-driven loopback is
+//!   in fact supported on Windows 10 1703+; we just don't need it here.)
 //! - **Microphone** of the default capture endpoint (`eCapture`). Optional —
 //!   if it can't be opened we keep going with desktop audio only.
 //!
@@ -65,9 +67,11 @@ const MIX_RATE: i32 = 48_000;
 const MIX_CHANNELS: i32 = 2;
 /// AAC target bitrate (stereo music/voice mix). Generous, like the video path.
 const AAC_BITRATE: i64 = 160_000;
-/// Poll cadence. WASAPI shared-mode period is ~10 ms; half that keeps latency
-/// low without busy-waiting.
-const POLL_MS: u64 = 5;
+/// Idle backoff between empty polls. The shared-mode engine period is ~10 ms, so
+/// it can't surface new data faster than that — polling at the period (vs the old
+/// 5 ms) halves idle wakeups with no added latency that matters for a recorder
+/// (the ≥20 ms / engine-default capture buffers leave ample headroom).
+const POLL_MS: u64 = 10;
 /// How far behind the newest sample we let the mixer lag before emitting a
 /// block, so both sources have arrived (their packets land at slightly
 /// different wall-clock instants). 200 ms is inaudible and well within sync.
@@ -266,9 +270,15 @@ unsafe fn collect_active_sessions(out: &mut Vec<AudioSession>) -> windows::core:
     let sessions = manager.GetSessionEnumerator()?;
     let count = sessions.GetCount()?;
 
-    // Resolve pids → exe names in one process scan (matches the cheap-ish full
-    // scan `valorant::service` already does for game detection).
-    let sys = sysinfo::System::new_all();
+    // Resolve pids → exe names in one process scan. Refresh only the process
+    // list with no per-process detail (names come from the base enumeration),
+    // matching the cheap scan `valorant::service` does for game detection.
+    let mut sys = sysinfo::System::new();
+    sys.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::All,
+        true,
+        sysinfo::ProcessRefreshKind::nothing(),
+    );
 
     let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
     for i in 0..count {
@@ -610,7 +620,12 @@ fn resolve_app_pid(id: &str, game_pid: Option<u32>) -> u32 {
         }
         return pid;
     }
-    let sys = sysinfo::System::new_all();
+    let mut sys = sysinfo::System::new();
+    sys.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::All,
+        true,
+        sysinfo::ProcessRefreshKind::nothing(),
+    );
     // Every process whose executable name matches the source id. Electron/
     // Chromium apps (Discord, browsers, etc.) run *several* identically-named
     // processes — and the one that actually renders audio is a child utility
@@ -791,6 +806,9 @@ pub fn planned_track_names(cfg: &AudioConfig, game_pid: Option<u32>) -> Vec<Stri
 fn audio_thread(clip: Arc<ClipBuffer>, stop: Arc<AtomicBool>, cfg: AudioConfig, game_pid: Option<u32>) {
     // Keep audio glitch-free even while the game saturates the CPU.
     crate::core::boost_current_thread_priority("audio");
+    // Exempt from any process-level EcoQoS set while hidden to tray, so WASAPI
+    // draining + mixing + AAC encode is never parked on an efficiency core.
+    crate::core::protect_thread_high_qos("audio");
     // Audio runs on its own COM apartment (MTA), independent of the capture
     // thread's WinRT init.
     unsafe {
@@ -1049,8 +1067,9 @@ impl Source {
         }
         let fmt = parse_format(wf);
 
-        // 0 buffer duration/periodicity → engine default; loopback can't be
-        // event-driven, so no EVENTCALLBACK flag — we poll.
+        // 0 buffer duration/periodicity → engine default. We poll rather than use
+        // EVENTCALLBACK (simpler; event-driven loopback works on Win10 1703+ but
+        // we don't need it).
         let init = audio_client.Initialize(
             AUDCLNT_SHAREMODE_SHARED,
             stream_flags,
@@ -1453,7 +1472,7 @@ mod process_loopback {
             cbSize: 0,
         };
         // Shared loopback, polled like the other sources (no event callback). A
-        // ~20 ms engine buffer is plenty for our 5 ms poll cadence.
+        // ~20 ms engine buffer is plenty for our ~10 ms poll cadence.
         const REFTIMES_20MS: i64 = 200_000; // 20 ms in 100 ns units
         audio_client
             .Initialize(

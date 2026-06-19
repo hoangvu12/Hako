@@ -19,7 +19,7 @@
 use std::time::Duration;
 
 use serde::Serialize;
-use sysinfo::System;
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 
 use crate::valorant::local_api::LocalClient;
 use crate::valorant::log_watch;
@@ -235,9 +235,18 @@ async fn attempt_client_version() -> Result<String, String> {
     Err("could not determine client version (log + API both failed)".into())
 }
 
-/// Is the Valorant game process running? (Cheap-ish full process scan.)
+/// Is the Valorant game process running? Refreshes only the process list with
+/// no per-process detail (`ProcessRefreshKind::nothing()` — names come from the
+/// base enumeration), instead of `System::new_all()` which also snapshots CPU,
+/// memory, disks and networks. Called on the orchestrator's 2 s poll, so the
+/// cheaper refresh matters while a game is running.
 pub fn valorant_running() -> bool {
-    let sys = System::new_all();
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing(),
+    );
     sys.processes().values().any(|p| {
         p.name()
             .to_str()

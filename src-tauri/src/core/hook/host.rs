@@ -321,7 +321,15 @@ pub fn cleanup_stale_hook_dll_copies() {
     let Ok(entries) = std::fs::read_dir(&root) else {
         return; // nothing copied yet
     };
-    let sys = sysinfo::System::new_all();
+    // Only need process existence by PID, so refresh the process list with no
+    // per-process detail (names/PIDs come from the base enumeration) rather than
+    // `new_all()`, which also snapshots CPU/memory/disks/networks.
+    let mut sys = sysinfo::System::new();
+    sys.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::All,
+        true,
+        sysinfo::ProcessRefreshKind::nothing(),
+    );
     let mut removed = 0usize;
     for entry in entries.flatten() {
         let path = entry.path();

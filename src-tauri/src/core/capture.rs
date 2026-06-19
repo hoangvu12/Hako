@@ -21,7 +21,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use windows::core::{BOOL, Interface, Result as WinResult};
 use windows::Win32::Foundation::{HWND, LPARAM};
 use windows::Win32::Graphics::Direct3D11::{
@@ -874,6 +874,10 @@ fn hook_source_loop(
     shared: Arc<Shared>,
     stop: Arc<AtomicBool>,
 ) {
+    // Exempt from process-level EcoQoS set while hidden to tray: this thread does
+    // the per-frame shared-backbuffer copy (and the static-frame watchdog), so it
+    // must stay on a performance core throughout a match.
+    crate::core::protect_thread_high_qos("hook-source");
     let mut warned_copy = false;
     // One-time WARN when the session first goes frozen, so the log isn't silent
     // while the game is minimized (it would otherwise keep logging healthy-looking
@@ -1298,6 +1302,9 @@ fn encode_thread(
     // pins the CPU, or the bounded hand-off channel backs up and the source loop
     // drops frames.
     crate::core::boost_current_thread_priority("encode");
+    // Exempt from any process-level EcoQoS set while hidden to tray, so the convert
+    // + hardware-encode path is never parked on an efficiency core mid-match.
+    crate::core::protect_thread_high_qos("encode");
 
     // Output (encode) size: native capture size, or downscaled to the configured
     // resolution target. The converter scales BGRA(native) → NV12(out) in its
@@ -1463,8 +1470,20 @@ fn emit_loop(app: &AppHandle, target_fps: u32, stop: &Arc<AtomicBool>, shared: &
     let mut last_enc = 0u64;
     let mut last_bytes = 0u64;
     let mut last_at = Instant::now();
+    // 300 ms while the dashboard is visible; backed off to 1 s while the main
+    // window is hidden to tray (gameplay), where the emit is skipped anyway.
+    let mut interval_ms = 300u64;
     while !stop.load(Ordering::Acquire) {
-        std::thread::sleep(Duration::from_millis(300));
+        std::thread::sleep(Duration::from_millis(interval_ms));
+        // While hidden to tray during a match, nothing consumes capture-stats and
+        // the renderer is suspended — so skip the per-tick IPC serialize + cross-
+        // process post entirely. Baselines below still advance each tick, so the
+        // first sample after the window reopens isn't a huge-dt spike.
+        let visible = app
+            .get_webview_window("main")
+            .and_then(|w| w.is_visible().ok())
+            .unwrap_or(true);
+        interval_ms = if visible { 300 } else { 1000 };
         let now = Instant::now();
         let dt = (now - last_at).as_secs_f64();
 
@@ -1503,7 +1522,9 @@ fn emit_loop(app: &AppHandle, target_fps: u32, stop: &Arc<AtomicBool>, shared: &
             encoded_frames: enc,
             encoded_kbps,
         };
-        let _ = app.emit(events::CAPTURE_STATS, &stats);
+        if visible {
+            let _ = app.emit(events::CAPTURE_STATS, &stats);
+        }
     }
 }
 

@@ -5,8 +5,15 @@
 
 #![allow(dead_code)]
 
+use std::ffi::c_void;
+
 use windows::Win32::System::Threading::{
-    GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
+    GetCurrentProcess, GetCurrentThread, ProcessPowerThrottling, SetProcessInformation,
+    SetThreadInformation, SetThreadPriority, ThreadPowerThrottling,
+    PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+    PROCESS_POWER_THROTTLING_STATE, THREAD_POWER_THROTTLING_CURRENT_VERSION,
+    THREAD_POWER_THROTTLING_EXECUTION_SPEED, THREAD_POWER_THROTTLING_STATE,
+    THREAD_PRIORITY_ABOVE_NORMAL,
 };
 
 /// Raise the calling thread to ABOVE_NORMAL so a CPU-saturating game can't starve
@@ -17,6 +24,65 @@ pub(crate) fn boost_current_thread_priority(what: &str) {
     // SAFETY: GetCurrentThread returns a pseudo-handle valid for this call only.
     if let Err(e) = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL) } {
         tracing::debug!("could not raise {what} thread priority: {e}");
+    }
+}
+
+/// Tag the calling thread **HighQoS** (execution-speed power-throttling explicitly
+/// disabled) so it is exempt from the process-level EcoQoS we set while hidden to
+/// tray ([`set_process_eco_qos`]). Applied to the real-time recorder threads
+/// (capture source, encode, audio) so throttling the *UI* process during gameplay
+/// never parks the encode path on an efficiency core. A thread tagged HighQoS
+/// overrides the process default; threads we don't tag merely follow the process
+/// (fine for non-realtime work). Best-effort; only logs on failure.
+pub(crate) fn protect_thread_high_qos(what: &str) {
+    let state = THREAD_POWER_THROTTLING_STATE {
+        Version: THREAD_POWER_THROTTLING_CURRENT_VERSION,
+        // ControlMask selects the mechanism; StateMask = 0 turns it OFF → HighQoS.
+        ControlMask: THREAD_POWER_THROTTLING_EXECUTION_SPEED,
+        StateMask: 0,
+    };
+    // SAFETY: GetCurrentThread is a pseudo-handle valid for this call; `state`
+    // outlives the synchronous call and its size matches the struct.
+    if let Err(e) = unsafe {
+        SetThreadInformation(
+            GetCurrentThread(),
+            ThreadPowerThrottling,
+            &state as *const _ as *const c_void,
+            std::mem::size_of::<THREAD_POWER_THROTTLING_STATE>() as u32,
+        )
+    } {
+        tracing::debug!("could not tag {what} thread HighQoS: {e}");
+    }
+}
+
+/// Toggle process-wide **EcoQoS**. When hidden to tray (`enabled = true`) we mark
+/// the whole process EcoQoS so the scheduler prefers efficiency cores / lower
+/// clocks for the UI, WebView2, and async threads during gameplay — Windows only
+/// *auto*-throttles a hidden window on battery, so a desktop gamer on AC gets
+/// nothing without this. The real-time recorder threads opt out via
+/// [`protect_thread_high_qos`], so the encode path keeps running at full speed. On
+/// show (`enabled = false`) we clear the throttle back to HighQoS. Best-effort.
+pub(crate) fn set_process_eco_qos(enabled: bool) {
+    let state = PROCESS_POWER_THROTTLING_STATE {
+        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+        StateMask: if enabled {
+            PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+        } else {
+            0
+        },
+    };
+    // SAFETY: GetCurrentProcess is a pseudo-handle valid for this call; `state`
+    // outlives the synchronous call and its size matches the struct.
+    if let Err(e) = unsafe {
+        SetProcessInformation(
+            GetCurrentProcess(),
+            ProcessPowerThrottling,
+            &state as *const _ as *const c_void,
+            std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+        )
+    } {
+        tracing::debug!("could not set process EcoQoS={enabled}: {e}");
     }
 }
 

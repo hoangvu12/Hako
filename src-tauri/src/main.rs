@@ -35,6 +35,22 @@ use tauri::{
 fn main() {
     let _log_guard = init_logging();
 
+    // Cap the async runtime size. Tauri's default builds a multi-thread tokio
+    // runtime sized to the logical CPU count; our async work (Riot HTTP polls,
+    // event emits) is light, so on a gaming box a dozen+ idle worker threads would
+    // park on the very cores the game wants. A small fixed pool cuts scheduler
+    // wakeups and cache churn during gameplay. Must run before any Tauri call
+    // touches the runtime (`set` panics if it's already initialized); the runtime
+    // is held in `_rt` for the whole of `main` since dropping it is not allowed.
+    let _rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .map(|rt| {
+            tauri::async_runtime::set(rt.handle().clone());
+            rt
+        });
+
     tauri::Builder::default()
         // Restore the main window's size/position/maximized state on launch.
         // Only those flags — not VISIBLE (we control reveal via the update
@@ -89,7 +105,8 @@ fn main() {
             commands::update_settings,
             commands::valorant_status,
             commands::overlay_test,
-            finish_to_main
+            finish_to_main,
+            dump_render_stats
         ])
         .setup(|app| {
             app.manage(init_library(app.handle()));
@@ -146,8 +163,9 @@ fn main() {
             Ok(())
         })
         // Window close → hide to tray; the recorder threads keep running. While
-        // hidden during a match the UI doesn't need to render, so drop WebView2 to
-        // a low memory target to free its renderer RAM (restored on show).
+        // hidden during a match the UI doesn't need to render, so suspend WebView2
+        // (pauses its timers/scripts → near-zero renderer CPU, RAM reclaimed by the
+        // OS). Resumed on show.
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 // Only the main window hides to tray; the transient updater
@@ -163,49 +181,71 @@ fn main() {
                     StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED,
                 );
                 let _ = window.hide();
-                set_webview_memory_low(window.app_handle(), true);
+                set_webview_suspended(window.app_handle(), true);
             }
         })
         .run(tauri::generate_context!())
         .expect("error while running Hako");
 }
 
-/// Set the WebView2 memory-usage target for the main window: `Low` while hidden
-/// to tray (the engine drops caches / swaps renderer memory out, freeing system
-/// RAM during gameplay), `Normal` when shown again. Scripts keep running either
-/// way, so live event listeners and the query cache stay warm. No-op if the
-/// window or the WebView2 19+ interface isn't available (older runtimes).
-fn set_webview_memory_low(app: &tauri::AppHandle, low: bool) {
+/// Suspend or resume the main window's WebView2 while it's hidden to tray.
+///
+/// When hidden during gameplay the UI renders nothing and has no work to do, so
+/// we call `ICoreWebView2_3::TrySuspend`: it pauses the renderer's script timers
+/// and animations, drops the renderer process to near-zero CPU, and lets the OS
+/// reclaim its memory (TrySuspend implies the Low memory target). That's strictly
+/// better for gameplay than the old `SetMemoryUsageTargetLevel(Low)`, which —
+/// per Microsoft — keeps scripts running, so the React app's timers / query
+/// refetch / rAF loops kept waking the CPU on the cores the game wants.
+///
+/// `TrySuspend` requires the controller to be invisible (else `ERROR_INVALID_STATE`),
+/// so callers must `hide()` the window *before* calling this with `suspend=true`.
+/// On show, WebView2 auto-resumes once the controller is visible again; we still
+/// call `Resume()` explicitly (harmless, and keeps intent obvious). Best-effort:
+/// no-op if the window or the WebView2 3+ interface isn't available.
+fn set_webview_suspended(app: &tauri::AppHandle, suspend: bool) {
+    // Hidden to tray during gameplay → mark the process EcoQoS so the UI/WebView2/
+    // async threads prefer efficiency cores (Windows only auto-throttles a hidden
+    // window on battery; this covers AC too). The real-time recorder threads opt
+    // out via `core::protect_thread_high_qos`, so encoding stays at full speed.
+    crate::core::set_process_eco_qos(suspend);
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
     let _ = window.with_webview(move |webview| {
         #[cfg(windows)]
         {
-            use webview2_com::Microsoft::Web::WebView2::Win32::{
-                ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
-                COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
-            };
+            use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_3;
+            use webview2_com::TrySuspendCompletedHandler;
             use windows::core::Interface;
 
             // SAFETY: runs on the UI thread that owns the WebView2 controller; the
             // COM calls are all best-effort and ignore failure.
             unsafe {
                 let controller = webview.controller();
-                if let Ok(core) = controller.CoreWebView2() {
-                    if let Ok(core19) = core.cast::<ICoreWebView2_19>() {
-                        let level = if low {
-                            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
-                        } else {
-                            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
-                        };
-                        let _ = core19.SetMemoryUsageTargetLevel(level);
-                    }
+                let Ok(core) = controller.CoreWebView2() else {
+                    return;
+                };
+                let Ok(core3) = core.cast::<ICoreWebView2_3>() else {
+                    return;
+                };
+                if suspend {
+                    // Async + best-effort: TrySuspend defers if a script is mid-run
+                    // and returns `ok=false` if the page can't be suspended (e.g.
+                    // playing audio, active downloads) — our hidden UI hits none of
+                    // these. The completion bool is logged only.
+                    let handler = TrySuspendCompletedHandler::create(Box::new(|_hr, ok| {
+                        tracing::debug!(suspended = ok, "webview TrySuspend completed");
+                        Ok(())
+                    }));
+                    let _ = core3.TrySuspend(&handler);
+                } else {
+                    let _ = core3.Resume();
                 }
             }
         }
         #[cfg(not(windows))]
-        let _ = (webview, low);
+        let _ = (webview, suspend);
     });
 }
 
@@ -228,7 +268,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.hide();
                 }
-                set_webview_memory_low(app, true);
+                set_webview_suspended(app, true);
             }
             // Quit fully stops the recorder (separate from hide-to-tray).
             "quit" => app.exit(0),
@@ -379,12 +419,32 @@ fn finish_to_main(app: tauri::AppHandle) {
         let _ = main.show();
         let _ = main.unminimize();
         let _ = main.set_focus();
-        // Visible again → full webview memory (it starts Normal anyway).
-        set_webview_memory_low(&app, false);
+        // Visible again → resume the renderer (it auto-resumes on show anyway).
+        set_webview_suspended(&app, false);
     }
     if let Some(updater) = app.get_webview_window("updater") {
         let _ = updater.close();
     }
+}
+
+/// Dev-only sink for React Scan render stats. The frontend serializes
+/// `getReport()` (per-component render counts/timings) and ships it here so an
+/// agent — which can't see the WebView2 overlay or its console — can just `Read`
+/// the JSON file. Writes next to the dev working dir and logs the absolute path
+/// to the `tauri dev` terminal. No-op in release builds (the frontend never
+/// invokes it there, but gate the body too so it can't write files in prod).
+#[tauri::command]
+fn dump_render_stats(json: String) -> Result<String, String> {
+    if !cfg!(debug_assertions) {
+        return Err("dump_render_stats is dev-only".into());
+    }
+    let path = std::env::current_dir()
+        .map_err(|e| e.to_string())?
+        .join("react-scan-report.json");
+    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    let p = path.display().to_string();
+    println!("[react-scan] wrote render report → {p}");
+    Ok(p)
 }
 
 fn show_main(app: &tauri::AppHandle) {
@@ -393,7 +453,7 @@ fn show_main(app: &tauri::AppHandle) {
         let _ = w.unminimize();
         let _ = w.set_focus();
     }
-    // Back to full memory now that the UI is visible again.
-    set_webview_memory_low(app, false);
+    // Resume the renderer now that the UI is visible again.
+    set_webview_suspended(app, false);
 }
 
