@@ -38,6 +38,15 @@ tracing-appender = "0.2"
 # 8.1 avoid needing libclang/bindgen.
 rusty_ffmpeg = { version = "0.17", features = ["ffmpeg8_1"] }
 
+# Offline microphone noise suppression for the clip editor's export path —
+# applied to the mic stem *after* the match, never in the capture hot path. This
+# is the RNNoise model as a pure-Rust port (no FFI, no model file, no codegen/JIT
+# runtime), matching the editor's RNNoise WASM preview so what you hear equals
+# what you save. (We first tried DeepFilterNet 3 via `deep_filter`/`tract` for its
+# higher quality, but tract failed to build the model graph at runtime — "running
+# pass codegen" — in debug builds, i.e. `tauri dev`. nnnoiseless just works.)
+nnnoiseless = { version = "0.5", default-features = false }
+
 # Valorant integration: Riot local + remote HTTP (rustls, accept the
 # localhost self-signed cert), base64 presence blob, process detection.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
