@@ -18,6 +18,7 @@ import {
   Check,
   Trash,
   Gauge,
+  GearSix,
   FloppyDisk,
   CircleNotch,
   DownloadSimple,
@@ -45,6 +46,7 @@ import {
   useTrimClip,
 } from "@/hooks/use-library";
 import { Slider } from "@/components/ui/slider";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Popover,
   PopoverContent,
@@ -80,7 +82,8 @@ interface TrackCtl {
 // re-encodes or loads the denoiser unless the user turns it on for a track.
 const DEFAULT_CTL: TrackCtl = { muted: false, solo: false, volume: 100, denoise: false };
 
-const SPEEDS = [1, 1.5, 2, 0.5] as const;
+/** Playback-rate choices in the settings popover (YouTube-style, ascending). */
+const SPEED_OPTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2] as const;
 const MIN_TRIM = 0.3; // shortest selectable range, seconds
 /** Tiles in the Rust-generated sprite-sheet filmstrip (commands.rs FILMSTRIP_TILES). */
 const FILMSTRIP_TILES = 16;
@@ -395,7 +398,7 @@ function ViewerStage({
   const [videoDuration, setVideoDuration] = React.useState<number | null>(null);
   const duration = videoDuration ?? clip.duration_secs;
   const [fullscreen, setFullscreen] = React.useState(false);
-  // Speed lives in <SpeedButton> (it has no audio coupling), but mute/volume stay
+  // Speed lives in <SettingsButton> (it has no audio coupling), but mute/volume stay
   // here: they feed the live audio mixer's master gain *and* the "m" shortcut, so
   // isolating them safely needs a shared store rather than a ref bridge.
 
@@ -791,7 +794,7 @@ function ViewerStage({
 
             <span className="flex-1" />
 
-            <SpeedButton videoRef={videoRef} />
+            <SettingsButton videoRef={videoRef} />
             <CtrlButton
               label={fullscreen ? "Exit fullscreen" : "Fullscreen"}
               onClick={toggleFullscreen}
@@ -1579,27 +1582,107 @@ function PlayPauseButton({
   );
 }
 
-/** Playback-speed cycle button — owns `speedIdx` so it doesn't re-render the
- *  stage; writes `playbackRate` straight onto the element. */
-function SpeedButton({
+/** Settings gear → a YouTube-style popover. Today it holds just playback speed
+ *  (a two-level menu: "Playback speed" row → the rate list). Owns its own state
+ *  so changing speed doesn't re-render the stage; writes `playbackRate` straight
+ *  onto the element. */
+function SettingsButton({
   videoRef,
 }: {
   videoRef: React.RefObject<HTMLVideoElement | null>;
 }) {
-  const [speedIdx, setSpeedIdx] = React.useState(0);
+  const [open, setOpen] = React.useState(false);
+  const [view, setView] = React.useState<"main" | "speed">("main");
+  const [speed, setSpeed] = React.useState(1);
   React.useEffect(() => {
-    if (videoRef.current) videoRef.current.playbackRate = SPEEDS[speedIdx];
-  }, [speedIdx, videoRef]);
+    if (videoRef.current) videoRef.current.playbackRate = speed;
+  }, [speed, videoRef]);
+  const label = speed === 1 ? "Normal" : `${speed}×`;
   return (
-    <CtrlButton
-      label={`Speed ${SPEEDS[speedIdx]}×`}
-      onClick={() => setSpeedIdx((i) => (i + 1) % SPEEDS.length)}
+    <Popover
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        // Always reopen on the top-level menu, never the speed sub-list.
+        if (!o) setView("main");
+      }}
     >
-      <Gauge weight="bold" className="size-5" />
-      <span className="ml-1 text-xs font-semibold tabular-nums">
-        {SPEEDS[speedIdx]}×
-      </span>
-    </CtrlButton>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label="Settings"
+          title="Settings"
+          className="flex items-center text-white/90 transition hover:text-white"
+        >
+          <GearSix
+            weight="fill"
+            className={cn(
+              "size-6 transition-transform duration-200",
+              open && "rotate-45",
+            )}
+          />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent side="top" align="end" sideOffset={12} className="w-72 p-0">
+        {view === "main" ? (
+          <button
+            type="button"
+            onClick={() => setView("speed")}
+            className="flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left transition-colors hover:bg-white/5"
+          >
+            <span className="flex items-center gap-2.5 text-sm font-medium text-foreground">
+              <Gauge weight="bold" className="size-5 text-muted-foreground" />
+              Playback speed
+            </span>
+            <span className="flex items-center gap-1 text-sm text-muted-foreground">
+              {label}
+              <CaretRight weight="bold" className="size-4" />
+            </span>
+          </button>
+        ) : (
+          <div>
+            <button
+              type="button"
+              onClick={() => setView("main")}
+              className="flex w-full items-center gap-2 border-b border-panel-border px-4 py-3.5 text-sm font-semibold text-foreground transition-colors hover:bg-white/5"
+            >
+              <CaretLeft weight="bold" className="size-4" />
+              Playback speed
+            </button>
+            <ScrollArea viewportClassName="max-h-72">
+              <div className="py-1">
+              {SPEED_OPTIONS.map((s) => {
+                const active = s === speed;
+                return (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => {
+                      setSpeed(s);
+                      setView("main");
+                    }}
+                    className={cn(
+                      "flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-sm transition-colors hover:bg-white/5",
+                      active ? "font-semibold text-foreground" : "text-muted-foreground",
+                    )}
+                  >
+                    <Check
+                      weight="bold"
+                      className={cn(
+                        "size-4 text-primary-text",
+                        active ? "opacity-100" : "opacity-0",
+                      )}
+                    />
+                    {s === 1 ? "Normal" : `${s}×`}
+                  </button>
+                );
+              })}
+              </div>
+            </ScrollArea>
+          </div>
+        )}
+      </PopoverContent>
+    </Popover>
   );
 }
 
