@@ -74,6 +74,8 @@ fn main() {
         // signed update via these plugins; `process` provides the relaunch.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // Native folder picker for choosing the clip storage directory.
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         // Consumer-cloud OAuth (Phase 2/3): a temporary loopback server catches
         // the browser redirect during a Google Drive / Dropbox / OneDrive connect.

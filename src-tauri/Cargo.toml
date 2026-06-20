@@ -31,6 +31,8 @@ tauri-plugin-window-state = "2"
 # `process` provides the relaunch-into-the-new-binary call after install.
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# Native folder picker for the clip storage directory setting.
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }

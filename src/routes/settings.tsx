@@ -24,8 +24,10 @@ import {
   Wrench,
   Bell,
   CloudArrowUp,
+  FolderOpen,
   type Icon,
 } from "@phosphor-icons/react";
+import { open } from "@tauri-apps/plugin-dialog";
 
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
@@ -1185,17 +1187,37 @@ function SettingsPage() {
               <Panel title="Library">
                 <Row
                   label="Clip folder"
-                  hint="Leave blank to use the default (Videos/Hako)."
+                  hint="Browse to a folder, or paste a path. Leave blank to use the default (Videos/Hako)."
                 >
-                  <Input
-                    className="w-64"
-                    value={draft.storage_dir ?? ""}
-                    placeholder="Videos/Hako"
-                    onChange={(e) =>
-                      setLocal("storage_dir", e.target.value || null)
-                    }
-                    onBlur={commit}
-                  />
+                  <div className="flex items-center gap-2">
+                    <Input
+                      className="w-64"
+                      value={draft.storage_dir ?? ""}
+                      placeholder="Videos/Hako"
+                      onChange={(e) =>
+                        setLocal("storage_dir", e.target.value || null)
+                      }
+                      onBlur={commit}
+                    />
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        void (async () => {
+                          const picked = await open({
+                            directory: true,
+                            defaultPath: draft.storage_dir ?? undefined,
+                          });
+                          if (typeof picked === "string") {
+                            set("storage_dir", picked);
+                          }
+                        })();
+                      }}
+                    >
+                      <FolderOpen />
+                      Browse
+                    </Button>
+                  </div>
                 </Row>
               </Panel>
             </>
