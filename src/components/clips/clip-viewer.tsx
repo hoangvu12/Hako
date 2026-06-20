@@ -682,11 +682,11 @@ function ViewerStage({
     const step = rulerStep(duration);
     const ticks: number[] = [];
     for (let t = 0; t <= duration + 0.001; t += step) ticks.push(t);
-    // Finer ticks (4 per major step) for the ruler's measure marks.
-    const minorStep = step / 4;
+    // Finer ticks (10 per major step) for the ruler's measure marks.
+    const minorStep = step / 10;
     const minorTicks: { pct: number; major: boolean }[] = [];
     for (let i = 0; i * minorStep <= duration + 0.001; i++) {
-      minorTicks.push({ pct: ((i * minorStep) / duration) * 100, major: i % 4 === 0 });
+      minorTicks.push({ pct: ((i * minorStep) / duration) * 100, major: i % 10 === 0 });
     }
     return { ticks, minorTicks };
   }, [duration]);
@@ -811,24 +811,28 @@ function ViewerStage({
                 onPointerDown={onRulerPointerDown}
                 onPointerMove={onBarPointerMove}
                 onPointerUp={endDrag}
-                className="relative h-9 cursor-pointer touch-none select-none"
+                className="group/ruler relative h-9 cursor-pointer touch-none select-none"
               >
                 {ticks.map((t) => (
                   <span
                     key={t}
-                    className="pointer-events-none absolute top-0 -translate-x-1/2 font-mono text-xs tabular-nums text-muted-foreground"
+                    className="pointer-events-none absolute top-0 -translate-x-1/2 font-sans text-[11px] font-medium tabular-nums text-white"
                     style={{ left: `${(t / duration) * 100}%` }}
                   >
                     {fmtTime(t)}
                   </span>
                 ))}
-                {/* measure ticks */}
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 h-3.5">
+                {/* measure strip — a contained "tape" surface so the ticks read
+                    as a ruler instead of floating marks on the backdrop */}
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 h-4 overflow-hidden rounded-md bg-gradient-to-b from-white/[0.06] to-white/[0.015] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]">
                   {minorTicks.map((m, i) => (
                     <span
                       key={i}
-                      className="absolute bottom-0 w-px -translate-x-1/2 bg-muted-foreground/35"
-                      style={{ left: `${m.pct}%`, height: m.major ? "100%" : "55%" }}
+                      className={cn(
+                        "absolute bottom-0 w-px -translate-x-1/2",
+                        m.major ? "bg-white" : "bg-white/45",
+                      )}
+                      style={{ left: `${m.pct}%`, height: "45%" }}
                     />
                   ))}
                 </div>
