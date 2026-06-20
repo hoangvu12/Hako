@@ -3,6 +3,7 @@ import { Outlet } from "@tanstack/react-router";
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { WindowTitlebar } from "@/components/layout/window-titlebar";
 import { UploadToast } from "@/components/clips/upload-toast";
+import { OnboardingWizard } from "@/components/onboarding/onboarding-wizard";
 import { useRecorderEventBridge } from "@/hooks/use-recorder";
 import { useClipEventBridge } from "@/hooks/use-library";
 import { useCloudEventBridge } from "@/hooks/use-cloud";
@@ -24,6 +25,8 @@ export function AppLayout() {
       </main>
       {/* Background-first upload UX: a corner toast tracking active uploads. */}
       <UploadToast />
+      {/* First-run setup wizard. Self-gates on `settings.onboarding_completed`. */}
+      <OnboardingWizard />
     </div>
   );
 }

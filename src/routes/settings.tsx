@@ -11,7 +11,6 @@ import {
   MagnifyingGlass,
   Warning,
   SpeakerHigh,
-  Check,
   CaretDown,
   Trophy,
   Crown,
@@ -42,6 +41,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { HotkeyRecorder } from "@/components/ui/hotkey-recorder";
+import {
+  SectionHero,
+  Panel,
+  Row,
+  PresetCard,
+} from "@/components/settings/primitives";
 import { RecordingStatus } from "@/components/settings/recording-status";
 import { RecordingAudio } from "@/components/settings/recording-audio";
 import { CloudProviders } from "@/components/settings/cloud-providers";
@@ -215,44 +220,6 @@ const BITRATE_OPTIONS = [3, 5, 8, 10, 15, 20, 30, 50];
 // Candidate save-clip lengths; the UI filters these to the buffer depth.
 const CLIP_LENGTHS = [10, 15, 30, 60, 90, 120, 180];
 
-/** One selectable quality-preset card (Low / Standard / High / Custom). */
-function PresetCard({
-  title,
-  blurb,
-  line,
-  selected,
-  onSelect,
-}: {
-  title: string;
-  blurb: string;
-  line?: string;
-  selected: boolean;
-  onSelect: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onSelect}
-      className={cn(
-        "relative flex flex-col rounded-lg border p-3 text-left transition-colors",
-        selected
-          ? "border-primary bg-primary/10"
-          : "border-border/70 bg-card/40 hover:border-border hover:bg-accent/40"
-      )}
-    >
-      {selected && (
-        <Check
-          weight="bold"
-          className="absolute top-2.5 right-2.5 size-4 text-primary-text"
-        />
-      )}
-      <span className="text-sm font-semibold">{title}</span>
-      <span className="mt-1 text-xs text-muted-foreground">{blurb}</span>
-      {line && <span className="mt-2 text-xs font-medium">{line}</span>}
-    </button>
-  );
-}
-
 // The replay buffer keeps ~`buffer_seconds` of *compressed* video in RAM at the
 // bitrate ceiling (mirrors the Rust `PacketRing`, which stores encoded packets
 // sized by bitrate × time). Audio tracks add only a few MB, so they're ignored
@@ -289,63 +256,6 @@ function BufferRamHint({
       Mbps)
       {heavy ? ". Lower the bitrate or buffer length to use less." : "."}
     </p>
-  );
-}
-
-function SectionHero({
-  icon: Icon,
-  title,
-  subtitle,
-}: {
-  icon: Icon;
-  title: string;
-  subtitle: string;
-}) {
-  return (
-    <div className="flex flex-col items-center text-center">
-      <div className="mb-3 flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary-text">
-        <Icon className="size-7" weight="duotone" />
-      </div>
-      <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
-      <p className="mt-1 max-w-md text-sm text-muted-foreground">{subtitle}</p>
-    </div>
-  );
-}
-
-function Panel({
-  title,
-  children,
-}: {
-  title?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="rounded-xl border border-border/70 bg-card/40 p-5">
-      {title && (
-        <h2 className="mb-2 text-sm font-semibold text-foreground">{title}</h2>
-      )}
-      <div className="divide-y divide-border/60">{children}</div>
-    </section>
-  );
-}
-
-function Row({
-  label,
-  hint,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-6 py-4 first:pt-0 last:pb-0">
-      <div className="min-w-0">
-        <div className="text-sm font-medium">{label}</div>
-        {hint && <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p>}
-      </div>
-      <div className="shrink-0">{children}</div>
-    </div>
   );
 }
 

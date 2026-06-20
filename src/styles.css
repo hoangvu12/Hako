@@ -3,6 +3,200 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Equalizer bars in the onboarding audio preview (see step-preview.tsx). */
+@keyframes hako-eq {
+  0% {
+    transform: scaleY(0.3);
+  }
+  20% {
+    transform: scaleY(0.85);
+  }
+  40% {
+    transform: scaleY(0.45);
+  }
+  60% {
+    transform: scaleY(1);
+  }
+  80% {
+    transform: scaleY(0.55);
+  }
+  100% {
+    transform: scaleY(0.3);
+  }
+}
+
+/* "REC" indicator dot in the onboarding previews. */
+@keyframes hako-rec-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.3;
+    transform: scale(0.8);
+  }
+}
+.hako-rec-pulse {
+  animation: hako-rec-pulse 1.3s ease-in-out infinite;
+}
+
+/* "Press the hotkey → clip saved" demo in the onboarding Clips preview, on one
+ * shared loop. Tuned like a real keypress (12-principles motion): the cap lifts
+ * a hair (anticipation), dips + glows on the press, then springs back UP past
+ * rest before settling (release overshoot) — not a flat down-and-up. */
+@keyframes hako-key {
+  0%,
+  46% {
+    transform: scale(1);
+    border-color: var(--border);
+    box-shadow: 0 0 0 0 transparent;
+  }
+  52% {
+    transform: scale(1.04); /* anticipation: slight lift before the press */
+    border-color: var(--border);
+    box-shadow: 0 0 0 0 transparent;
+  }
+  59% {
+    transform: scale(0.92); /* press down + glow */
+    border-color: var(--primary);
+    box-shadow: 0 0 0 6px color-mix(in oklch, var(--primary) 22%, transparent);
+  }
+  67% {
+    transform: scale(1.03); /* release: spring back up past rest */
+    border-color: var(--border);
+    box-shadow: 0 0 0 0 transparent;
+  }
+  74%,
+  100% {
+    transform: scale(1); /* settle */
+    border-color: var(--border);
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+.hako-key {
+  animation: hako-key 2.6s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+/* The saved clip springs in just AFTER the press (overlapping action): overshoots
+ * up, undershoots, settles — instead of sliding onto the mark and stopping dead. */
+@keyframes hako-clip-pop {
+  0%,
+  56% {
+    opacity: 0;
+    transform: translateY(14px) scale(0.94);
+  }
+  66% {
+    opacity: 1;
+    transform: translateY(-4px) scale(1.03); /* overshoot up */
+  }
+  72% {
+    transform: translateY(1px) scale(0.99); /* undershoot */
+  }
+  78%,
+  90% {
+    opacity: 1;
+    transform: translateY(0) scale(1); /* settle + dwell */
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
+  }
+}
+.hako-clip-pop {
+  animation: hako-clip-pop 2.6s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+/* "Event detected → clip auto-saved" demo in the onboarding Auto-capture
+ * preview. Tuned to feel alive, not mechanical (12-principles motion design):
+ * each element springs in with a slight overshoot then settles (not a linear
+ * slide), the three pieces are STAGGERED on one shared clock (banner → card →
+ * check, overlapping action) so it reads as a reaction rather than a synced
+ * script, and the ~4.6s loop fades fully out before restarting so there's no
+ * jarring metronome snap. Asymmetric: quick in, slow settle (ease-out). */
+@keyframes hako-auto-fire {
+  0%,
+  9% {
+    opacity: 0;
+    transform: translateY(-7px) scale(0.95);
+  }
+  17% {
+    opacity: 1;
+    transform: translateY(1px) scale(1.05); /* spring overshoot */
+  }
+  23% {
+    transform: translateY(0) scale(0.985); /* settle back under */
+  }
+  29%,
+  80% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  92%,
+  100% {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.99);
+  }
+}
+.hako-auto-fire {
+  animation: hako-auto-fire 4.6s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+@keyframes hako-auto-drop {
+  0%,
+  22% {
+    opacity: 0;
+    transform: translateY(16px) scale(0.94);
+  }
+  33% {
+    opacity: 1;
+    transform: translateY(-4px) scale(1.035); /* overshoot upward */
+  }
+  40% {
+    transform: translateY(1px) scale(0.99); /* undershoot */
+  }
+  46%,
+  80% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  92%,
+  100% {
+    opacity: 0;
+    transform: translateY(7px) scale(0.98);
+  }
+}
+.hako-auto-drop {
+  animation: hako-auto-drop 4.6s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+/* Secondary action: the check pops a beat AFTER the card lands, with a bouncy
+ * back-out so the confirmation has a little personality. */
+@keyframes hako-auto-check {
+  0%,
+  42% {
+    opacity: 0;
+    transform: scale(0);
+  }
+  52% {
+    opacity: 1;
+    transform: scale(1.4); /* bounce overshoot */
+  }
+  60% {
+    transform: scale(0.9);
+  }
+  66%,
+  82% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  92%,
+  100% {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+}
+.hako-auto-check {
+  animation: hako-auto-check 4.6s cubic-bezier(0.34, 1.56, 0.64, 1) infinite;
+}
+
 /* ---------------------------------------------------------------------------
  * Satoshi — self-hosted from Fontshare (woff2). Free for commercial use.
  * Files live in /public/fonts/satoshi and are served at the web root.
@@ -213,6 +407,28 @@
      * selector outranks the `*` reset, so this wins. */
     .animate-spin {
       animation-duration: 1s !important;
+      animation-iteration-count: infinite !important;
+    }
+    /* …and the onboarding audio equalizer. It's an intentional "live audio"
+     * visualization (like the spinner, functional motion), and freezing it to a
+     * flat bar reads as broken. The class outranks the `*` reset, so this wins. */
+    .hako-eq-bar {
+      animation-duration: 700ms !important;
+      animation-iteration-count: infinite !important;
+    }
+    .hako-rec-pulse {
+      animation-duration: 1.3s !important;
+      animation-iteration-count: infinite !important;
+    }
+    .hako-key,
+    .hako-clip-pop {
+      animation-duration: 2.6s !important;
+      animation-iteration-count: infinite !important;
+    }
+    .hako-auto-fire,
+    .hako-auto-drop,
+    .hako-auto-check {
+      animation-duration: 4.6s !important;
       animation-iteration-count: infinite !important;
     }
   }

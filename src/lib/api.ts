@@ -609,6 +609,14 @@ export interface Settings {
   cloud_free_up_space_enabled: boolean;
   /** Evict to the Recycle Bin (recoverable) rather than hard-deleting. */
   cloud_delete_to_recycle_bin: boolean;
+
+  /**
+   * Whether the first-run setup wizard has been finished or skipped. The wizard
+   * shows while this is false. Fresh installs start false; configs written
+   * before this field existed load as true (already-onboarded). See the Rust
+   * `Settings::onboarding_completed`.
+   */
+  onboarding_completed: boolean;
 }
 
 /** Corner placement for the overlay toast stack (mirrors Rust `overlay_position`). */

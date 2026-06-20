@@ -132,6 +132,16 @@ pub struct Settings {
     /// Send evicted files to the Recycle Bin (recoverable) rather than hard-
     /// deleting. On by default, matching Medal's `filesToRecycleBin`.
     pub cloud_delete_to_recycle_bin: bool,
+
+    // --- First-run onboarding --------------------------------------------
+    /// Whether the user has finished (or skipped) the first-run setup wizard.
+    /// The wizard shows while this is false.
+    ///
+    /// Falls back to `false` when absent (via the container `#[serde(default)]`),
+    /// so anyone who hasn't completed onboarding — a fresh install *or* a config
+    /// written before this field existed — gets the wizard. Once finished or
+    /// skipped it's persisted as `true` and never shows again.
+    pub onboarding_completed: bool,
 }
 
 impl Default for Settings {
@@ -168,6 +178,9 @@ impl Default for Settings {
             cloud_retention_gb: 5,
             cloud_free_up_space_enabled: false,
             cloud_delete_to_recycle_bin: true,
+            // Fresh installs (no settings.json) hit this and run the wizard;
+            // existing configs deserialize the missing key as `true` instead.
+            onboarding_completed: false,
         }
     }
 }
