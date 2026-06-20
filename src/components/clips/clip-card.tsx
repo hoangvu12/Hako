@@ -4,7 +4,7 @@ import { Link } from "@tanstack/react-router";
 import {
   Play,
   Pause,
-  DotsThree,
+  DotsThreeVertical,
   PencilSimple,
   Trash,
   SpeakerSimpleHigh,
@@ -15,6 +15,7 @@ import {
   ArrowsClockwise,
   Prohibit,
   LinkSimple,
+  FolderOpen,
 } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
@@ -25,7 +26,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import type { ClipRecord } from "@/lib/api";
+import { revealClip, type ClipRecord } from "@/lib/api";
 import {
   mapNameFromPath,
   type ValorantAssets,
@@ -491,7 +492,7 @@ function ClipActionsMenu({
           setOpen(true);
         }}
       >
-        <DotsThree weight="bold" className="size-4" />
+        <DotsThreeVertical weight="bold" className="size-4" />
       </button>
     );
   }
@@ -499,10 +500,18 @@ function ClipActionsMenu({
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger aria-label="Clip actions" className={ACTIONS_TRIGGER_CLASS}>
-        <DotsThree weight="bold" className="size-4" />
+        <DotsThreeVertical weight="bold" className="size-4" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         <CloudUploadItems clip={clip} />
+        <DropdownMenuItem
+          onSelect={() => {
+            void revealClip(clip.id).catch(() => {});
+          }}
+        >
+          <FolderOpen />
+          Open in folder
+        </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => onRename(clip)}>
           <PencilSimple />
           Rename
