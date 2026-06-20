@@ -21,17 +21,26 @@ export function UploadToast() {
   const cancel = useCancelUpload();
 
   // Edge-detect the queue draining to 0 so we can flash a completion state.
+  // Depends only on `active.length` (never on `done`): it always records the
+  // previous count, so once it's seen the drain it won't re-fire. Letting `done`
+  // drive this effect — together with the early return skipping the ref update —
+  // is what made the "complete" toast re-flash forever every linger cycle.
   const [done, setDone] = useState(false);
   const prevActive = useRef(0);
   useEffect(() => {
-    if (prevActive.current > 0 && active.length === 0) {
-      setDone(true);
-      const t = window.setTimeout(() => setDone(false), COMPLETE_LINGER_MS);
-      return () => window.clearTimeout(t);
-    }
-    if (active.length > 0 && done) setDone(false);
+    const prev = prevActive.current;
     prevActive.current = active.length;
-  }, [active.length, done]);
+    if (prev > 0 && active.length === 0) setDone(true); // queue just drained
+    else if (active.length > 0) setDone(false); // new activity → drop the flash
+  }, [active.length]);
+
+  // Auto-dismiss the completion flash after the linger. Separate from the edge
+  // detector so its `done` transitions can't retrigger the flash.
+  useEffect(() => {
+    if (!done) return;
+    const t = window.setTimeout(() => setDone(false), COMPLETE_LINGER_MS);
+    return () => window.clearTimeout(t);
+  }, [done]);
 
   if (active.length === 0 && !done) return null;
 
