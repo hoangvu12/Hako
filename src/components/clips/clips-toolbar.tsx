@@ -179,7 +179,7 @@ function MultiSelectFilter({
                         src={image}
                         alt=""
                         className={cn(
-                          "absolute inset-0 size-full object-cover transition-transform duration-500 ease-out group-hover/opt:scale-105",
+                          "absolute inset-0 size-full object-cover",
                           fit,
                           // Over a gradient the image is the agent-select
                           // texture: keep it faint so the colors carry.

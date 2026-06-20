@@ -227,7 +227,7 @@ function ClipPreview({ clip }: { clip: ClipRecord }) {
           alt={clip.title}
           decoding="async"
           draggable={false}
-          className="size-full object-cover opacity-90 transition-[transform,opacity] duration-300 group-hover:scale-[1.02] group-hover:opacity-100"
+          className="size-full object-cover opacity-90 transition-opacity duration-300 group-hover:opacity-100"
           onError={(e) => {
             (e.currentTarget as HTMLImageElement).style.display = "none";
           }}
