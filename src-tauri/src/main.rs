@@ -122,10 +122,21 @@ fn main() {
             cloud::download::cloud_download_clip,
             cloud::retention::cloud_retention_stats,
             cloud::retention::cloud_free_up_space,
-            finish_to_main,
-            dump_render_stats
+            finish_to_main
         ])
         .setup(|app| {
+            // The update splash is created hidden + unfocused (see tauri.conf.json)
+            // precisely so it can never tab the user out of a fullscreen/borderless
+            // game on launch. Reveal it *without activating it*: a plain `show()`
+            // (or tao's own initial show) calls `ShowWindow(SW_SHOW)`, which steals
+            // the foreground from the game. `show_window_no_activate` instead marks
+            // the window `WS_EX_NOACTIVATE` (+ APPWINDOW so it still shows in the
+            // taskbar) and shows it with `SW_SHOWNOACTIVATE`, so it paints in the
+            // background while the game keeps focus. The splash needs no input — it
+            // only reports progress — so non-activating is harmless.
+            if let Some(updater) = app.get_webview_window("updater") {
+                show_window_no_activate(&updater);
+            }
             app.manage(init_library(app.handle()));
             app.manage(init_settings(app.handle()));
             // Cloud upload: managed queue state + the single draining worker.
@@ -220,6 +231,37 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running Hako");
+}
+
+/// Show a window **without giving it the foreground** — used for the update
+/// splash so launching while in a fullscreen/borderless game never tabs the user
+/// out. We can't do this through Tauri's `show()` (it activates), so we drop to
+/// Win32: add `WS_EX_NOACTIVATE` (the window refuses activation on show/click) and
+/// `WS_EX_APPWINDOW` (NOACTIVATE windows are hidden from the taskbar by default —
+/// this keeps it listed so the user can still click back to it), then show with
+/// `SW_SHOWNOACTIVATE`. Best-effort: any failure to get the HWND leaves the window
+/// hidden, and the 60 s safety net in `setup` still reveals the main window.
+fn show_window_no_activate(window: &tauri::WebviewWindow) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, ShowWindow, GWL_EXSTYLE, SW_SHOWNOACTIVATE,
+        WS_EX_APPWINDOW, WS_EX_NOACTIVATE,
+    };
+    let Ok(hwnd) = window.hwnd() else {
+        tracing::warn!("update splash: no HWND; leaving it hidden");
+        return;
+    };
+    let hwnd = HWND(hwnd.0 as *mut std::ffi::c_void);
+    // SAFETY: `hwnd` is a live top-level window we just obtained from Tauri; the
+    // style read/write and show are standard, side-effect-free user32 calls.
+    unsafe {
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let want = ex | (WS_EX_NOACTIVATE.0 as isize) | (WS_EX_APPWINDOW.0 as isize);
+        if want != ex {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, want);
+        }
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    }
 }
 
 /// Suspend or resume the main window's WebView2 while it's hidden to tray.
