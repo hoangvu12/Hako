@@ -354,9 +354,13 @@ fn end_match(app: &AppHandle, am: ActiveMatch, mode: AutoCaptureMode) {
     });
 }
 
-/// Drain new log lines, feeding round-ended markers into the tracker. Each
-/// round-end is stamped at read time (we tail within a couple seconds; the ±10 s
-/// padding absorbs it), matching Medal's `ValorantRoundHandler`.
+/// Drain new log lines, feeding round-ended + round-live markers into the
+/// tracker. Each is back-dated from the ~2 s poll read time to the line's own
+/// embedded `[UTC]` timestamp ([`log_watch::line_event_ticks`]) — otherwise the
+/// poll lag stamps round boundaries up to 2 s late and drags every reconciled
+/// marker the same amount. A round's precise start comes from its `Gameplay
+/// started` (barriers-dropped) line; `OnRoundEnded` only seeds the coarse
+/// buy-phase fallback.
 fn drain_log(am: &mut ActiveMatch) {
     let Some(tail) = am.log_tail.as_mut() else {
         return;
@@ -365,7 +369,9 @@ fn drain_log(am: &mut ActiveMatch) {
         Ok(lines) => {
             for line in lines {
                 if let Some(round) = log_watch::parse_round_ended(&line) {
-                    am.tracker.on_round_ended(round, log_watch::now_ticks());
+                    am.tracker.on_round_ended(round, log_watch::line_event_ticks(&line));
+                } else if log_watch::is_round_live(&line) {
+                    am.tracker.on_round_live(log_watch::line_event_ticks(&line));
                 }
             }
         }
