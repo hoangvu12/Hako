@@ -610,7 +610,7 @@ export const ClipCard = React.memo(function ClipCard({
       <div className="flex flex-1 flex-col gap-1.5 p-3.5">
         <div className="flex items-center justify-between gap-2">
           <h3
-            className="truncate text-sm font-medium text-card-foreground"
+            className="truncate text-sm font-semibold text-card-foreground"
             title={clip.title}
           >
             {clip.title || "Untitled"}

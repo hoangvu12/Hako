@@ -46,17 +46,14 @@ function RailItem({ entry }: { entry: RailEntry }) {
           className={cn(
             "group relative mx-2 flex items-center justify-center rounded-xl py-2.5 transition-colors",
             active
-              ? "bg-primary/10 text-primary"
+              ? "bg-white/10 text-foreground"
               : "text-sidebar-foreground hover:bg-sidebar-accent/60 hover:text-foreground"
           )}
         >
           <Icon
-            className="size-5 transition-colors"
+            className="size-6 transition-colors"
             weight={active ? "fill" : "regular"}
           />
-          {active && (
-            <span className="absolute top-1/2 left-0 h-5 w-1 -translate-y-1/2 rounded-r-full bg-primary" />
-          )}
         </Link>
       </TooltipTrigger>
       <TooltipContent side="right">{entry.label}</TooltipContent>
@@ -76,7 +73,7 @@ function StorageGauge({ usedMb }: { usedMb: number }) {
           aria-label={`${usedMb} MB used`}
           className="mx-auto flex flex-col items-center gap-1 py-1"
         >
-          <span className="relative size-5">
+          <span className="relative size-6">
             <svg viewBox="0 0 36 36" className="size-full -rotate-90">
               <path
                 className="text-secondary"
@@ -107,18 +104,18 @@ function StorageGauge({ usedMb }: { usedMb: number }) {
 
 export function AppSidebar({ usedMb = 0 }: { usedMb?: number }) {
   return (
-    <aside className="relative z-20 flex w-[60px] shrink-0 flex-col justify-between border-r border-sidebar-border bg-sidebar py-4">
+    <aside className="relative z-20 flex w-[72px] shrink-0 flex-col justify-between border-r border-sidebar-border bg-sidebar py-4">
       <div className="flex w-full flex-col items-stretch gap-1">
         <Link
           to="/clips"
           aria-label="Hako home"
-          className="mx-auto mb-3 flex size-8 items-center justify-center"
+          className="mx-auto mb-3 flex size-9 items-center justify-center"
         >
           <img
             src="/logo.png"
             alt="Hako"
             draggable={false}
-            className="size-7 rounded-lg"
+            className="size-8 rounded-lg"
           />
         </Link>
         {TOP.map((entry) => (

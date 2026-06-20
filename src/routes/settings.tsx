@@ -722,7 +722,7 @@ function SettingsPage() {
   return (
     <div className="flex h-full">
       {/* Settings nav */}
-      <aside className="flex w-[260px] shrink-0 flex-col border-r border-panel-border bg-panel">
+      <aside className="flex w-[300px] shrink-0 flex-col border-r border-panel-border bg-panel">
         <div className="p-3">
           <div className="relative">
             <MagnifyingGlass className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -748,13 +748,13 @@ function SettingsPage() {
                     type="button"
                     onClick={() => setActive(it.key)}
                     className={cn(
-                      "flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors",
+                      "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-[15px] transition-colors",
                       on
-                        ? "bg-primary/10 font-medium text-primary-text"
-                        : "text-foreground/80 hover:bg-accent/60 hover:text-foreground"
+                        ? "bg-white/10 font-semibold text-foreground"
+                        : "font-medium text-foreground/90 hover:bg-accent/60 hover:text-foreground"
                     )}
                   >
-                    <it.icon className="size-4" weight={on ? "fill" : "regular"} />
+                    <it.icon className="size-[18px]" weight={on ? "fill" : "regular"} />
                     {it.label}
                   </button>
                 );
@@ -769,7 +769,7 @@ function SettingsPage() {
 
       {/* Content */}
       <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-2xl space-y-6 px-8 py-10">
+        <div className="mx-auto max-w-3xl space-y-6 px-8 py-10">
           {active === "clip" && (
             <>
               <SectionHero
