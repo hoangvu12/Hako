@@ -161,6 +161,11 @@ const ClipRow = React.memo(function ClipRow({
   );
 });
 
+// Remember the grid's scroll offset across mounts. The route component unmounts
+// when you open a clip detail, so a component-local ref would reset to 0 — this
+// module-scoped value survives, letting us land back where you left off.
+let savedScrollTop = 0;
+
 export default function ClipsPage() {
   const { data: clips, isLoading } = useClips();
   const { data: settings } = useSettings();
@@ -212,6 +217,31 @@ export default function ClipsPage() {
   React.useEffect(() => {
     rowVirtualizer.measure();
   }, [clipRowHeight, rows, rowVirtualizer]);
+
+  // Persist the scroll offset on every scroll so it's current the moment we
+  // navigate away (the component unmounts before any cleanup could read it).
+  React.useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      savedScrollTop = el.scrollTop;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // Restore the saved offset once, after the grid is measured and rows exist —
+  // only then is the virtualizer's total height in the DOM, so the container is
+  // tall enough to actually scroll there (otherwise scrollTop clamps to 0).
+  const gridReady = !isLoading && width > 0 && rows.length > 0;
+  const didRestore = React.useRef(false);
+  React.useLayoutEffect(() => {
+    if (didRestore.current || !gridReady) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = savedScrollTop;
+    didRestore.current = true;
+  }, [gridReady]);
 
   // Decode thumbnails ahead of the viewport. The rendered window (visible +
   // overscan) is bracketed here by a wider band whose thumbnails we force-decode
