@@ -84,6 +84,11 @@ const SPEEDS = [1, 1.5, 2, 0.5] as const;
 const MIN_TRIM = 0.3; // shortest selectable range, seconds
 /** Tiles in the Rust-generated sprite-sheet filmstrip (commands.rs FILMSTRIP_TILES). */
 const FILMSTRIP_TILES = 16;
+/** How many frames the scrubber actually draws — fewer than the sprite has, so
+ *  each slot is wide enough to show a frame (almost) uncropped (Medal-style). At
+ *  the ~50px strip height a 16:9 frame is ~89px wide, so ~13 of them tile the bar
+ *  with each one showing essentially edge-to-edge (matches Medal's compact bar). */
+const FILMSTRIP_VISIBLE = 13;
 /**
  * Custom range-aware streaming scheme (src-tauri/src/media.rs). The clip video
  * loads through this instead of the `asset:` protocol so WebView2 gets proper
@@ -839,7 +844,7 @@ function ViewerStage({
               </div>
 
               {/* Filmstrip — frames clipped; selection chrome on an unclipped layer */}
-              <div className="relative mt-1.5 h-24 select-none">
+              <div className="relative mt-1.5 h-[50px] select-none">
                 {/* Clipped frame strip */}
                 <div
                   ref={barRef}
@@ -849,6 +854,11 @@ function ViewerStage({
                 >
                   {/* Frames — sliced out of the Rust sprite-sheet (no webview decode) */}
                   <FilmstripStrip sprite={filmstripUrl} poster={poster} />
+
+                  {/* Subtle base veil over the whole strip (Medal-style) so the
+                      white selection frame and the playhead read clearly against
+                      the frames. The trimmed-away regions get an extra dim on top. */}
+                  <div className="pointer-events-none absolute inset-0 bg-black/20" />
 
                   {/* Dim the trimmed-away regions (outside the selection) */}
                   <div
@@ -1087,22 +1097,36 @@ const FilmstripStrip = React.memo(function FilmstripStrip({
   poster?: string;
 }) {
   if (sprite) {
+    // Show fewer, *wider* frames (Medal-style): 16 frames packed across the bar
+    // makes each slot far narrower than a 16:9 frame, so ~30% of every frame gets
+    // cropped. Drawing ~10 evenly-sampled frames makes each slot about as wide as
+    // a full frame, so each one shows (almost) edge-to-edge. We still sample from
+    // all 16 sprite tiles, so the strip still spans the whole clip.
     return (
       <div className="pointer-events-none absolute inset-0 flex">
-        {Array.from({ length: FILMSTRIP_TILES }, (_, i) => (
-          <div
-            key={i}
-            className="h-full min-w-0 flex-1"
-            style={{
-              backgroundImage: `url(${sprite})`,
-              // Stretch the sprite to N slot-widths, then step to tile i — exact:
-              // tile i lands flush in slot i (see media/filmstrip layout).
-              backgroundSize: `${FILMSTRIP_TILES * 100}% 100%`,
-              backgroundPosition: `${(i / (FILMSTRIP_TILES - 1)) * 100}% 0`,
-              backgroundRepeat: "no-repeat",
-            }}
-          />
-        ))}
+        {Array.from({ length: FILMSTRIP_VISIBLE }, (_, j) => {
+          // Map this slot to a sprite tile, spread evenly across the 16 tiles.
+          const tile = Math.round((j / (FILMSTRIP_VISIBLE - 1)) * (FILMSTRIP_TILES - 1));
+          return (
+            // The sprite is one image of N tiles, each at the video's *native*
+            // aspect (thumbs.rs scales tile_h from src) — render it height-fitted
+            // (`h-full max-w-none` → natural width, no squash) and slide the chosen
+            // tile to the slot centre. `translateX -%` is relative to the image's
+            // own width, so this stays correct at any video aspect or screen size;
+            // `overflow-hidden` center-crops whatever little overflows.
+            <div key={j} className="relative h-full min-w-0 flex-1 overflow-hidden">
+              <img
+                src={sprite}
+                alt=""
+                draggable={false}
+                className="absolute top-0 left-1/2 h-full max-w-none select-none"
+                style={{
+                  transform: `translateX(-${((tile + 0.5) / FILMSTRIP_TILES) * 100}%)`,
+                }}
+              />
+            </div>
+          );
+        })}
       </div>
     );
   }
