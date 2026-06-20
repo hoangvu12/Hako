@@ -556,26 +556,6 @@ fn finish_to_main(app: tauri::AppHandle) {
     }
 }
 
-/// Dev-only sink for React Scan render stats. The frontend serializes
-/// `getReport()` (per-component render counts/timings) and ships it here so an
-/// agent — which can't see the WebView2 overlay or its console — can just `Read`
-/// the JSON file. Writes next to the dev working dir and logs the absolute path
-/// to the `tauri dev` terminal. No-op in release builds (the frontend never
-/// invokes it there, but gate the body too so it can't write files in prod).
-#[tauri::command]
-fn dump_render_stats(json: String) -> Result<String, String> {
-    if !cfg!(debug_assertions) {
-        return Err("dump_render_stats is dev-only".into());
-    }
-    let path = std::env::current_dir()
-        .map_err(|e| e.to_string())?
-        .join("react-scan-report.json");
-    std::fs::write(&path, json).map_err(|e| e.to_string())?;
-    let p = path.display().to_string();
-    println!("[react-scan] wrote render report → {p}");
-    Ok(p)
-}
-
 fn show_main(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();

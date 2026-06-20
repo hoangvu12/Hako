@@ -28,9 +28,6 @@ src-tauri/ffmpeg/lib/
 src-tauri/ffmpeg/include/
 src-tauri/ffmpeg/LICENSE.txt
 
-# React Scan dev render report (written by the dump_render_stats command)
-react-scan-report.json
-
 # Logs
 *.log
 npm-debug.log*
