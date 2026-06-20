@@ -270,14 +270,17 @@ unsafe fn collect_active_sessions(out: &mut Vec<AudioSession>) -> windows::core:
     let sessions = manager.GetSessionEnumerator()?;
     let count = sessions.GetCount()?;
 
-    // Resolve pids → exe names in one process scan. Refresh only the process
-    // list with no per-process detail (names come from the base enumeration),
-    // matching the cheap scan `valorant::service` does for game detection.
+    // Resolve pids → exe names + paths in one process scan. Process *names* come
+    // free with the base enumeration, but the exe *path* (needed to extract the
+    // app's real icon) is only populated when we explicitly ask via `with_exe` —
+    // otherwise `Process::exe()` is always `None` and every app falls back to the
+    // generic icon. `OnlyIfNotSet` keeps it cheap (resolve each path once).
     let mut sys = sysinfo::System::new();
     sys.refresh_processes_specifics(
         sysinfo::ProcessesToUpdate::All,
         true,
-        sysinfo::ProcessRefreshKind::nothing(),
+        sysinfo::ProcessRefreshKind::nothing()
+            .with_exe(sysinfo::UpdateKind::OnlyIfNotSet),
     );
 
     let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
