@@ -65,7 +65,14 @@ const chipIdle =
   "border-border/70 bg-field text-muted-foreground hover:border-border hover:text-foreground";
 const chipActive = "border-primary/40 bg-primary/10 text-foreground";
 
-/** One row inside a filter popover: a select indicator, optional artwork, label. */
+/**
+ * One row inside a filter popover: a select indicator, optional artwork, label.
+ *
+ * Two indicator idioms, matching the rest of the app:
+ *  - `check` (multi-select): a square checkbox that fills when on.
+ *  - `mark`  (single-select): a bare checkmark on the chosen row, like the app's
+ *    `Select` dropdowns — no round radio, so every filter reads the same way.
+ */
 function OptionRow({
   on,
   shape,
@@ -73,27 +80,31 @@ function OptionRow({
   label,
 }: {
   on: boolean;
-  shape: "check" | "radio";
+  shape: "check" | "mark";
   icon?: string;
   label: string;
 }) {
   return (
     <>
-      <span
-        className={cn(
-          "flex size-4 shrink-0 items-center justify-center border",
-          shape === "check" ? "rounded" : "rounded-full",
-          on ? "border-primary bg-primary text-primary-foreground" : "border-border"
-        )}
-      >
-        {on ? (
-          shape === "check" ? (
-            <Check weight="bold" className="size-3" />
-          ) : (
-            <span className="size-1.5 rounded-full bg-primary-foreground" />
-          )
-        ) : null}
-      </span>
+      {shape === "check" ? (
+        <span
+          className={cn(
+            "flex size-4 shrink-0 items-center justify-center rounded border",
+            // Off state: a clearly-visible outline + faint fill so the empty box
+            // reads as a control. A bare 10%-white border (border-border) all but
+            // disappears on the dark popover.
+            on
+              ? "border-primary bg-primary text-primary-foreground"
+              : "border-muted-foreground/40 bg-white/[0.03]"
+          )}
+        >
+          {on ? <Check weight="bold" className="size-3" /> : null}
+        </span>
+      ) : (
+        <span className="flex size-4 shrink-0 items-center justify-center text-primary">
+          {on ? <Check weight="bold" className="size-3.5" /> : null}
+        </span>
+      )}
       {icon ? (
         <img
           src={icon}
@@ -138,7 +149,7 @@ function MultiSelectFilter({
         align="start"
         className={cn("p-1.5", hasArt ? "w-64" : "w-56")}
       >
-        <ScrollArea className="max-h-80">
+        <ScrollArea viewportClassName="max-h-80">
           <div className="flex flex-col gap-0.5">
             {options.map((o) => {
               const on = selected.includes(o.value);
@@ -260,7 +271,7 @@ function SingleSelectFilter<T extends string>({
                 onClick={() => onChange(o.value)}
                 className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"
               >
-                <OptionRow on={value === o.value} shape="radio" label={o.label} />
+                <OptionRow on={value === o.value} shape="mark" label={o.label} />
               </button>
             </PopoverClose>
           ))}
