@@ -43,17 +43,11 @@ const settingsRoute = createRoute({
     typeof search.section === "string" ? { section: search.section } : {},
 }).lazy(() => import("@/routes/settings").then((d) => d.Route));
 
-const valorantRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/valorant",
-}).lazy(() => import("@/routes/valorant").then((d) => d.Route));
-
 const routeTree = rootRoute.addChildren([
   indexRoute,
   clipsRoute,
   clipDetailRoute,
   settingsRoute,
-  valorantRoute,
 ]);
 
 export const router = createRouter({
