@@ -846,6 +846,35 @@ fn run_audio(
             return Err("no audio sources enabled".into());
         }
 
+        // Build the output tracks (one mixer + encoder each) and publish each
+        // track's AAC metadata BEFORE opening the capture devices. The encoders
+        // are device-independent, so this is fast and never blocks — whereas
+        // opening per-process loopback inputs can take seconds (each
+        // `ActivateAudioInterfaceAsync` waits up to 2 s for activation). Publishing
+        // the track metadata first means a match that begins the instant capture
+        // starts (i.e. Hako was opened mid-game) still sees every planned audio
+        // track when it snapshots `audio_track_metas()` to declare the session
+        // writer's streams — otherwise the session recording, and every auto-clip
+        // cut from it, comes out video-only. See `valorant::orchestrator::start_match`.
+        let mut tracks: Vec<OutputTrack> = Vec::with_capacity(plan.tracks.len());
+        for (idx, _spec) in plan.tracks.iter().enumerate() {
+            let encoder = AacEncoder::new()?;
+            let block = encoder.frame_size();
+            clip.set_audio_track_meta(
+                idx,
+                AudioMeta {
+                    sample_rate: MIX_RATE as u32,
+                    channels: MIX_CHANNELS as u32,
+                    extradata: encoder.extradata(),
+                },
+            );
+            tracks.push(OutputTrack {
+                index: idx,
+                mixer: TrackMixer::new(block),
+                encoder,
+            });
+        }
+
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
                 .map_err(|e| format!("MMDeviceEnumerator: {e}"))?;
@@ -864,28 +893,6 @@ fn run_audio(
         }
         if sources.iter().all(|s| s.is_none()) {
             return Err("no audio capture devices could be opened".into());
-        }
-
-        // Build the output tracks (one mixer + encoder each) and publish each
-        // track's AAC metadata. Encoders are device-independent, so this always
-        // succeeds once the first one does.
-        let mut tracks: Vec<OutputTrack> = Vec::with_capacity(plan.tracks.len());
-        for (idx, _spec) in plan.tracks.iter().enumerate() {
-            let encoder = AacEncoder::new()?;
-            let block = encoder.frame_size();
-            clip.set_audio_track_meta(
-                idx,
-                AudioMeta {
-                    sample_rate: MIX_RATE as u32,
-                    channels: MIX_CHANNELS as u32,
-                    extradata: encoder.extradata(),
-                },
-            );
-            tracks.push(OutputTrack {
-                index: idx,
-                mixer: TrackMixer::new(block),
-                encoder,
-            });
         }
 
         // Invert the track→inputs map into input→(track, gain) routing so each

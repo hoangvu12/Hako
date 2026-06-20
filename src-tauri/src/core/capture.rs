@@ -309,8 +309,12 @@ impl ClipBuffer {
     /// Every output track's `(name, AudioMeta)` whose encoder has published its
     /// metadata, in track order (0 = master). Used to declare all of the Mode-B
     /// session writer's audio streams up front. Tracks without published meta are
-    /// skipped; in practice every encoder opens at audio-thread start, before a
-    /// match installs the session writer, so all planned tracks are present.
+    /// skipped — so the caller must compare against [`Self::audio_track_count`]
+    /// and wait until all planned tracks are present before snapshotting: when
+    /// Hako is opened mid-game the audio thread may still be opening its
+    /// (per-process loopback) inputs, and an empty/partial snapshot would declare
+    /// a video-only session, leaving every auto-clip silent. See
+    /// `valorant::orchestrator::start_match`.
     pub fn audio_track_metas(&self) -> Vec<(String, AudioMeta)> {
         self.audio_tracks
             .iter()

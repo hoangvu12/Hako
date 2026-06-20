@@ -119,6 +119,12 @@ async fn run(app: AppHandle) {
     // start_match each tick until it succeeds or the match ends, instead of
     // losing the whole match because `MatchStarted` is a one-shot edge.
     let mut want_match_record = false;
+    // When the match-record intent was first latched, so we can wait a bounded
+    // grace period for the audio encoders to publish their track metadata before
+    // opening the session writer (mid-game, capture only just began and the
+    // per-process loopback inputs take a moment to come up). Without the wait the
+    // session — and every auto-clip cut from it — would be declared video-only.
+    let mut want_match_since: Option<Instant> = None;
     // Periodic retry of matches whose post-match details fetch failed (pending
     // queue), and the in-flight reconcile task (so passes never overlap).
     let mut next_reconcile = Instant::now();
@@ -167,6 +173,7 @@ async fn run(app: AppHandle) {
                         end_match(&app, am, mode);
                     }
                     want_match_record = false;
+                    want_match_since = None;
                     sm = StateMachine::new();
                 }
                 continue;
@@ -197,12 +204,14 @@ async fn run(app: AppHandle) {
                     // same tick when the encoder is warm, or on a later tick if we
                     // started mid-game and it isn't producing frames yet).
                     want_match_record = true;
+                    want_match_since.get_or_insert_with(Instant::now);
                 }
                 Action::RoundBoundary { rounds_played } => {
                     tracing::debug!("auto-clip: round boundary ({rounds_played} played)");
                 }
                 Action::MatchEnded => {
                     want_match_record = false;
+                    want_match_since = None;
                     if let Some(am) = active.take() {
                         end_match(&app, am, mode);
                     }
@@ -217,10 +226,16 @@ async fn run(app: AppHandle) {
         // `MatchEnded` clears the latch). Re-checks the mode so switching to a
         // non-recording mode mid-match stops the attempts.
         if want_match_record && active.is_none() && mode.records_match() {
-            if let Some(am) = start_match(&app, &puuid, &presence) {
+            // Stop deferring for audio once the grace window elapses, so a capture
+            // whose audio genuinely never comes up still records (video-only) the
+            // match rather than dropping it entirely.
+            let audio_grace_expired = want_match_since
+                .map_or(true, |t| t.elapsed() >= AUDIO_READY_GRACE);
+            if let Some(am) = start_match(&app, &puuid, &presence, audio_grace_expired) {
                 tracing::info!("auto-clip: recording match → {}", am.session_path.display());
                 active = Some(am);
                 want_match_record = false;
+                want_match_since = None;
             }
         }
 
@@ -270,15 +285,41 @@ async fn poll_presence() -> Option<(PrivatePresence, String)> {
     Some((presence, puuid))
 }
 
+/// How long to wait for the audio encoders to publish all planned track metadata
+/// before opening the session writer anyway. Per-process loopback inputs can take
+/// a second or two to activate when capture has only just begun (Hako opened
+/// mid-game); this bounds that wait so a genuinely audio-less capture still
+/// records video rather than dropping the match.
+const AUDIO_READY_GRACE: Duration = Duration::from_secs(8);
+
 /// Begin recording a match: open the session writer over the live capture's
 /// clip buffer, set up round tracking + the log tail, and start the remote
-/// bootstrap. `None` if no capture is running / the encoder isn't ready yet.
-fn start_match(app: &AppHandle, puuid: &str, presence: &PrivatePresence) -> Option<ActiveMatch> {
+/// bootstrap. `None` if no capture is running / the encoder isn't ready yet, or
+/// (until `audio_grace_expired`) if not all planned audio tracks have published
+/// their metadata — the caller latches and retries, so we just wait.
+fn start_match(
+    app: &AppHandle,
+    puuid: &str,
+    presence: &PrivatePresence,
+    audio_grace_expired: bool,
+) -> Option<ActiveMatch> {
     let clip = capture_clip(app)?;
     let meta = clip.clip_meta()?; // encoder not open yet ⇒ can't record
     // All published audio tracks (track 0 = master mix, 1..N = stems) so the
-    // session — and the auto-clips cut from it — are multi-track too.
+    // session — and the auto-clips cut from it — are multi-track too. Defer until
+    // every planned track has published: opening mid-game, the audio thread may
+    // still be bringing up its per-process loopback inputs, and a partial (or
+    // empty) snapshot here would declare a video-only session, leaving every
+    // auto-clip silent. The grace flag caps the wait so we never block forever.
     let audio_tracks = clip.audio_track_metas();
+    if !audio_grace_expired && audio_tracks.len() < clip.audio_track_count() {
+        tracing::debug!(
+            "auto-clip: deferring session start — audio {}/{} tracks published",
+            audio_tracks.len(),
+            clip.audio_track_count()
+        );
+        return None;
+    }
 
     let session_path = std::env::temp_dir().join(format!("hako_session_{}.mp4", unix_millis()));
     let writer = match SessionWriter::start(&session_path, &meta, &audio_tracks) {
