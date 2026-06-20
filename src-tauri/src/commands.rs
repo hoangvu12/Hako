@@ -406,6 +406,8 @@ pub fn save_clip_full(
     };
 
     let _ = app.emit(crate::events::CLIP_CREATED, &record);
+    // Opt-in auto-upload to the default cloud provider (no-op when disabled).
+    crate::cloud::upload::maybe_auto_upload(app, record.id);
     // In-game overlay toast (manual F9 / UI saves only — auto-clips use the
     // separate `finalize_auto_clip` path and don't toast).
     crate::overlay::on_clip_saved(app, seconds);
@@ -484,6 +486,8 @@ pub fn finalize_auto_clip(
         lib.get(id)?.ok_or("inserted clip vanished")?
     };
     let _ = app.emit(crate::events::CLIP_CREATED, &record);
+    // Opt-in auto-upload to the default cloud provider (no-op when disabled).
+    crate::cloud::upload::maybe_auto_upload(app, record.id);
     tracing::info!("auto-clip saved ({event}) → {}", record.path);
     Ok(record)
 }
@@ -1014,7 +1018,7 @@ fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 /// Extract a thumbnail next to the clip (`<Videos>/Hako/thumbs/<stem>.jpg`).
-fn generate_thumbnail(app: &AppHandle, video: &Path) -> Option<String> {
+pub(crate) fn generate_thumbnail(app: &AppHandle, video: &Path) -> Option<String> {
     let dir = clip_dir(app).ok()?.join("thumbs");
     std::fs::create_dir_all(&dir).ok()?;
     let stem = video.file_stem()?.to_str()?;
@@ -1038,7 +1042,7 @@ const FILMSTRIP_TILE_WIDTH: u32 = 160;
 /// Extract a sprite-sheet filmstrip next to the clip
 /// (`<Videos>/Hako/thumbs/<stem>_strip.jpg`). Best-effort: a clip without one
 /// falls back to the poster in the editor.
-fn generate_filmstrip(app: &AppHandle, video: &Path, duration_secs: f64) -> Option<String> {
+pub(crate) fn generate_filmstrip(app: &AppHandle, video: &Path, duration_secs: f64) -> Option<String> {
     let dir = clip_dir(app).ok()?.join("thumbs");
     std::fs::create_dir_all(&dir).ok()?;
     let stem = video.file_stem()?.to_str()?;

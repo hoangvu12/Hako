@@ -38,3 +38,20 @@ pub const OVERLAY_NOTIFY: &str = "overlay-notify";
 /// window when it's shown and when settings change.
 /// Payload: [`crate::overlay::OverlayConfig`].
 pub const OVERLAY_CONFIG: &str = "overlay-config";
+
+/// Cloud-upload byte progress (throttled ~250 ms). Payload:
+/// `{ clip_id, provider_id, sent, total, bytes_per_sec }` (see `cloud::upload`).
+pub const CLOUD_UPLOAD_PROGRESS: &str = "cloud-upload-progress";
+
+/// Cloud-upload status transition (queued/uploading/done/error/canceled).
+/// Payload: `{ clip_id, provider_id, status, error? }` (see `cloud::upload`).
+pub const CLOUD_UPLOAD_STATUS: &str = "cloud-upload-status";
+
+/// Cloud-download byte progress (throttled ~250 ms) while re-fetching an evicted
+/// clip for editing. Payload: `{ clip_id, received, total, bytes_per_sec }`
+/// (see `cloud::download`).
+pub const CLOUD_DOWNLOAD_PROGRESS: &str = "cloud-download-progress";
+
+/// Cloud-download status transition (downloading/done/error) for an evicted clip
+/// being re-fetched. Payload: `{ clip_id, status, error? }` (see `cloud::download`).
+pub const CLOUD_DOWNLOAD_STATUS: &str = "cloud-download-status";

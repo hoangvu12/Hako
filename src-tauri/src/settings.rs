@@ -110,6 +110,28 @@ pub struct Settings {
     /// Corner the toast stack sits in over the game:
     /// `top_left` | `top_right` | `bottom_left` | `bottom_right`.
     pub overlay_position: String,
+
+    // --- Cloud upload (see `crate::cloud`) --------------------------------
+    // Provider *configs* (buckets/endpoints) and their secrets do NOT live here —
+    // configs are in `cloud_providers.json` and secrets in the OS keyring. These
+    // are just the behavior toggles. All `#[serde(default)]` via the container
+    // attribute above, so older config files load forward-compatibly.
+    /// Auto-upload saved clips to [`Settings::cloud_default_provider`] after
+    /// they're written. Off by default (opt-in) — no surprise uplink during
+    /// matches; the manual per-clip upload action is always available.
+    pub cloud_auto_upload: bool,
+    /// Provider id (see `cloud::ProviderConfig::id`) used for auto-upload and as
+    /// the default target of a manual upload. `None` until the user picks one.
+    pub cloud_default_provider: Option<String>,
+    /// Local-cache budget for "free up space": once cloud-backed clips on disk
+    /// exceed this, the oldest are evicted (kept in the cloud). Gibibytes.
+    pub cloud_retention_gb: u64,
+    /// Master switch for the retention worker. Off by default — eviction only
+    /// runs on opt-in, and never touches a clip that isn't safely in the cloud.
+    pub cloud_free_up_space_enabled: bool,
+    /// Send evicted files to the Recycle Bin (recoverable) rather than hard-
+    /// deleting. On by default, matching Medal's `filesToRecycleBin`.
+    pub cloud_delete_to_recycle_bin: bool,
 }
 
 impl Default for Settings {
@@ -141,6 +163,11 @@ impl Default for Settings {
             overlay_on_clip_saved: true,
             overlay_on_disk_low: true,
             overlay_position: "top_right".into(),
+            cloud_auto_upload: false,
+            cloud_default_provider: None,
+            cloud_retention_gb: 5,
+            cloud_free_up_space_enabled: false,
+            cloud_delete_to_recycle_bin: true,
         }
     }
 }

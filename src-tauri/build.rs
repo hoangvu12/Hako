@@ -2,7 +2,61 @@ use std::{env, fs, path::PathBuf};
 
 fn main() {
     copy_ffmpeg_dlls();
+    bake_oauth_credentials();
     tauri_build::build();
+}
+
+/// The consumer-cloud OAuth app credentials Hako embeds at build time. They are
+/// not user secrets — they identify Hako to Google/Dropbox/Microsoft — so they
+/// ship inside the binary. `cloud::oauth` reads each via `option_env!`.
+const OAUTH_ENV_VARS: &[&str] = &[
+    "HAKO_GOOGLE_CLIENT_ID",
+    "HAKO_GOOGLE_CLIENT_SECRET",
+    "HAKO_DROPBOX_CLIENT_ID",
+    "HAKO_DROPBOX_CLIENT_SECRET",
+    "HAKO_MICROSOFT_CLIENT_ID",
+    "HAKO_MICROSOFT_CLIENT_SECRET",
+];
+
+/// Bake the OAuth credentials so `option_env!` picks them up when compiling the
+/// crate. Sources, in precedence order:
+///   1. The build process env — how CI passes GitHub secrets (`dotenvy` never
+///      overrides an already-set var, so CI always wins).
+///   2. A local `.env` (gitignored) in the crate dir or the repo root — the dev
+///      path; create one from `.env.example`.
+/// Missing creds are simply not baked: that provider's "Connect" button then
+/// returns an actionable "not configured" error at runtime, and the others
+/// keep working.
+fn bake_oauth_credentials() {
+    let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    // Crate dir first, then repo root. `from_path` loads into the build env
+    // without clobbering existing vars, so CI's real secrets take precedence.
+    let candidates = [manifest.join(".env"), manifest.join("..").join(".env")];
+    for env_file in &candidates {
+        println!("cargo:rerun-if-changed={}", env_file.display());
+        let _ = dotenvy::from_path(env_file);
+    }
+
+    let mut baked = Vec::new();
+    for var in OAUTH_ENV_VARS {
+        // Rebuild when a credential changes (so a new value is re-baked).
+        println!("cargo:rerun-if-env-changed={var}");
+        if let Ok(val) = env::var(var) {
+            if !val.trim().is_empty() {
+                println!("cargo:rustc-env={var}={val}");
+                baked.push(*var);
+            }
+        }
+    }
+    if baked.is_empty() {
+        println!(
+            "cargo:warning=no HAKO_* OAuth credentials found (cloud Connect buttons will be \
+             disabled until you add a src-tauri/.env — see .env.example)"
+        );
+    } else {
+        // Names only, never values.
+        println!("cargo:warning=baked OAuth credentials: {}", baked.join(", "));
+    }
 }
 
 /// Copy the bundled FFmpeg DLLs next to the built binary (and the test deps

@@ -11,6 +11,10 @@ import {
   SpeakerSimpleX,
   CornersOut,
   CornersIn,
+  CloudArrowUp,
+  ArrowsClockwise,
+  Prohibit,
+  LinkSimple,
 } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
@@ -18,6 +22,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { ClipRecord } from "@/lib/api";
@@ -25,6 +30,13 @@ import {
   mapNameFromPath,
   type ValorantAssets,
 } from "@/hooks/use-valorant-assets";
+import {
+  useCancelUpload,
+  useClipRemoteUrl,
+  useClipUpload,
+  useUploadClip,
+} from "@/hooks/use-cloud";
+import { ClipUploadBadge } from "./clip-upload-badge";
 
 function fmtDuration(secs: number): string {
   const s = Math.round(secs);
@@ -186,8 +198,16 @@ function ClipPreview({ clip }: { clip: ClipRecord }) {
     setCurrent(v.currentTime);
   }
 
+  // Cloud-only (evicted) clips have no local file: play from the presigned URL
+  // and skip the (now-deleted) local thumbnail.
+  const cloudUrl = useClipRemoteUrl(clip.id);
+  const videoSrc = clip.evicted ? cloudUrl : convertFileSrc(clip.path);
+
   const progress = duration > 0 ? (current / duration) * 100 : 0;
-  const showVideo = active || fullscreen;
+  const showVideo = (active || fullscreen) && !!videoSrc;
+  // Evicted (cloud-only) clips keep their thumbnail on disk — retention deletes
+  // only the video — so still render the poster; only fall back to the cloud
+  // placeholder when there's genuinely no thumbnail (e.g. an old eviction).
   const poster = clip.thumb_path ? convertFileSrc(clip.thumb_path) : undefined;
 
   return (
@@ -214,10 +234,18 @@ function ClipPreview({ clip }: { clip: ClipRecord }) {
         />
       ) : null}
 
+      {/* Cloud-only placeholder, only when there's no thumbnail to show and the
+          video isn't mounted (hover plays it from the cloud). */}
+      {clip.evicted && !showVideo && !poster ? (
+        <div className="flex size-full items-center justify-center bg-muted text-muted-foreground">
+          <CloudArrowUp weight="duotone" className="size-8 opacity-60" />
+        </div>
+      ) : null}
+
       {showVideo ? (
         <video
           ref={videoRef}
-          src={convertFileSrc(clip.path)}
+          src={videoSrc ?? undefined}
           poster={poster}
           loop={!fullscreen}
           playsInline
@@ -474,6 +502,7 @@ function ClipActionsMenu({
         <DotsThree weight="bold" className="size-4" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
+        <CloudUploadItems clip={clip} />
         <DropdownMenuItem onSelect={() => onRename(clip)}>
           <PencilSimple />
           Rename
@@ -484,6 +513,63 @@ function ClipActionsMenu({
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+/**
+ * Cloud-upload entries in the clip actions menu, adapting to the clip's current
+ * upload state: enqueue/retry when idle or failed, cancel while in-flight, copy
+ * the shared link once it's done. Only mounted when the menu is open (lazy), so
+ * its `useClipUpload` subscription costs nothing during scroll.
+ */
+function CloudUploadItems({ clip }: { clip: ClipRecord }) {
+  const upload = useClipUpload(clip.id);
+  const startUpload = useUploadClip();
+  const cancelUpload = useCancelUpload();
+
+  const status = upload?.status;
+  const inFlight = status === "queued" || status === "uploading";
+  const enqueue = () => startUpload.mutate({ clipId: clip.id });
+
+  return (
+    <>
+      {inFlight ? (
+        <DropdownMenuItem onSelect={() => cancelUpload.mutate(clip.id)}>
+          <Prohibit />
+          Cancel upload
+        </DropdownMenuItem>
+      ) : status === "error" ? (
+        <DropdownMenuItem onSelect={enqueue}>
+          <ArrowsClockwise />
+          Retry upload
+        </DropdownMenuItem>
+      ) : status === "done" ? (
+        <>
+          <DropdownMenuItem onSelect={enqueue}>
+            <CloudArrowUp />
+            Upload again
+          </DropdownMenuItem>
+          {upload?.remoteUrl ? (
+            <DropdownMenuItem
+              onSelect={() => {
+                void navigator.clipboard
+                  .writeText(upload.remoteUrl as string)
+                  .catch(() => {});
+              }}
+            >
+              <LinkSimple />
+              Copy cloud link
+            </DropdownMenuItem>
+          ) : null}
+        </>
+      ) : (
+        <DropdownMenuItem onSelect={enqueue}>
+          <CloudArrowUp />
+          Upload to cloud
+        </DropdownMenuItem>
+      )}
+      <DropdownMenuSeparator />
+    </>
   );
 }
 
@@ -517,6 +603,7 @@ export const ClipCard = React.memo(function ClipCard({
       <div className="relative">
         <ClipPreview clip={clip} />
         <ClipBadges clip={clip} assets={assets} />
+        <ClipUploadBadge clipId={clip.id} />
       </div>
 
       {/* Meta */}

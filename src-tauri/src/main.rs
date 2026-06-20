@@ -13,6 +13,7 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+mod cloud;
 mod commands;
 mod events;
 mod media;
@@ -74,6 +75,9 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        // Consumer-cloud OAuth (Phase 2/3): a temporary loopback server catches
+        // the browser redirect during a Google Drive / Dropbox / OneDrive connect.
+        .plugin(tauri_plugin_oauth::init())
         // Range-aware clip streaming (smooth playback + seeking in the editor).
         .register_uri_scheme_protocol(media::SCHEME, media::handle)
         .manage(commands::CaptureState::default())
@@ -105,12 +109,28 @@ fn main() {
             commands::update_settings,
             commands::valorant_status,
             commands::overlay_test,
+            cloud::cloud_list_providers,
+            cloud::cloud_add_provider,
+            cloud::cloud_remove_provider,
+            cloud::cloud_test_provider,
+            cloud::oauth::cloud_connect_gdrive,
+            cloud::oauth::cloud_connect_dropbox,
+            cloud::oauth::cloud_connect_onedrive,
+            cloud::upload::cloud_upload_clip,
+            cloud::upload::cloud_cancel_upload,
+            cloud::upload::cloud_upload_status,
+            cloud::download::cloud_download_clip,
+            cloud::retention::cloud_retention_stats,
+            cloud::retention::cloud_free_up_space,
             finish_to_main,
             dump_render_stats
         ])
         .setup(|app| {
             app.manage(init_library(app.handle()));
             app.manage(init_settings(app.handle()));
+            // Cloud upload: managed queue state + the single draining worker.
+            // After library/settings so the worker can read them when jobs land.
+            app.manage(init_cloud(app.handle()));
             // Point the graphics-hook loader at the bundled OBS binaries
             // (`<resource_dir>/vendor/obs-hook`) so packaged builds find them.
             // In dev this dir doesn't exist under the resource root; the hook
@@ -386,6 +406,27 @@ fn init_library(app: &tauri::AppHandle) -> commands::LibraryState {
         Library::open_in_memory().expect("in-memory library")
     });
     commands::LibraryState(std::sync::Mutex::new(lib))
+}
+
+/// Build the cloud upload-queue state and spawn its single draining worker. The
+/// worker reads `LibraryState`/`SettingsState` and emits progress/status events,
+/// so this must run after those are managed.
+fn init_cloud(app: &tauri::AppHandle) -> cloud::CloudState {
+    // Clear any uploads left mid-flight by a previous run: the queue + worker are
+    // in-memory only, so a persisted `queued`/`uploading` row is a zombie that
+    // would otherwise show as an active upload forever. Best-effort.
+    if let Some(lib) = app.try_state::<commands::LibraryState>() {
+        if let Ok(guard) = lib.0.lock() {
+            match guard.cloud_reset_interrupted() {
+                Ok(n) if n > 0 => tracing::info!("cloud: reset {n} interrupted upload(s) on startup"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!("cloud: reset interrupted uploads failed: {e}"),
+            }
+        }
+    }
+    let (state, rx) = cloud::CloudState::new();
+    cloud::upload::spawn_worker(app.clone(), rx);
+    state
 }
 
 /// Load persisted settings (or defaults) from the app config dir.

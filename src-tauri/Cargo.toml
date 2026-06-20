@@ -13,6 +13,11 @@ path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# Load a local, gitignored `.env` at build time so a developer's OAuth client
+# credentials get baked into the binary via `option_env!` (see build.rs). CI
+# instead injects the real credentials as process env vars from GitHub secrets;
+# either way the values reach `cloud::oauth` at compile time, never at runtime.
+dotenvy = "0.15"
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
@@ -55,6 +60,55 @@ sysinfo = "0.33"
 
 # Clip library: bundled SQLite so there's no system dependency on Windows.
 rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Cloud upload: one storage abstraction for S3 / Cloudflare R2 / Backblaze B2 /
+# GCS (v1; gdrive/dropbox/onedrive come in Phase 2/3). `default-features = false`
+# drops everything but the explicitly-listed services (OpenDAL ships only the
+# in-memory service by default since 0.46).
+#
+# NOTE — TLS / no-OpenSSL: we deliberately do NOT add a TLS feature here. Since
+# 0.46 OpenDAL removed all its own reqwest TLS feature flags and inherits whatever
+# the single, Cargo-unified `reqwest` in the tree enables — which is `rustls-tls`
+# (see the reqwest dep above, `default-features = false`). So no OpenSSL/native-tls
+# is pulled in on Windows. (Adding a non-existent `rustls` feature here would fail
+# to compile.) Pinned to 0.54: 0.56 renamed `services-*` → `service-*` (singular).
+opendal = { version = "0.54", default-features = false, features = [
+    "services-s3",
+    "services-b2",
+    "services-gcs",
+    # Phase 2/3 consumer clouds. These are token-based APIs (no signed-URL
+    # concept) so they can't presign — cloud retention gates eviction on
+    # `ProviderKind::supports_presign()` so a non-presign-only clip is never
+    # evicted into an unplayable state. OpenDAL auto-refreshes the access token
+    # from the stored refresh_token + client_id/secret for all three.
+    "services-gdrive",
+    "services-dropbox",
+    "services-onedrive",
+] }
+
+# Phase 2/3 consumer-cloud OAuth. opendal handles token *refresh* (above); these
+# handle the interactive *login*: a loopback server catches the browser redirect
+# (tauri-plugin-oauth), and oauth2 runs the Authorization-Code + PKCE exchange
+# for the refresh token. oauth2 default-features off + rustls-tls keeps TLS on
+# the same rustls/reqwest stack as the rest of the tree (no OpenSSL/native-tls).
+oauth2 = { version = "5", default-features = false, features = ["reqwest", "rustls-tls"] }
+tauri-plugin-oauth = "2"
+# Open the provider's consent page in the system browser (URLs contain `&`, so a
+# `cmd /C start` shell-out would mis-parse; this uses ShellExecute under the hood).
+opener = "0.7"
+# Parse the loopback redirect (`http://127.0.0.1:<port>/?code=..&state=..`) with
+# correct percent-decoding. Already in the tree via reqwest/tauri/oauth2.
+url = "2"
+
+# OS-native secret storage (Windows Credential Manager) for provider access-key
+# ids / secret keys / GCS service-account JSON. Secrets live here only — never in
+# settings.json, cloud_providers.json, or the clip DB.
+keyring = { version = "3", features = ["windows-native"] }
+
+# Recycle-Bin deletes for cloud retention ("free up space"): evicted local clip
+# files go to the OS trash by default (cloud_delete_to_recycle_bin), so a wrong
+# eviction is recoverable. Hard delete (std::fs) only when the user opts out.
+trash = "5"
 
 # Encode extracted app icons (HICON → RGBA) to PNG for the audio-source list.
 png = "0.17"

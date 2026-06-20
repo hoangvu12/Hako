@@ -20,6 +20,7 @@ import {
   Gauge,
   FloppyDisk,
   CircleNotch,
+  DownloadSimple,
   ArrowCounterClockwise,
   FolderOpen,
   Faders,
@@ -50,6 +51,11 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { useTrackMixer } from "@/hooks/use-track-mixer";
+import {
+  useClipDownload,
+  useClipRemoteUrl,
+  useDownloadClip,
+} from "@/hooks/use-cloud";
 import { useValorantAssets, mapNameFromPath } from "@/hooks/use-valorant-assets";
 import { revealClip } from "@/lib/api";
 import type {
@@ -353,11 +359,21 @@ function ViewerStage({
   const videoRef = React.useRef<HTMLVideoElement>(null);
   const barRef = React.useRef<HTMLDivElement>(null);
 
+  // Cloud-only (evicted) clips have no local file — "free up space" deleted it.
+  // Play them straight from the presigned remote URL (range-capable, so seeking
+  // still works); local clips stream over our range-aware `hakoclip://` scheme.
+  const cloudUrl = useClipRemoteUrl(clip.id);
+  // "Download to edit": re-fetch the evicted file so trim/export can run locally.
+  const download = useDownloadClip();
+  const dl = useClipDownload(clip.id);
   // Cache-bust so an overwrite (same path, new bytes) actually reloads. The video
   // streams over our range-aware scheme; images stay on the plain asset protocol.
   const src = React.useMemo(
-    () => `${convertFileSrc(clip.path, STREAM_SCHEME)}?v=${clip.size_bytes}`,
-    [clip.path, clip.size_bytes],
+    () =>
+      clip.evicted
+        ? (cloudUrl ?? undefined)
+        : `${convertFileSrc(clip.path, STREAM_SCHEME)}?v=${clip.size_bytes}`,
+    [clip.evicted, cloudUrl, clip.path, clip.size_bytes],
   );
   const poster = clip.thumb_path
     ? `${convertFileSrc(clip.thumb_path)}?v=${clip.size_bytes}`
@@ -910,8 +926,13 @@ function ViewerStage({
 
               <button
                 type="button"
-                disabled={!edited}
+                disabled={!edited || clip.evicted}
                 onClick={() => setSaveOpen(true)}
+                title={
+                  clip.evicted
+                    ? "This clip is stored in the cloud only — editing needs its local file"
+                    : undefined
+                }
                 className="flex items-center gap-1.5 rounded-lg bg-primary px-5 py-1.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <FloppyDisk weight="bold" className="size-4" />
@@ -919,12 +940,51 @@ function ViewerStage({
               </button>
             </div>
 
-            {/* Navigation hint */}
-            <p className="mt-3 text-center text-xs text-muted-foreground/70">
-              <Kbd>I</Kbd>/<Kbd>O</Kbd> set in/out · <Kbd>Space</Kbd> play ·{" "}
-              <Kbd>←</Kbd> <Kbd>→</Kbd> browse · <Kbd>Del</Kbd> delete ·{" "}
-              <Kbd>Esc</Kbd> close
-            </p>
+            {/* Navigation hint — or, for an evicted clip, the download-to-edit
+                affordance (re-fetch the cloud copy so trim/export can run). */}
+            {clip.evicted ? (
+              <div className="mt-3 flex flex-col items-center gap-2">
+                {dl.downloading || download.isPending ? (
+                  <div className="flex w-64 flex-col gap-1.5">
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+                      <div
+                        className="h-full rounded-full bg-primary transition-[width] duration-200"
+                        style={{ width: `${Math.max(4, dl.pct)}%` }}
+                      />
+                    </div>
+                    <p className="text-center text-xs text-muted-foreground/80">
+                      Downloading from cloud… {Math.round(dl.pct)}%
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => download.mutate(clip.id)}
+                      className="flex items-center gap-1.5 rounded-lg bg-primary px-4 py-1.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90"
+                    >
+                      <DownloadSimple weight="bold" className="size-4" />
+                      Download to edit
+                    </button>
+                    <p className="max-w-sm text-center text-xs text-muted-foreground/70">
+                      Cloud-only clip — its local copy was freed up to save space.
+                      Playing from the cloud; download it to trim or export.
+                    </p>
+                    {download.error ? (
+                      <p className="text-center text-xs text-destructive">
+                        {String(download.error)}
+                      </p>
+                    ) : null}
+                  </>
+                )}
+              </div>
+            ) : (
+              <p className="mt-3 text-center text-xs text-muted-foreground/70">
+                <Kbd>I</Kbd>/<Kbd>O</Kbd> set in/out · <Kbd>Space</Kbd> play ·{" "}
+                <Kbd>←</Kbd> <Kbd>→</Kbd> browse · <Kbd>Del</Kbd> delete ·{" "}
+                <Kbd>Esc</Kbd> close
+              </p>
+            )}
           </div>
         ) : null}
       </div>
@@ -994,8 +1054,10 @@ function ViewerStage({
               // and reloads on its own; nothing else to do here.
             } catch {
               // Restore playback if the overwrite failed (error shown in dialog).
+              // Only reachable for local clips (export is disabled when evicted),
+              // so `src` is always a string here; coalesce to satisfy the type.
               if (mode === "overwrite" && v) {
-                v.src = src;
+                v.src = src ?? "";
                 v.load();
               }
             }

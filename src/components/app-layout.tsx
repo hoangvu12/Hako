@@ -2,13 +2,16 @@ import { Outlet } from "@tanstack/react-router";
 
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { WindowTitlebar } from "@/components/layout/window-titlebar";
+import { UploadToast } from "@/components/clips/upload-toast";
 import { useRecorderEventBridge } from "@/hooks/use-recorder";
 import { useClipEventBridge, useClips } from "@/hooks/use-library";
+import { useCloudEventBridge } from "@/hooks/use-cloud";
 
 export function AppLayout() {
   // Wire Rust -> webview push updates into the query cache once, at the root.
   useRecorderEventBridge();
   useClipEventBridge();
+  useCloudEventBridge();
 
   const { data: clips } = useClips();
   const usedMb = Math.round(
@@ -24,6 +27,8 @@ export function AppLayout() {
           <Outlet />
         </div>
       </main>
+      {/* Background-first upload UX: a corner toast tracking active uploads. */}
+      <UploadToast />
     </div>
   );
 }

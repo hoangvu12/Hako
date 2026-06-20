@@ -60,6 +60,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Consumer-cloud OAuth app credentials, baked into the binary by
+          # build.rs (option_env!). Set these as repo secrets (Settings →
+          # Secrets and variables → Actions). Any left unset just disables that
+          # provider's Connect button — the build still succeeds.
+          HAKO_GOOGLE_CLIENT_ID: ${{ secrets.HAKO_GOOGLE_CLIENT_ID }}
+          HAKO_GOOGLE_CLIENT_SECRET: ${{ secrets.HAKO_GOOGLE_CLIENT_SECRET }}
+          HAKO_DROPBOX_CLIENT_ID: ${{ secrets.HAKO_DROPBOX_CLIENT_ID }}
+          HAKO_DROPBOX_CLIENT_SECRET: ${{ secrets.HAKO_DROPBOX_CLIENT_SECRET }}
+          HAKO_MICROSOFT_CLIENT_ID: ${{ secrets.HAKO_MICROSOFT_CLIENT_ID }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Hako ${{ github.ref_name }}"

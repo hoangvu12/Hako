@@ -1,3 +1,9 @@
+# OAuth client credentials baked at build time (build.rs). Never commit; the
+# committed template is .env.example. A slash-less pattern matches .env in any
+# dir, so this covers both the repo root and src-tauri/.
+.env
+.env.local
+
 # Dependencies
 node_modules/
 

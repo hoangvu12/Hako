@@ -883,12 +883,6 @@ fn hook_source_loop(
     // while the game is minimized (it would otherwise keep logging healthy-looking
     // "frames sampled=N handed=N" off a stale texture). Reset when it recovers.
     let mut warned_frozen = false;
-    // Per-second throughput report straight to the log, so we can measure frame
-    // delivery from the file while the game stays focused (the live UI stats are
-    // unreliable here — alt-tabbing to read them makes the game throttle/stop
-    // presenting, which is exactly the rate the hook can capture).
-    let mut last_report = Instant::now();
-    let (mut acq_window, mut sent_window) = (0u64, 0u64);
     // The hook gives no per-frame signal on the shtex path — it just keeps
     // overwriting the shared texture each present. So we *pace* ourselves to the
     // target fps and sample the latest backbuffer each tick (the encode thread's
@@ -919,18 +913,6 @@ fn hook_source_loop(
     let mut warned_static = false;
 
     while !stop.load(Ordering::Acquire) {
-        if last_report.elapsed() >= Duration::from_secs(1) {
-            tracing::info!(
-                sampled = acq_window,
-                handed = sent_window,
-                same_frames,
-                "hook source: frames sampled in last ~1s"
-            );
-            acq_window = 0;
-            sent_window = 0;
-            last_report = Instant::now();
-        }
-
         // Pace to the target frame interval.
         let now = Instant::now();
         if next_tick > now {
@@ -981,10 +963,7 @@ fn hook_source_loop(
         }
 
         let frame = match hook.acquire(&device) {
-            Ok(Some(f)) => {
-                acq_window += 1;
-                f
-            }
+            Ok(Some(f)) => f,
             Ok(None) => {
                 // Capture not initialized yet — wait for the hook's first present.
                 continue;
@@ -1110,7 +1089,6 @@ fn hook_source_loop(
         match filled_tx.try_send((staging, ts)) {
             Ok(()) => {
                 shared.handed.fetch_add(1, Ordering::Relaxed);
-                sent_window += 1;
             }
             Err(TrySendError::Full((tex, _))) | Err(TrySendError::Disconnected((tex, _))) => {
                 if let Ok(mut p) = free_pool.lock() {
