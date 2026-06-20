@@ -722,6 +722,14 @@ function ViewerStage({
             ref={videoRef}
             src={src}
             poster={poster}
+            // Seed the element's intrinsic size from the stored dimensions. A
+            // <video> defaults to 300×150 until its poster/metadata loads, so
+            // without this the player paints tiny on mount and then jumps to
+            // full size — the "small for a moment, then zoom in" flash. With the
+            // real aspect known up front, `max-w/h-full object-contain` fits it
+            // at its final size from the first frame.
+            width={clip.width || undefined}
+            height={clip.height || undefined}
             autoPlay
             playsInline
             onClick={togglePlay}
