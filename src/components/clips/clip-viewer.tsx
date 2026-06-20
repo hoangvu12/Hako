@@ -707,9 +707,6 @@ function ViewerStage({
     <div className="relative z-10 flex min-w-0 flex-1">
       {/* ---- Stage (player + editor) ---- */}
       <div className="flex min-w-0 flex-1 flex-col items-center justify-center gap-4 p-6 pr-2">
-        {hasPrev ? <NavArrow side="left" onClick={onPrev} /> : null}
-        {hasNext ? <NavArrow side="right" onClick={onNext} /> : null}
-
         {/* Video + overlay controls (this element goes fullscreen) */}
         <div
           ref={stageRef}
@@ -718,6 +715,10 @@ function ViewerStage({
             fullscreen && "bg-black",
           )}
         >
+          {/* Prev/next anchored to the player's own edges (hidden in fullscreen) */}
+          {hasPrev && !fullscreen ? <NavArrow side="left" onClick={onPrev} /> : null}
+          {hasNext && !fullscreen ? <NavArrow side="right" onClick={onNext} /> : null}
+
           <video
             ref={videoRef}
             src={src}
@@ -1517,7 +1518,7 @@ function NavArrow({ side, onClick }: { side: "left" | "right"; onClick: () => vo
       onClick={onClick}
       aria-label={side === "left" ? "Previous clip" : "Next clip"}
       className={cn(
-        "absolute top-1/2 z-30 flex size-11 -translate-y-1/2 items-center justify-center rounded-full bg-black/50 text-white backdrop-blur-sm transition-colors hover:bg-black/75",
+        "absolute top-1/2 z-30 flex size-11 -translate-y-1/2 items-center justify-center rounded-full bg-secondary text-secondary-foreground backdrop-blur-sm transition-colors hover:bg-secondary/80",
         side === "left" ? "left-3" : "right-3",
       )}
     >
