@@ -16,6 +16,7 @@ import {
   Prohibit,
   LinkSimple,
   FolderOpen,
+  Check,
 } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
@@ -26,6 +27,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { revealClip, type ClipRecord } from "@/lib/api";
 import {
   mapNameFromPath,
@@ -37,6 +48,11 @@ import {
   useClipUpload,
   useUploadClip,
 } from "@/hooks/use-cloud";
+import {
+  toggleClipSelected,
+  useClipSelected,
+  useSelectionActive,
+} from "@/components/clips/use-clip-selection";
 import { ClipUploadBadge } from "./clip-upload-badge";
 
 function fmtDuration(secs: number): string {
@@ -404,6 +420,10 @@ function ClipPreview({ clip }: { clip: ClipRecord }) {
  * pill — whatever the clip carries. Pointer-events-none so it never blocks the
  * card's click target; degrades to text (or nothing) when artwork/fields are
  * absent (old clips, manual saves outside a match).
+ *
+ * Layout leaves the top-left corner free for the selection checkbox: the W/L
+ * pill sits top-right, while the agent + map move to the bottom-left and fade on
+ * hover (like the duration badge) so they never clash with the hover controls.
  */
 function ClipBadges({
   clip,
@@ -420,39 +440,42 @@ function ClipBadges({
   if (!agentName && !mapName && !hasResult) return null;
 
   return (
-    <div className="pointer-events-none absolute inset-x-2 top-2 z-20 flex items-start justify-between gap-2">
-      <div className="flex max-w-[80%] flex-wrap items-center gap-1.5">
-        {agentName ? (
-          <span className="flex items-center gap-1 rounded-full bg-black/70 py-0.5 pr-2 pl-0.5 text-[10px] font-semibold text-white">
-            {agent?.icon ? (
-              <img
-                src={agent.icon}
-                alt=""
-                className="size-4 rounded-full object-cover"
-              />
-            ) : (
-              <span className="size-4" />
-            )}
-            {agentName}
-          </span>
-        ) : null}
-        {mapName ? (
-          <span className="rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-medium text-white">
-            {mapName}
-          </span>
-        ) : null}
-      </div>
+    <>
       {hasResult ? (
         <span
           className={cn(
-            "rounded-full px-2 py-0.5 text-[10px] font-bold text-white",
+            "pointer-events-none absolute top-2 right-2 z-20 rounded-full px-2 py-0.5 text-[10px] font-bold text-white",
             clip.won ? "bg-success/90" : "bg-destructive/90"
           )}
         >
           {clip.won ? "WIN" : "LOSS"}
         </span>
       ) : null}
-    </div>
+
+      {agentName || mapName ? (
+        <div className="pointer-events-none absolute inset-x-2 bottom-2 z-10 flex max-w-[75%] flex-wrap items-center gap-1.5 transition-opacity group-hover/media:opacity-0">
+          {agentName ? (
+            <span className="flex items-center gap-1 rounded-full bg-black/70 py-0.5 pr-2 pl-0.5 text-[10px] font-semibold text-white">
+              {agent?.icon ? (
+                <img
+                  src={agent.icon}
+                  alt=""
+                  className="size-4 rounded-full object-cover"
+                />
+              ) : (
+                <span className="size-4" />
+              )}
+              {agentName}
+            </span>
+          ) : null}
+          {mapName ? (
+            <span className="rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-medium text-white">
+              {mapName}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -480,6 +503,7 @@ function ClipActionsMenu({
 }) {
   const [mounted, setMounted] = React.useState(false);
   const [open, setOpen] = React.useState(false);
+  const [confirmDelete, setConfirmDelete] = React.useState(false);
 
   if (!mounted) {
     return (
@@ -498,30 +522,58 @@ function ClipActionsMenu({
   }
 
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
-      <DropdownMenuTrigger aria-label="Clip actions" className={ACTIONS_TRIGGER_CLASS}>
-        <DotsThreeVertical weight="bold" className="size-4" />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        <CloudUploadItems clip={clip} />
-        <DropdownMenuItem
-          onSelect={() => {
-            void revealClip(clip.id).catch(() => {});
-          }}
-        >
-          <FolderOpen />
-          Open in folder
-        </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => onRename(clip)}>
-          <PencilSimple />
-          Rename
-        </DropdownMenuItem>
-        <DropdownMenuItem variant="destructive" onSelect={() => onDelete(clip)}>
-          <Trash />
-          Delete
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <>
+      <DropdownMenu open={open} onOpenChange={setOpen}>
+        <DropdownMenuTrigger aria-label="Clip actions" className={ACTIONS_TRIGGER_CLASS}>
+          <DotsThreeVertical weight="bold" className="size-4" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <CloudUploadItems clip={clip} />
+          <DropdownMenuItem
+            onSelect={() => {
+              void revealClip(clip.id).catch(() => {});
+            }}
+          >
+            <FolderOpen />
+            Open in folder
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => onRename(clip)}>
+            <PencilSimple />
+            Rename
+          </DropdownMenuItem>
+          {/* Open the confirm dialog rather than deleting outright — the menu
+              closes and the alert dialog takes focus. */}
+          <DropdownMenuItem
+            variant="destructive"
+            onSelect={() => setConfirmDelete(true)}
+          >
+            <Trash />
+            Delete
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete clip?</AlertDialogTitle>
+            <AlertDialogDescription>
+              “{clip.title || "Untitled"}” will be permanently removed from your
+              library. This can't be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => onDelete(clip)}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }
 
@@ -582,11 +634,45 @@ function CloudUploadItems({ clip }: { clip: ClipRecord }) {
   );
 }
 
+/**
+ * Top-left selection checkbox. Hidden until the card is hovered, the clip is
+ * selected, or the grid is in selection mode (the ancestor scroll container
+ * carries `data-selecting`, flipped via CSS only — so entering/leaving selection
+ * mode costs zero card re-renders). Sits above the full-card `<Link>` overlay
+ * with its own stop-propagation handler, so ticking it never navigates.
+ *
+ * A plain button (not the Radix `Checkbox`) keeps the per-card scroll-mount cost
+ * to a single icon, matching the lazy actions menu's rationale above.
+ */
+function SelectCheckbox({ id, selected }: { id: number; selected: boolean }) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={selected}
+      aria-label={selected ? "Deselect clip" : "Select clip"}
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleClipSelected(id);
+      }}
+      className={cn(
+        "absolute top-2 left-2 z-30 flex size-6 items-center justify-center rounded-full border-2 outline-none transition-[opacity,background-color,border-color] [filter:drop-shadow(0_1px_2px_rgb(0_0_0/0.55))] focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/60",
+        selected
+          ? "border-primary bg-primary text-primary-foreground opacity-100"
+          : "border-white bg-transparent text-transparent opacity-0 group-hover:opacity-100 group-data-[selecting]/grid:opacity-100"
+      )}
+    >
+      <Check weight="bold" className="size-4" />
+    </button>
+  );
+}
+
 // Memoized: the clips grid re-renders on every scroll tick (virtualizer state),
 // hover, and resize. Without this, each of those re-rendered all ~25 visible
 // cards and their full Radix dropdown + icon subtrees. With stable props (see
 // the parent's `useCallback` handlers + the session-stable `assets`), a card
-// now re-renders only when its own `clip` changes.
+// now re-renders only when its own `clip` changes (or its selection toggles).
 export const ClipCard = React.memo(function ClipCard({
   clip,
   onDelete,
@@ -598,6 +684,16 @@ export const ClipCard = React.memo(function ClipCard({
   onRename: (clip: ClipRecord) => void;
   assets?: ValorantAssets;
 }) {
+  // Per-card selection: subscribed individually so toggling another card never
+  // re-renders this one (see `use-clip-selection`). Drives both the corner
+  // checkbox and the selected ring below.
+  const selected = useClipSelected(clip.id);
+  // Whether the grid is in selection mode at all. A boolean, so this only
+  // re-renders the card on the empty↔non-empty transition — while it's true the
+  // whole card becomes a select-on-click target (the overlay below), so clicking
+  // anywhere toggles selection instead of opening the clip.
+  const selectionActive = useSelectionActive();
+
   // Every event the clip's window covered, falling back to the headline tag for
   // clips saved before multi-event tracking (mirrors the detail panel).
   const eventLabels = clip.events.length
@@ -607,12 +703,20 @@ export const ClipCard = React.memo(function ClipCard({
       : [];
 
   return (
-    <div className="group flex flex-col overflow-hidden rounded-xl border border-border/60 bg-card shadow-sm transition-colors hover:border-border [contain-intrinsic-size:auto_280px] [content-visibility:auto]">
+    <div
+      className={cn(
+        "group relative flex flex-col overflow-hidden rounded-xl border bg-card shadow-sm transition-colors [contain-intrinsic-size:auto_280px] [content-visibility:auto]",
+        selected
+          ? "border-primary ring-2 ring-primary"
+          : "border-border/60 hover:border-border"
+      )}
+    >
       {/* Thumbnail / hover-preview, with the game-context overlay on top */}
       <div className="relative">
         <ClipPreview clip={clip} />
         <ClipBadges clip={clip} assets={assets} />
         <ClipUploadBadge clipId={clip.id} />
+        <SelectCheckbox id={clip.id} selected={selected} />
       </div>
 
       {/* Meta */}
@@ -648,6 +752,18 @@ export const ClipCard = React.memo(function ClipCard({
           <span className="shrink-0">{fmtSize(clip.size_bytes)}</span>
         </div>
       </div>
+
+      {/* While selecting, the whole card is a toggle target — a transparent
+          layer over everything (incl. the thumbnail's open-detail Link) so a
+          click anywhere selects/deselects instead of navigating. */}
+      {selectionActive ? (
+        <button
+          type="button"
+          aria-label={selected ? "Deselect clip" : "Select clip"}
+          onClick={() => toggleClipSelected(clip.id)}
+          className="absolute inset-0 z-40 cursor-pointer"
+        />
+      ) : null}
     </div>
   );
 });

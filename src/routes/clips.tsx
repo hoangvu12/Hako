@@ -7,13 +7,22 @@ import { predecodeImage } from "@/lib/image-predecode";
 
 import { ClipCard } from "@/components/clips/clip-card";
 import { ClipsToolbar } from "@/components/clips/clips-toolbar";
+import { ClipsBulkBar } from "@/components/clips/clips-bulk-bar";
 import { useClipFilters } from "@/components/clips/use-clip-filters";
+import {
+  clearSelection,
+  getSelectedIds,
+  pruneSelection,
+  setSelection,
+  useSelection,
+} from "@/components/clips/use-clip-selection";
 import {
   useClips,
   useDeleteClip,
   useRenameClip,
   useSaveClip,
 } from "@/hooks/use-library";
+import { useUploadClip } from "@/hooks/use-cloud";
 import { useSettings } from "@/hooks/use-settings";
 import {
   useValorantAssets,
@@ -179,11 +188,54 @@ export default function ClipsPage() {
   } = useSaveClip();
   const { mutate: deleteClip } = useDeleteClip();
   const { mutate: renameClip } = useRenameClip();
+  const { mutate: uploadClip, isPending: uploading } = useUploadClip();
   const assets = useValorantAssets();
 
   const allClips = React.useMemo(() => clips ?? [], [clips]);
   const { filters, facets, sections, total, activeCount, update, toggle, reset } =
     useClipFilters(allClips);
+
+  // Bulk selection. `selection` (the whole set) drives the page-level swap to
+  // the bulk bar; individual cards subscribe per-id, so toggling one card
+  // doesn't re-render the others.
+  const selection = useSelection();
+  const selectionActive = selection.size > 0;
+
+  // Every clip id currently passing the filters, in display order — the target
+  // set for "select all".
+  const filteredIds = React.useMemo(
+    () => sections.flatMap((s) => s.clips.map((c) => c.id)),
+    [sections]
+  );
+  const allSelected =
+    filteredIds.length > 0 && filteredIds.every((id) => selection.has(id));
+
+  // Drop selected ids for clips that no longer exist (deleted via a card's own
+  // menu), so the bulk bar's count never counts phantoms.
+  React.useEffect(() => {
+    pruneSelection(new Set(allClips.map((c) => c.id)));
+  }, [allClips]);
+
+  // Stable bulk handlers — they read the live selection imperatively rather than
+  // closing over it, so the memoized bulk bar isn't re-rendered on scroll ticks.
+  const handleSelectAll = React.useCallback(
+    () => setSelection(filteredIds),
+    [filteredIds]
+  );
+  const handleClearSelection = React.useCallback(() => clearSelection(), []);
+  // Confirmation is owned by the bulk bar's alert dialog; this just performs it.
+  const handleBulkDelete = React.useCallback(() => {
+    const ids = getSelectedIds();
+    if (ids.length === 0) return;
+    for (const id of ids) deleteClip(id);
+    clearSelection();
+  }, [deleteClip]);
+  const handleBulkUpload = React.useCallback(() => {
+    const ids = getSelectedIds();
+    if (ids.length === 0) return;
+    for (const id of ids) uploadClip({ clipId: id });
+    clearSelection();
+  }, [uploadClip]);
 
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const { columns, width } = useGridMetrics(scrollRef);
@@ -283,19 +335,31 @@ export default function ClipsPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <ClipsToolbar
-        clipSeconds={clipSeconds}
-        onSave={handleSave}
-        saving={saving}
-        total={total}
-        filters={filters}
-        facets={facets}
-        activeCount={activeCount}
-        update={update}
-        toggle={toggle}
-        reset={reset}
-        assets={assets}
-      />
+      {selectionActive ? (
+        <ClipsBulkBar
+          selectedCount={selection.size}
+          allSelected={allSelected}
+          onSelectAll={handleSelectAll}
+          onClear={handleClearSelection}
+          onDelete={handleBulkDelete}
+          onUpload={handleBulkUpload}
+          uploading={uploading}
+        />
+      ) : (
+        <ClipsToolbar
+          clipSeconds={clipSeconds}
+          onSave={handleSave}
+          saving={saving}
+          total={total}
+          filters={filters}
+          facets={facets}
+          activeCount={activeCount}
+          update={update}
+          toggle={toggle}
+          reset={reset}
+          assets={assets}
+        />
+      )}
 
       {saveError ? (
         <p className="shrink-0 bg-panel px-6 pb-2 text-sm text-destructive">
@@ -303,10 +367,13 @@ export default function ClipsPage() {
         </p>
       ) : null}
 
-      {/* Grid (virtualized, grouped by date) */}
+      {/* Grid (virtualized, grouped by date). `group/grid` + `data-selecting`
+          let every card's checkbox stay visible in selection mode via CSS
+          alone — no card re-render when entering/leaving selection mode. */}
       <div
         ref={scrollRef}
-        className="scrollbar-thin min-h-0 flex-1 overflow-y-auto p-6"
+        data-selecting={selectionActive ? "" : undefined}
+        className="group/grid scrollbar-thin min-h-0 flex-1 overflow-y-auto p-6"
       >
         {isLoading ? (
           <p className="text-sm text-muted-foreground">Loading…</p>
