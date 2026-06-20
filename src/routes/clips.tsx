@@ -312,8 +312,8 @@ export default function ClipsPage() {
           <p className="text-sm text-muted-foreground">Loading…</p>
         ) : noClipsAtAll ? (
           <div className="rounded-xl border border-dashed border-border/60 p-10 text-center text-sm text-muted-foreground">
-            No clips yet. Press <kbd>F9</kbd> in-game or hit “Save last{" "}
-            {clipSeconds}s” to capture a highlight.
+            No clips yet. Press <kbd>F9</kbd> in-game or hit "Save last{" "}
+            {clipSeconds}s" to capture a highlight.
           </div>
         ) : noMatches ? (
           <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-border/60 p-10 text-center">

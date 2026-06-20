@@ -285,7 +285,7 @@ function BufferRamHint({
       {heavy ? <Warning weight="fill" className="size-3.5 shrink-0" /> : null}
       Replay buffer holds ~{fmtBytes(bytes)} in RAM ({bufferSeconds}s × {bitrateMbps}{" "}
       Mbps)
-      {heavy ? " — lower the bitrate or buffer length to use less." : "."}
+      {heavy ? ". Lower the bitrate or buffer length to use less." : "."}
     </p>
   );
 }
@@ -457,7 +457,7 @@ function CloudSection({
           label="Default provider"
           hint={
             hasProviders
-              ? "Where clips upload (auto-upload and the “Upload to cloud” action)."
+              ? "Where clips upload (auto-upload and the 'Upload to cloud' action)."
               : "Add a provider below first."
           }
         >
@@ -557,7 +557,7 @@ function CloudSection({
               {freeUp.data
                 ? freeUp.data.evicted_count > 0
                   ? `Freed ${fmtBytes(freeUp.data.freed_bytes)} from ${freeUp.data.evicted_count} clip${freeUp.data.evicted_count === 1 ? "" : "s"}.`
-                  : "Already under budget — nothing to evict."
+                  : "Already under budget, nothing to evict."
                 : "Deletes local copies of the oldest uploaded clips."}
             </p>
             <Button
@@ -1264,7 +1264,7 @@ function SettingsPage() {
               <Panel title="Notifications">
                 <Row
                   label="Recording started & stopped"
-                  hint="“Now recording” when capture starts, “Recording stopped” when it ends."
+                  hint="'Now recording' when capture starts, 'Recording stopped' when it ends."
                 >
                   <Switch
                     checked={draft.overlay_on_capture_state}

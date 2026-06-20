@@ -309,7 +309,7 @@ function AddProviderForm({ onDone }: { onDone: () => void }) {
           </Field>
           <p className="text-xs text-muted-foreground">
             Connecting opens your browser to sign in to {kindLabel(kind)}. Hako
-            stores only a refresh token in your OS keyring — never your password.
+            stores only a refresh token in your OS keyring, never your password.
           </p>
           {connect.error ? (
             <p className="text-xs text-destructive">{String(connect.error)}</p>

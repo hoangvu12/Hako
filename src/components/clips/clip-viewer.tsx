@@ -246,7 +246,7 @@ export function ClipViewer({ clipId }: { clipId: string }) {
 
   const handleDelete = React.useCallback(() => {
     if (!clip) return;
-    if (!window.confirm(`Delete “${clip.title || "Untitled"}”? This removes the file.`))
+    if (!window.confirm(`Delete "${clip.title || "Untitled"}"? This removes the file.`))
       return;
     const fallback = next ?? prev;
     del.mutate(clip.id, {
@@ -298,7 +298,7 @@ export function ClipViewer({ clipId }: { clipId: string }) {
 
       {!clip ? (
         <div className="relative z-10 flex flex-1 items-center justify-center text-sm text-muted-foreground">
-          {isLoading ? "Loading…" : "Clip not found — it may have been deleted."}
+          {isLoading ? "Loading…" : "Clip not found. It may have been deleted."}
           <button
             type="button"
             onClick={close}
@@ -926,7 +926,7 @@ function ViewerStage({
               <div className="flex items-center gap-1.5 font-mono text-xs tabular-nums text-muted-foreground">
                 <Scissors weight="bold" className="size-3.5 text-primary-text" />
                 <span className="text-foreground">{fmtClock(trimStart)}</span>
-                <span>–</span>
+                <span>to</span>
                 <span className="text-foreground">{fmtClock(trimEnd)}</span>
                 <span className="text-muted-foreground/70">({fmtClock(selDuration)})</span>
               </div>
@@ -956,7 +956,7 @@ function ViewerStage({
                 onClick={() => setSaveOpen(true)}
                 title={
                   clip.evicted
-                    ? "This clip is stored in the cloud only — editing needs its local file"
+                    ? "This clip is stored in the cloud only. Editing needs its local file."
                     : undefined
                 }
                 className="flex items-center gap-1.5 rounded-lg bg-primary px-5 py-1.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
@@ -993,7 +993,7 @@ function ViewerStage({
                       Download to edit
                     </button>
                     <p className="max-w-sm text-center text-xs text-muted-foreground/70">
-                      Cloud-only clip — its local copy was freed up to save space.
+                      Cloud-only clip. Its local copy was freed up to save space.
                       Playing from the cloud; download it to trim or export.
                     </p>
                     {download.error ? (
@@ -1449,8 +1449,8 @@ function SaveDialog({
       <div className="relative z-10 w-[380px] rounded-2xl border border-border bg-popover p-6 shadow-2xl">
         <h3 className="text-base font-semibold">Save trim</h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          {fmtClock(selDuration)} selected · {audioSummary}. Choose how to save “
-          {title || "Untitled"}”.
+          {fmtClock(selDuration)} selected · {audioSummary}. Choose how to save "
+          {title || "Untitled"}".
         </p>
 
         {error ? (
@@ -1484,7 +1484,7 @@ function SaveDialog({
             <span>
               <span className="block text-sm font-medium">Overwrite original</span>
               <span className="block text-xs text-muted-foreground">
-                Replace the clip — this can’t be undone
+                Replace the clip. This can't be undone.
               </span>
             </span>
           </button>

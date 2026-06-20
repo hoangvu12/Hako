@@ -381,8 +381,8 @@ export function RecordingAudio({
         <div className="flex gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-500">
           <Flask className="size-4 shrink-0" weight="fill" />
           <span>
-            Specific apps isn&apos;t supported on this PC — capture will fall back
-            to All PC audio. Switch the mode above to clear this.
+            Specific apps isn&apos;t supported on this PC, so capture will fall
+            back to All PC audio. Switch the mode above to clear this.
           </span>
         </div>
       )}

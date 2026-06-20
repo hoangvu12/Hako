@@ -35,7 +35,7 @@ export function RecordingStatus() {
             ) : data?.capturing && !data?.capturing_live ? (
               // Capturing but frozen (game minimized) — honest "paused" state.
               <Badge variant="outline" className="text-amber-400">
-                Paused — minimized
+                Paused, minimized
               </Badge>
             ) : (
               <Badge variant={data?.capturing ? "default" : "secondary"}>
@@ -94,7 +94,7 @@ export function RecordingStatus() {
         <CardHeader>
           <CardTitle className="text-base">GPUs</CardTitle>
           <CardDescription>
-            DXGI adapters — the discrete GPU is preferred to avoid cross-adapter
+            DXGI adapters. The discrete GPU is preferred to avoid cross-adapter
             copies.
           </CardDescription>
         </CardHeader>

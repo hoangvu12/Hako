@@ -179,7 +179,7 @@ export function RecordingHotkeyPopover() {
         <div className="mt-3">
           <PopoverNote>
             Begin and end a recording of any length. Manual long recording is
-            coming soon — the hotkey is saved and ready.
+            coming soon. The hotkey is saved and ready.
           </PopoverNote>
         </div>
         <div className="mt-4">

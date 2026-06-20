@@ -127,7 +127,7 @@ export function RecorderStatusPopover() {
           ) : frozen ? (
             <>
               <span className="relative inline-flex size-2 rounded-full bg-amber-400" />
-              Paused — Game Minimized
+              Paused, Game Minimized
             </>
           ) : detected ? (
             <>
@@ -168,7 +168,7 @@ export function RecorderStatusPopover() {
                   <span className="relative inline-flex size-2.5 rounded-full bg-amber-400" />
                 </div>
                 <div className="text-sm font-semibold text-foreground">
-                  Paused — game minimized
+                  Paused, game minimized
                 </div>
                 <p className="mt-0.5 text-xs text-muted-foreground">
                   The game stopped presenting frames, so clipping is paused to
@@ -181,7 +181,7 @@ export function RecorderStatusPopover() {
                   <span className="relative inline-flex size-2.5 rounded-full bg-amber-400" />
                 </div>
                 <div className="text-sm font-semibold text-foreground">
-                  Valorant detected — not recording yet
+                  Valorant detected, not recording yet
                 </div>
                 <p className="mt-0.5 text-xs text-muted-foreground">
                   Capture hasn&apos;t started, so there&apos;s nothing to save.
