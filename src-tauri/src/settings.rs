@@ -314,6 +314,27 @@ impl AudioConfig {
     pub fn differs_only_in_volume(&self, other: &AudioConfig) -> bool {
         self.structure_eq(other) && self != other
     }
+
+    /// True when `self` and `other` produce the same output-track **layout** —
+    /// same number, kind, and order of tracks and inputs — even if they target
+    /// different devices. This is the broader "no restart needed" gate (Medal's
+    /// `UpdateAudioCaptureAndProcessor` live path): a layout-preserving change —
+    /// swapping the mic or a PC-audio output device, flipping mono, or a volume
+    /// edit — is hot-applied to the running capture (the audio thread reopens just
+    /// the changed input), whereas a layout change (mic on/off, separate-tracks,
+    /// add/remove a source, mode switch) still forces a restart.
+    ///
+    /// Looser than [`structure_eq`], which treats a device-id change as
+    /// structural; here device identity (`pc_audio[].id`, `mic_source`) and
+    /// `mic_mono` may differ. App selections stay strict — an app *is* its source,
+    /// so changing one is a layout change, and the app name labels its stem track.
+    pub fn layout_eq(&self, other: &AudioConfig) -> bool {
+        self.mode == other.mode
+            && self.mic_enabled == other.mic_enabled
+            && self.separate_tracks == other.separate_tracks
+            && pc_audio_layout_eq(&self.pc_audio, &other.pc_audio)
+            && apps_structure_eq(&self.apps, &other.apps)
+    }
 }
 
 /// Render-endpoint selections match structurally when the same ids are enabled
@@ -321,6 +342,14 @@ impl AudioConfig {
 /// we hot-apply, so neither affects the track layout.
 fn devices_structure_eq(a: &[AudioDeviceSel], b: &[AudioDeviceSel]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.id == y.id && x.enabled == y.enabled)
+}
+
+/// Like [`devices_structure_eq`] but ignores the device `id` — only the count and
+/// per-slot `enabled` flags (which fix the track layout) must match. The id is
+/// the swappable device: a live PC-audio output swap reopens just that input on
+/// the running audio thread instead of restarting capture.
+fn pc_audio_layout_eq(a: &[AudioDeviceSel], b: &[AudioDeviceSel]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.enabled == y.enabled)
 }
 
 /// App selections match structurally when the same ids/names are enabled in the
@@ -592,5 +621,51 @@ mod tests {
         // Identical configs are neither a restart nor a (no-op) live push.
         assert!(base.structure_eq(&base.clone()));
         assert!(!base.differs_only_in_volume(&base.clone()));
+    }
+
+    #[test]
+    fn audio_device_swap_is_live_not_restart() {
+        // Swapping which device an input targets (same track layout) is
+        // hot-applicable: NOT structure_eq (the id changed), but layout_eq, so
+        // the audio thread reopens just that input instead of restarting capture.
+        let base = AudioConfig::default();
+
+        let mut swap_pc = base.clone();
+        if let Some(d) = swap_pc.pc_audio.first_mut() {
+            d.id = "{some-other-render-endpoint-id}".into();
+        }
+        assert!(!base.structure_eq(&swap_pc));
+        assert!(base.layout_eq(&swap_pc));
+
+        // Swapping the microphone device (mic stays enabled) is also live.
+        let mut mic = base.clone();
+        mic.mic_enabled = true;
+        let mut mic_swapped = mic.clone();
+        mic_swapped.mic_source = "{another-capture-endpoint-id}".into();
+        assert!(!mic.structure_eq(&mic_swapped));
+        assert!(mic.layout_eq(&mic_swapped));
+
+        // Mono fold flips live too (per-source processing, no layout change).
+        let mut mono = mic.clone();
+        mono.mic_mono = !mic.mic_mono;
+        assert!(mic.layout_eq(&mono));
+
+        // Volume-only is trivially layout-preserving.
+        let mut louder = base.clone();
+        louder.master_volume = 33;
+        assert!(base.layout_eq(&louder));
+
+        // But a real layout change is NOT layout_eq → still a restart.
+        let mut mic_on = base.clone();
+        mic_on.mic_enabled = true;
+        assert!(!base.layout_eq(&mic_on));
+
+        let mut stems = base.clone();
+        stems.separate_tracks = true;
+        assert!(!base.layout_eq(&stems));
+
+        let mut extra_dev = base.clone();
+        extra_dev.pc_audio.push(AudioDeviceSel::default());
+        assert!(!base.layout_eq(&extra_dev));
     }
 }

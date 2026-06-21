@@ -938,20 +938,22 @@ pub fn update_settings(
     let overlay_enabled = next.overlay_enabled;
     let new_audio = next.effective_audio();
     // Classify the capture-affecting change the way Medal does:
-    //  - a volume/mute-only audio change applies LIVE (no restart) — Medal's
-    //    `AudioCaptureVolume` → `SetInputVolume` path;
-    //  - a video-encode change or an audio *structure* change (mic on/off,
-    //    device add/remove, separate-tracks) needs a capture RESTART.
-    let (old_hotkey, restart_needed, volume_only) = {
+    //  - a layout-preserving audio change applies LIVE (no restart): a volume/
+    //    mute edit (`AudioCaptureVolume` → `SetInputVolume`) or a device swap /
+    //    mono flip that keeps the same track layout (`UpdateAudioCaptureAndProcessor`);
+    //  - a video-encode change or an audio *layout* change (mic on/off, source
+    //    add/remove, separate-tracks, mode switch) needs a capture RESTART.
+    let (old_hotkey, restart_needed, audio_live) = {
         let mut guard = settings.0.lock().map_err(|_| "settings poisoned")?;
         let prev_hotkey = guard.save_hotkey.clone();
         let old_audio = guard.effective_audio();
         let video_changed = guard.video_capture_config_differs(&next);
-        let audio_structure_changed = old_audio != new_audio && !old_audio.structure_eq(&new_audio);
-        let volume_only = old_audio.differs_only_in_volume(&new_audio);
-        let restart_needed = video_changed || audio_structure_changed;
+        let audio_changed = old_audio != new_audio;
+        // Layout-preserving change → hot-apply; layout change → restart.
+        let audio_live = audio_changed && old_audio.layout_eq(&new_audio);
+        let restart_needed = video_changed || (audio_changed && !old_audio.layout_eq(&new_audio));
         *guard = next;
-        (prev_hotkey, restart_needed, volume_only)
+        (prev_hotkey, restart_needed, audio_live)
     };
     if old_hotkey != new_hotkey {
         crate::set_clip_hotkey(&app, &new_hotkey);
@@ -962,17 +964,18 @@ pub fn update_settings(
     // grant the new folder asset-scope access so clips written there load over
     // `convertFileSrc` instead of 403-ing past the static `$VIDEO/Hako` scope.
     allow_storage_asset_scope(&app);
-    // A volume/mute-only audio change is pushed straight to the running audio
-    // thread — it applies immediately, even mid-match, with no restart (Medal's
-    // live `SetInputVolume`). Anything that changes the encoder or the audio
-    // track layout needs a capture restart instead; that snapshots config at
-    // start, so we restart against the same window — but never mid-match (that
-    // would orphan the in-progress session's buffer); those apply at the next
-    // match's capture start.
+    // A layout-preserving audio change (volume/mute or a device swap) is pushed
+    // straight to the running audio thread — it applies immediately, even
+    // mid-match, with no restart (Medal's live `SetInputVolume` /
+    // `UpdateAudioCaptureAndProcessor`). Anything that changes the encoder or the
+    // audio track layout needs a capture restart instead; that snapshots config
+    // at start, so we restart against the same window. Mid-match, the restart is
+    // handed to the orchestrator for a clean clip split (see
+    // `restart_capture_for_config_change` / `ConfigRestartSignal`).
     if restart_needed {
         restart_capture_for_config_change(&app);
-    } else if volume_only {
-        apply_audio_volumes_live(&app, &new_audio);
+    } else if audio_live {
+        apply_audio_config_live(&app, &new_audio);
     }
     // Keep a live overlay in sync: re-push the corner placement, and clear the
     // overlay immediately if the master switch was just turned off.
@@ -983,20 +986,21 @@ pub fn update_settings(
     Ok(())
 }
 
-/// Push a volume/mute-only audio change to the running capture's audio thread,
-/// applying it live with no restart (Medal's `AudioCaptureVolume` path). Works
-/// even mid-match — it never touches the encoder or the track layout, just the
-/// mix gains. No-op when nothing is capturing (the change is already persisted
-/// and will be picked up when capture next starts).
-fn apply_audio_volumes_live(app: &AppHandle, audio: &AudioConfig) {
+/// Push a layout-preserving audio change (volume/mute or a device swap) to the
+/// running capture's audio thread, applying it live with no restart (Medal's
+/// `AudioCaptureVolume` / `UpdateAudioCaptureAndProcessor`). Works even mid-match
+/// — it never touches the encoder or the track layout: the thread re-derives mix
+/// gains and reopens only the input whose device changed. No-op when nothing is
+/// capturing (the change is already persisted and picked up at the next start).
+fn apply_audio_config_live(app: &AppHandle, audio: &AudioConfig) {
     let state = app.state::<CaptureState>();
     let guard = match state.0.lock() {
         Ok(g) => g,
         Err(_) => return,
     };
     if let Some(running) = guard.as_ref() {
-        running.set_audio_volumes(audio.clone());
-        tracing::info!("settings: applied audio volume change live (no capture restart)");
+        running.reconfigure_audio(audio.clone());
+        tracing::info!("settings: applied live audio reconfigure (no capture restart)");
     }
 }
 

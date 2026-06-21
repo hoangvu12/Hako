@@ -105,7 +105,7 @@ pub struct AudioMeta {
 
 /// Which microphone the recorder mixes in alongside desktop audio. Parsed from
 /// the persisted `settings.mic_source` string.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum MicSource {
     /// No microphone — desktop audio only.
     Off,
@@ -522,18 +522,19 @@ unsafe fn hicon_to_png(hicon: windows::Win32::UI::WindowsAndMessaging::HICON) ->
 // Public handle
 // ---------------------------------------------------------------------------
 
-/// A running audio-capture session. Drop or [`stop`](Self::stop) to tear down.
 /// Live, restart-free control surface for a running [`AudioCapture`] — Medal's
-/// `AudioCaptureVolume` path (`RecordingSession.UpdateMicVolume` →
-/// `SetInputVolume`). Holds the current [`AudioConfig`] behind a lock plus a
-/// generation counter; the audio thread re-derives its per-source mix gains
-/// whenever the generation changes, so volume/mute edits apply mid-recording
-/// without tearing down the capture.
+/// `AudioCaptureVolume` / `UpdateAudioCaptureAndProcessor` paths. Holds the
+/// current [`AudioConfig`] behind a lock plus a generation counter; when the
+/// generation changes the audio thread re-derives its per-source mix gains and
+/// reopens any input whose target device changed, so volume/mute edits **and**
+/// device swaps apply mid-recording without tearing down the capture.
 ///
-/// Only *volume* changes may be pushed here: the caller must have verified the
-/// new config is structurally identical (same inputs + output-track layout).
-/// A layout change can't be hot-applied and goes through a capture restart
-/// instead (see `commands::update_settings`).
+/// Only *layout-preserving* changes may be pushed here: the caller must have
+/// verified the new config keeps the same output-track layout + input kinds
+/// (`AudioConfig::layout_eq`) — only device identity, mono, or volume may differ.
+/// A layout change (mic on/off, separate-tracks, add/remove a source, mode
+/// switch) can't be hot-applied and goes through a capture restart instead (see
+/// `commands::update_settings`).
 pub struct AudioControl {
     cfg: Mutex<AudioConfig>,
     generation: AtomicU64,
@@ -547,9 +548,10 @@ impl AudioControl {
         })
     }
 
-    /// Replace the live config with `cfg` (expected to differ only in volumes)
-    /// and bump the generation so the audio thread re-derives its mix gains.
-    pub fn set_volumes(&self, cfg: AudioConfig) {
+    /// Replace the live config with `cfg` (expected to be layout-preserving vs
+    /// the running one) and bump the generation so the audio thread re-derives
+    /// its mix gains and reopens any input whose device changed.
+    pub fn reconfigure(&self, cfg: AudioConfig) {
         if let Ok(mut g) = self.cfg.lock() {
             *g = cfg;
         }
@@ -576,8 +578,9 @@ impl AudioCapture {
     /// publishing its [`AudioMeta`] once the encoder opens. `game_pid` is the
     /// capture target's process id (for the `specific_apps` "Game Audio" source).
     /// Returns `None` if the thread couldn't be spawned (caller proceeds
-    /// video-only). The initial config is read from `control`; later volume edits
-    /// pushed through it apply live (see [`AudioControl::set_volumes`]).
+    /// video-only). The initial config is read from `control`; later layout-
+    /// preserving edits pushed through it apply live (see
+    /// [`AudioControl::reconfigure`]).
     ///
     /// Never blocks the caller meaningfully: setup happens on the audio thread
     /// and failures are logged — audio is best-effort relative to the recorder.
@@ -621,7 +624,9 @@ impl Drop for AudioCapture {
 /// How to open one capture **input** (a WASAPI source), derived from
 /// [`AudioConfig`]. The plan's input order is deterministic from the config, so
 /// [`TrackSpec`] indices stay valid even if an input fails to open (it just
-/// contributes silence).
+/// contributes silence). `PartialEq` lets the mix loop detect which inputs a
+/// live config change actually altered (a device swap) and reopen only those.
+#[derive(Clone, PartialEq)]
 enum InputSpec {
     /// Loopback of a render endpoint: `None` = the default (Medal's `"Auto"`).
     Loopback { id: Option<String> },
@@ -966,8 +971,13 @@ fn run_audio(
         let input_count = layout.inputs.len();
         let track_count = layout.tracks.len();
         let mut routing = invert_routing(&layout.tracks, input_count);
-        // Track the live-control generation so a pushed volume change re-derives
-        // the mix gains in place — Medal's `SetInputVolume`, no capture restart.
+        // The input specs currently open, by slot — compared against a re-derived
+        // plan on a live config change so we reopen only the inputs whose target
+        // device actually changed (a device swap), leaving the rest untouched.
+        let mut cur_inputs: Vec<InputSpec> = layout.inputs;
+        // Track the live-control generation so a pushed change re-derives the mix
+        // gains in place (Medal's `SetInputVolume`) and hot-swaps any changed
+        // device (`UpdateAudioCaptureAndProcessor`) — no capture restart.
         let mut cur_gen = control.generation();
 
         for s in sources.iter().flatten() {
@@ -985,14 +995,43 @@ fn run_audio(
         let mut zero = Vec::<u8>::new();
 
         while !stop.load(Ordering::Acquire) {
-            // Live volume/mute: a pushed change bumps the generation; re-derive
-            // the mix gains from the new config. The caller only pushes
-            // structurally-identical configs, so the inputs + output tracks (and
-            // the open WASAPI sources) stay valid — only the gains differ.
+            // Live reconfigure: a pushed change bumps the generation; re-derive
+            // the mix gains and hot-swap any input whose device changed. The
+            // caller only pushes layout-preserving configs (`layout_eq`), so the
+            // input count + output-track layout stay valid — only device
+            // identity, mono, or gains differ.
             let g = control.generation();
             if g != cur_gen {
                 let np = plan(&control.snapshot(), game_pid);
                 if np.inputs.len() == input_count && np.tracks.len() == track_count {
+                    // Reopen only the inputs whose spec actually changed (a device
+                    // swap / mono flip — Medal's `UpdateAudioCaptureAndProcessor`);
+                    // a pure volume edit leaves every spec equal and skips this.
+                    for i in 0..input_count {
+                        if np.inputs[i] == cur_inputs[i] {
+                            continue;
+                        }
+                        if let Some(old) = sources[i].take() {
+                            let _ = old.audio_client.Stop(); // Drop frees swr
+                        }
+                        sources[i] = match open_input(&np.inputs[i], &enumerator) {
+                            Ok(s) => match s.start() {
+                                Ok(()) => {
+                                    tracing::info!("audio: live-swapped input slot {i}");
+                                    Some(s)
+                                }
+                                Err(e) => {
+                                    tracing::warn!("audio: live swap start failed (slot {i}): {e}");
+                                    None
+                                }
+                            },
+                            Err(e) => {
+                                tracing::warn!("audio: live swap open failed (slot {i}): {e}");
+                                None
+                            }
+                        };
+                        cur_inputs[i] = np.inputs[i].clone();
+                    }
                     routing = invert_routing(&np.tracks, input_count);
                 }
                 cur_gen = g;

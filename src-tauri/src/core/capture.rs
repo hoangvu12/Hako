@@ -450,9 +450,10 @@ pub struct RunningCapture {
     /// mic) can restart this capture against the same target to pick up the new
     /// audio/encode config (capture snapshots its config at start).
     hwnd: i64,
-    /// Live audio control: push a volume/mute change to the running audio thread
-    /// without restarting capture (Medal's `AudioCaptureVolume` path). Only valid
-    /// for structurally-identical configs; layout/encode changes restart instead.
+    /// Live audio control: push a layout-preserving change (volume/mute or a
+    /// device swap) to the running audio thread without restarting capture
+    /// (Medal's `AudioCaptureVolume` / `UpdateAudioCaptureAndProcessor` paths).
+    /// Only valid for `layout_eq` configs; layout/encode changes restart instead.
     audio_control: Arc<AudioControl>,
 }
 
@@ -474,11 +475,12 @@ impl RunningCapture {
         self.hwnd
     }
 
-    /// Apply an audio volume/mute change to the live capture without a restart.
-    /// The caller must have verified `cfg` is structurally identical to the
-    /// running config (same inputs + track layout) — only the levels differ.
-    pub fn set_audio_volumes(&self, cfg: AudioConfig) {
-        self.audio_control.set_volumes(cfg);
+    /// Apply a layout-preserving audio change (volume/mute or a device swap) to
+    /// the live capture without a restart. The caller must have verified `cfg`
+    /// keeps the same output-track layout + input kinds as the running config
+    /// (`AudioConfig::layout_eq`) — only device identity, mono, or levels differ.
+    pub fn reconfigure_audio(&self, cfg: AudioConfig) {
+        self.audio_control.reconfigure(cfg);
     }
 
     /// Whether a Valorant match is actively being recorded into this capture.
