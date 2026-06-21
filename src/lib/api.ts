@@ -18,6 +18,8 @@ export interface RecorderStatus {
 
 /** Tauri event names emitted from the Rust core (src-tauri/src/events.rs). */
 export const Events = {
+  /** Managed settings/library state finished hydrating from disk at startup. */
+  StateHydrated: "state-hydrated",
   RecorderStatus: "recorder-status",
   CaptureStats: "capture-stats",
   ClipCreated: "clip-created",
@@ -629,6 +631,16 @@ export type OverlayPosition =
 /** Read persisted settings. */
 export async function getSettings(): Promise<Settings> {
   return invoke<Settings>("get_settings");
+}
+
+/**
+ * Whether the backend has hydrated its managed settings/library state from disk.
+ * False only during the brief startup window before `setup` runs; reads that race
+ * it see placeholder defaults. Paired with the `state-hydrated` event so the UI
+ * can refetch once the real state lands. See `HydratedState` (Rust).
+ */
+export async function appHydrated(): Promise<boolean> {
+  return invoke<boolean>("app_hydrated");
 }
 
 /** Replace + persist settings. */

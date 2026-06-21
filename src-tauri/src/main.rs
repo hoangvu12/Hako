@@ -114,6 +114,10 @@ fn main() {
         .manage(commands::LibraryState(std::sync::Mutex::new(
             library::db::Library::open_in_memory().expect("in-memory library placeholder"),
         )))
+        // Tracks whether the two placeholders above have been hydrated from disk
+        // (flipped at the end of `setup`). The webview refetches once it's set so
+        // an early read of a placeholder self-heals.
+        .manage(commands::HydratedState::default())
         .manage(cloud_state)
         .invoke_handler(tauri::generate_handler![
             commands::recorder_status,
@@ -138,6 +142,7 @@ fn main() {
             commands::remux_with_tracks,
             commands::get_settings,
             commands::update_settings,
+            commands::app_hydrated,
             commands::valorant_status,
             commands::overlay_test,
             cloud::cloud_list_providers,
@@ -173,6 +178,16 @@ fn main() {
             // library (the cloud reset below reads it).
             hydrate_settings(app.handle());
             hydrate_library(app.handle());
+            // The real state is in place now. Flip the flag and tell the webview,
+            // so any `get_settings`/`clips_list` that won the startup race and read
+            // a placeholder (stale defaults / empty in-memory library) refetches —
+            // otherwise onboarding wrongly reappears and the clips list looks empty
+            // until the user navigates. The frontend reads the flag too, to cover
+            // the case where this fires before its listener is registered.
+            app.state::<commands::HydratedState>()
+                .0
+                .store(true, std::sync::atomic::Ordering::Release);
+            let _ = app.emit(events::STATE_HYDRATED, ());
             // Cloud upload: clear uploads left mid-flight by a previous run, then
             // start the single draining worker. After library hydration so the
             // reset + worker read the real on-disk library.

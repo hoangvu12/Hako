@@ -1,10 +1,62 @@
+import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getSettings, updateSettings, type Settings } from "@/lib/api";
+import { listen } from "@tauri-apps/api/event";
+import {
+  appHydrated,
+  Events,
+  getSettings,
+  updateSettings,
+  type Settings,
+} from "@/lib/api";
 
 const SETTINGS_KEY = ["settings"];
 
 export function useSettings() {
   return useQuery({ queryKey: SETTINGS_KEY, queryFn: getSettings, retry: false });
+}
+
+/**
+ * Refetch settings + clips once the backend hydrates its managed state from disk.
+ *
+ * At startup both are managed as placeholders (default settings, empty in-memory
+ * library) so an IPC call that wins the race against `setup` can't panic on
+ * unmanaged state. But a `get_settings`/`clips_list` that reads those placeholders
+ * would otherwise stick — `onboarding_completed` reads false (wizard reappears)
+ * and the clips list looks empty — because nothing remounts those query observers
+ * to trigger a refetch (the settings observer lives in the always-mounted wizard).
+ *
+ * So when the `state-hydrated` event lands, invalidate both queries. We register
+ * the listener first and *then* read `appHydrated()`: that ordering closes the
+ * race where hydration completed before we subscribed (the event was missed) —
+ * the flag is already true, so we refetch anyway. Mount once at the app root.
+ */
+export function useStateHydrationBridge() {
+  const qc = useQueryClient();
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      qc.invalidateQueries({ queryKey: SETTINGS_KEY });
+      qc.invalidateQueries({ queryKey: ["clips"] });
+    };
+    const unlisten = listen(Events.StateHydrated, refresh).then((off) => {
+      if (cancelled) {
+        off();
+        return off;
+      }
+      // Listener is live now — cover the case where hydration already finished
+      // before we subscribed (the event fired and was missed).
+      appHydrated()
+        .then((ready) => {
+          if (!cancelled && ready) refresh();
+        })
+        .catch(() => {});
+      return off;
+    });
+    return () => {
+      cancelled = true;
+      unlisten.then((off) => off()).catch(() => {});
+    };
+  }, [qc]);
 }
 
 export function useUpdateSettings() {

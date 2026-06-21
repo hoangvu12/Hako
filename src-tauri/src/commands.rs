@@ -346,6 +346,26 @@ pub struct LibraryState(pub Mutex<Library>);
 /// Managed, persisted user settings.
 pub struct SettingsState(pub Mutex<Settings>);
 
+/// Whether [`SettingsState`]/[`LibraryState`] have been hydrated from disk yet.
+///
+/// Both are managed on the builder with *placeholders* (default settings, an
+/// in-memory library) before any window exists, to keep an IPC call that wins the
+/// startup race from panicking on unmanaged state (see `main.rs`). `setup` then
+/// replaces them with the real on-disk values and flips this to `true`. The
+/// frontend watches the `state-hydrated` event (and reads this via
+/// [`app_hydrated`]) to refetch once the real state lands, so a first
+/// `get_settings`/`clips_list` that read placeholders self-heal.
+#[derive(Default)]
+pub struct HydratedState(pub std::sync::atomic::AtomicBool);
+
+/// Whether the managed state has been hydrated from disk (see [`HydratedState`]).
+/// The frontend polls this once after subscribing to `state-hydrated` to cover
+/// the race where hydration finished before the listener was registered.
+#[tauri::command]
+pub fn app_hydrated(state: State<HydratedState>) -> bool {
+    state.0.load(std::sync::atomic::Ordering::Acquire)
+}
+
 /// Save the last `seconds` of the RAM ring to MP4 (stream-copy, no re-encode),
 /// generate a thumbnail, record it in the library, and emit `clip-created`.
 /// Shared by the `save_clip` command and the F9 hotkey. `event` tags the clip

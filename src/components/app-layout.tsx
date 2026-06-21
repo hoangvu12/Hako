@@ -7,12 +7,16 @@ import { OnboardingWizard } from "@/components/onboarding/onboarding-wizard";
 import { useRecorderEventBridge } from "@/hooks/use-recorder";
 import { useClipEventBridge } from "@/hooks/use-library";
 import { useCloudEventBridge } from "@/hooks/use-cloud";
+import { useStateHydrationBridge } from "@/hooks/use-settings";
 
 export function AppLayout() {
   // Wire Rust -> webview push updates into the query cache once, at the root.
   useRecorderEventBridge();
   useClipEventBridge();
   useCloudEventBridge();
+  // Refetch settings/clips once the backend hydrates its state from disk, so an
+  // early read of the startup placeholders (wizard reappears, empty clips) heals.
+  useStateHydrationBridge();
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">

@@ -6,6 +6,12 @@
 // Several of these are placeholders for future producers.
 #![allow(dead_code)]
 
+/// Emitted once the managed settings/library state has been hydrated from disk
+/// in `setup` (it starts as a placeholder so an IPC call that wins the startup
+/// race can't panic — see `main.rs`). The webview refetches `settings`/`clips`
+/// on this so a first read that saw placeholders self-heals. Payload: none.
+pub const STATE_HYDRATED: &str = "state-hydrated";
+
 /// Periodic recorder status / heartbeat. Payload: [`crate::commands::RecorderStatus`].
 pub const RECORDER_STATUS: &str = "recorder-status";
 
