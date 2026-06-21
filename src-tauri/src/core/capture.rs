@@ -40,7 +40,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     IsWindowVisible,
 };
 
-use crate::core::audio::{self, AudioCapture, AudioMeta};
+use crate::core::audio::{self, AudioCapture, AudioControl, AudioMeta};
 use crate::settings::AudioConfig;
 use crate::core::buffer::{AudioRing, BufferStats, PacketRing};
 use crate::core::disk_buffer::DiskPacketRing;
@@ -450,6 +450,10 @@ pub struct RunningCapture {
     /// mic) can restart this capture against the same target to pick up the new
     /// audio/encode config (capture snapshots its config at start).
     hwnd: i64,
+    /// Live audio control: push a volume/mute change to the running audio thread
+    /// without restarting capture (Medal's `AudioCaptureVolume` path). Only valid
+    /// for structurally-identical configs; layout/encode changes restart instead.
+    audio_control: Arc<AudioControl>,
 }
 
 impl RunningCapture {
@@ -468,6 +472,13 @@ impl RunningCapture {
     /// The captured window handle (for a config-change restart).
     pub fn hwnd(&self) -> i64 {
         self.hwnd
+    }
+
+    /// Apply an audio volume/mute change to the live capture without a restart.
+    /// The caller must have verified `cfg` is structurally identical to the
+    /// running config (same inputs + track layout) — only the levels differ.
+    pub fn set_audio_volumes(&self, cfg: AudioConfig) {
+        self.audio_control.set_volumes(cfg);
     }
 
     /// Whether a Valorant match is actively being recorded into this capture.
@@ -616,18 +627,22 @@ pub fn start_hook(
     let game_pid = pid_for_hwnd(hwnd_raw);
     let track_names = audio::planned_track_names(&audio, game_pid);
     let clip = ClipBuffer::new(target_fps, buffer_secs.clamp(5, 600), track_names, disk_buffer_dir);
+    // Shared live-audio control: the audio thread reads its initial config here
+    // and re-reads it on a pushed volume change (no restart).
+    let audio_control = AudioControl::new(audio);
 
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<std::result::Result<(), String>>();
     let thread = {
         let stop = stop.clone();
         let shared = shared.clone();
         let clip = clip.clone();
+        let audio_control = audio_control.clone();
         std::thread::Builder::new()
             .name("hako-capture-hook".into())
             .spawn(move || {
                 hook_capture_thread(
-                    app, hwnd_raw, target_fps, adapter_index, audio, game_pid, stop, shared, clip,
-                    enc_cfg, ready_tx,
+                    app, hwnd_raw, target_fps, adapter_index, audio_control, game_pid, stop,
+                    shared, clip, enc_cfg, ready_tx,
                 )
             })
             .map_err(|e| format!("failed to spawn hook capture thread: {e}"))?
@@ -640,6 +655,7 @@ pub fn start_hook(
             clip,
             shared,
             hwnd: hwnd_raw,
+            audio_control,
         }),
         Ok(Err(e)) => {
             let _ = thread.join();
@@ -654,7 +670,7 @@ fn hook_capture_thread(
     hwnd_raw: i64,
     target_fps: u32,
     adapter_index: Option<u32>,
-    audio: AudioConfig,
+    audio_control: Arc<AudioControl>,
     game_pid: Option<u32>,
     stop: Arc<AtomicBool>,
     shared: Arc<Shared>,
@@ -666,7 +682,7 @@ fn hook_capture_thread(
         hwnd_raw,
         target_fps,
         adapter_index,
-        audio,
+        audio_control,
         game_pid,
         &stop,
         &shared,
@@ -734,7 +750,7 @@ fn run_hook_pipeline(
     hwnd_raw: i64,
     target_fps: u32,
     adapter_index: Option<u32>,
-    audio: AudioConfig,
+    audio_control: Arc<AudioControl>,
     game_pid: Option<u32>,
     stop: &Arc<AtomicBool>,
     shared: &Arc<Shared>,
@@ -890,7 +906,7 @@ fn run_hook_pipeline(
     };
 
     let audio = if clip.audio_track_count() > 0 {
-        match AudioCapture::start(clip.clone(), audio, game_pid) {
+        match AudioCapture::start(clip.clone(), audio_control, game_pid) {
             Some(a) => Some(a),
             None => {
                 tracing::warn!("audio capture requested but could not start; recording video only");

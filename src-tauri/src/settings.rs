@@ -293,6 +293,46 @@ impl Default for AudioConfig {
     }
 }
 
+impl AudioConfig {
+    /// True when `self` and `other` capture the same inputs and produce the same
+    /// output-track layout — they differ (if at all) only in volume levels.
+    /// Medal gates its live `AudioCaptureVolume` update on exactly this: a layout
+    /// change (mic on/off, device add/remove, separate-tracks) forces a recording
+    /// restart, whereas a level-only change is hot-applied.
+    pub fn structure_eq(&self, other: &AudioConfig) -> bool {
+        self.mode == other.mode
+            && self.mic_enabled == other.mic_enabled
+            && self.mic_source == other.mic_source
+            && self.mic_mono == other.mic_mono
+            && self.separate_tracks == other.separate_tracks
+            && devices_structure_eq(&self.pc_audio, &other.pc_audio)
+            && apps_structure_eq(&self.apps, &other.apps)
+    }
+
+    /// True when the configs differ *only* in volume levels (master / per-source
+    /// / mic) — safe to apply to a running capture without a restart.
+    pub fn differs_only_in_volume(&self, other: &AudioConfig) -> bool {
+        self.structure_eq(other) && self != other
+    }
+}
+
+/// Render-endpoint selections match structurally when the same ids are enabled
+/// in the same order — the device *name* is cosmetic and `volume` is the level
+/// we hot-apply, so neither affects the track layout.
+fn devices_structure_eq(a: &[AudioDeviceSel], b: &[AudioDeviceSel]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.id == y.id && x.enabled == y.enabled)
+}
+
+/// App selections match structurally when the same ids/names are enabled in the
+/// same order. `name` matters here because it labels the per-app stem track, so
+/// a rename changes the output layout; only `volume` is hot-applicable.
+fn apps_structure_eq(a: &[AudioAppSel], b: &[AudioAppSel]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(x, y)| x.id == y.id && x.enabled == y.enabled && x.name == y.name)
+}
+
 /// A selected render endpoint in `all_pc_audio` mode (Medal `AudioModeDevice`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -383,6 +423,24 @@ impl Settings {
     /// `gpu_adapter` is Auto (`< 0`), else the DXGI adapter index.
     pub fn gpu_adapter_index(&self) -> Option<u32> {
         (self.gpu_adapter >= 0).then_some(self.gpu_adapter as u32)
+    }
+
+    /// Whether the *video* side of what a running capture snapshots at start
+    /// differs (fps, buffer, codec/bitrate/resolution, GPU). Audio is handled
+    /// separately: a volume-only audio change applies live (no restart), while
+    /// an audio *structure* change is folded into the restart decision by the
+    /// caller (see `commands::update_settings`). Mirrors Medal, which restarts
+    /// on `VideoEncoderProperties` / `VideoOutputResolution` but hot-applies
+    /// audio volume.
+    pub fn video_capture_config_differs(&self, other: &Settings) -> bool {
+        self.target_fps != other.target_fps
+            || self.buffer_seconds != other.buffer_seconds
+            || self.buffer_storage != other.buffer_storage
+            || self.codec != other.codec
+            || self.bitrate_mbps != other.bitrate_mbps
+            || self.resolution != other.resolution
+            || self.gpu_adapter != other.gpu_adapter
+            || self.video_encoder != other.video_encoder
     }
 
     /// Whether anything a running capture snapshots at start differs between
@@ -490,5 +548,49 @@ mod tests {
         let s = Settings::load(Path::new("C:/nonexistent/hako/settings.json"));
         assert_eq!(s.target_fps, 60);
         assert_eq!(s.save_hotkey, "F9");
+    }
+
+    #[test]
+    fn audio_volume_change_is_live_not_restart() {
+        // A pure level change (master / per-device / mic) is hot-applicable.
+        let base = AudioConfig::default();
+        let mut louder = base.clone();
+        louder.master_volume = 50;
+        assert!(base.structure_eq(&louder));
+        assert!(base.differs_only_in_volume(&louder));
+
+        let mut quieter_mic = base.clone();
+        quieter_mic.mic_volume = 10;
+        assert!(base.differs_only_in_volume(&quieter_mic));
+
+        let mut dev_vol = base.clone();
+        if let Some(d) = dev_vol.pc_audio.first_mut() {
+            d.volume = 25;
+        }
+        assert!(base.differs_only_in_volume(&dev_vol));
+    }
+
+    #[test]
+    fn audio_structure_change_forces_restart() {
+        // Layout changes (mic on/off, separate-tracks, device add/remove, mode)
+        // are NOT volume-only — they require a capture restart, like Medal.
+        let base = AudioConfig::default();
+
+        let mut mic_on = base.clone();
+        mic_on.mic_enabled = true;
+        assert!(!base.structure_eq(&mic_on));
+        assert!(!base.differs_only_in_volume(&mic_on));
+
+        let mut stems = base.clone();
+        stems.separate_tracks = true;
+        assert!(!base.differs_only_in_volume(&stems));
+
+        let mut extra_dev = base.clone();
+        extra_dev.pc_audio.push(AudioDeviceSel::default());
+        assert!(!base.differs_only_in_volume(&extra_dev));
+
+        // Identical configs are neither a restart nor a (no-op) live push.
+        assert!(base.structure_eq(&base.clone()));
+        assert!(!base.differs_only_in_volume(&base.clone()));
     }
 }

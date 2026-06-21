@@ -151,6 +151,53 @@ async fn run(app: AppHandle) {
         // independent of match boundaries. A no-op in the other modes.
         manage_full_session(&app, mode, &mut full_session);
 
+        // If the user disabled per-match auto-capture mid-match (flipped "Auto
+        // Clip" off / switched to Manual or Session), stop and discard the
+        // in-progress recording *now*. Without this, an already-open session
+        // keeps recording and still gets cut into a clip at `MatchEnded`, so
+        // turning auto-clip off wouldn't take effect until the next match.
+        if !mode.records_match() {
+            if let Some(am) = active.take() {
+                tracing::info!("auto-clip: capture disabled mid-match — discarding recording");
+                am.discard();
+            }
+            want_match_record = false;
+            want_match_since = None;
+        }
+
+        // A restart-class settings change (video encode or audio track layout)
+        // landed while a session was recording. `update_settings` couldn't
+        // restart capture itself without orphaning that session's buffer, so it
+        // signaled us. Apply it as a clean split (Medal restarts the same way; we
+        // just preserve the footage captured so far): finalize the current clip
+        // with the old config, restart capture, and reopen a fresh session for
+        // the rest with the new config. Consumed once via the atomic swap.
+        if commands::take_config_restart_request(&app) {
+            let mut resume_match = false;
+            if let Some(am) = active.take() {
+                tracing::info!("auto-clip: config changed mid-match — splitting clip + restarting capture");
+                end_match(&app, am, mode);
+                resume_match = mode.records_match();
+            }
+            // A rolling full session (Session mode) is also teeing into the
+            // capture — finish it too; `manage_full_session` reopens it next tick.
+            if let Some(fs) = full_session.take() {
+                tracing::info!("session-record: config changed — splitting session + restarting capture");
+                finish_full_session(&app, fs);
+            }
+            // Now that nothing is teeing in, restart the capture so the new
+            // encode/audio config takes effect.
+            commands::restart_capture_now(&app);
+            // Reopen a match session for the remainder once the restarted encoder
+            // is warm. Still INGAME, so the state machine won't re-emit
+            // MatchStarted — latch the intent like a mid-game start and let the
+            // retry/grace logic below open the writer.
+            if resume_match {
+                want_match_record = true;
+                want_match_since = Some(Instant::now());
+            }
+        }
+
         // Push the live recorder snapshot (game-detected / capturing) so the
         // titlebar's "Now Clipping" indicator updates without the game's presence.
         let _ = app.emit(events::RECORDER_STATUS, &commands::recorder_status_snapshot(&app));

@@ -89,6 +89,10 @@ fn main() {
         // Range-aware clip streaming (smooth playback + seeking in the editor).
         .register_uri_scheme_protocol(media::SCHEME, media::handle)
         .manage(commands::CaptureState::default())
+        // Cross-thread "restart capture to apply a config change" request, set by
+        // `update_settings` when the change lands mid-session and consumed by the
+        // orchestrator (which splits the clip before restarting).
+        .manage(commands::ConfigRestartSignal::default())
         // Shared live-match context (map/mode/agent) for tagging manual F9 clips;
         // kept current by the Valorant orchestrator.
         .manage(valorant::live::LiveMatchState::default())

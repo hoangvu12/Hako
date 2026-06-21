@@ -1,6 +1,7 @@
 //! `#[tauri::command]` handlers — the invoke surface exposed to the webview.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -10,11 +11,34 @@ use crate::core::capture::{self, RunningCapture, WindowTarget};
 use crate::core::device::{self, GpuInfo};
 use crate::core::encode::{self, FfmpegProbe};
 use crate::library::db::{rebase_marks, shift_marks, ClipRecord, EventMark, Library, NewClip};
-use crate::settings::Settings;
+use crate::settings::{AudioConfig, Settings};
 
 /// Managed state holding the currently running capture, if any.
 #[derive(Default)]
 pub struct CaptureState(pub Mutex<Option<RunningCapture>>);
+
+/// Cross-thread request for a capture restart that must be performed by the
+/// Valorant orchestrator rather than the settings command thread.
+///
+/// `update_settings` runs on a command thread and can't reach the orchestrator's
+/// loop-local in-progress recording, so it can't restart capture mid-session
+/// itself (that would orphan the session's buffer). When a restart-class config
+/// change (video encode or audio track layout) lands while a session is teeing
+/// into the capture, it sets this flag instead; the orchestrator polls it each
+/// tick, finalizes the current clip, restarts capture, and reopens a fresh
+/// session for the rest — a clean two-clip split (Medal restarts the same way,
+/// it just has no continuous match file to preserve). Outside a session,
+/// `update_settings` restarts immediately and never sets this.
+#[derive(Default)]
+pub struct ConfigRestartSignal(pub AtomicBool);
+
+/// Atomically read + clear the pending config-restart request set by
+/// `update_settings` (see [`ConfigRestartSignal`]). Returns true exactly once per
+/// request, so the orchestrator acts on it a single time.
+pub fn take_config_restart_request(app: &AppHandle) -> bool {
+    app.try_state::<ConfigRestartSignal>()
+        .map_or(false, |s| s.0.swap(false, Ordering::AcqRel))
+}
 
 /// Snapshot of recorder state. Mirrors the `RecorderStatus` interface in
 /// `src/lib/api.ts`; serde serializes with these exact field names.
@@ -912,12 +936,22 @@ pub fn update_settings(
     next.save(&path)?;
     let new_hotkey = next.save_hotkey.clone();
     let overlay_enabled = next.overlay_enabled;
-    let (old_hotkey, capture_changed) = {
+    let new_audio = next.effective_audio();
+    // Classify the capture-affecting change the way Medal does:
+    //  - a volume/mute-only audio change applies LIVE (no restart) — Medal's
+    //    `AudioCaptureVolume` → `SetInputVolume` path;
+    //  - a video-encode change or an audio *structure* change (mic on/off,
+    //    device add/remove, separate-tracks) needs a capture RESTART.
+    let (old_hotkey, restart_needed, volume_only) = {
         let mut guard = settings.0.lock().map_err(|_| "settings poisoned")?;
         let prev_hotkey = guard.save_hotkey.clone();
-        let capture_changed = guard.capture_config_differs(&next);
+        let old_audio = guard.effective_audio();
+        let video_changed = guard.video_capture_config_differs(&next);
+        let audio_structure_changed = old_audio != new_audio && !old_audio.structure_eq(&new_audio);
+        let volume_only = old_audio.differs_only_in_volume(&new_audio);
+        let restart_needed = video_changed || audio_structure_changed;
         *guard = next;
-        (prev_hotkey, capture_changed)
+        (prev_hotkey, restart_needed, volume_only)
     };
     if old_hotkey != new_hotkey {
         crate::set_clip_hotkey(&app, &new_hotkey);
@@ -928,13 +962,17 @@ pub fn update_settings(
     // grant the new folder asset-scope access so clips written there load over
     // `convertFileSrc` instead of 403-ing past the static `$VIDEO/Hako` scope.
     allow_storage_asset_scope(&app);
-    // A running capture snapshots its fps/buffer/codec/audio config at start, so
-    // a change (e.g. enabling the microphone) wouldn't apply to the live buffer.
-    // Restart it against the same window to pick up the new config — but never
-    // mid-match (that would orphan the in-progress session's buffer); those
-    // changes apply when the next match's capture starts.
-    if capture_changed {
+    // A volume/mute-only audio change is pushed straight to the running audio
+    // thread — it applies immediately, even mid-match, with no restart (Medal's
+    // live `SetInputVolume`). Anything that changes the encoder or the audio
+    // track layout needs a capture restart instead; that snapshots config at
+    // start, so we restart against the same window — but never mid-match (that
+    // would orphan the in-progress session's buffer); those apply at the next
+    // match's capture start.
+    if restart_needed {
         restart_capture_for_config_change(&app);
+    } else if volume_only {
+        apply_audio_volumes_live(&app, &new_audio);
     }
     // Keep a live overlay in sync: re-push the corner placement, and clear the
     // overlay immediately if the master switch was just turned off.
@@ -945,15 +983,31 @@ pub fn update_settings(
     Ok(())
 }
 
-/// Restart the live buffer capture so a settings change takes effect, if one is
-/// running and no Valorant match is actively recording into it. Best-effort: a
-/// failed restart leaves capture stopped, which the orchestrator re-starts on
-/// the next game-window poll.
-fn restart_capture_for_config_change(app: &AppHandle) {
+/// Push a volume/mute-only audio change to the running capture's audio thread,
+/// applying it live with no restart (Medal's `AudioCaptureVolume` path). Works
+/// even mid-match — it never touches the encoder or the track layout, just the
+/// mix gains. No-op when nothing is capturing (the change is already persisted
+/// and will be picked up when capture next starts).
+fn apply_audio_volumes_live(app: &AppHandle, audio: &AudioConfig) {
     let state = app.state::<CaptureState>();
-    // Read the target window + match-busy flag, then drop the lock before
-    // stop/start (both take the same lock internally).
-    let hwnd = {
+    let guard = match state.0.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    if let Some(running) = guard.as_ref() {
+        running.set_audio_volumes(audio.clone());
+        tracing::info!("settings: applied audio volume change live (no capture restart)");
+    }
+}
+
+/// Restart the live buffer capture so a settings change takes effect. When no
+/// session is teeing into the capture, restart immediately. When one *is* (a
+/// Valorant match or a rolling full session), restarting here would orphan its
+/// buffer — so request a clean split from the orchestrator instead (see
+/// [`ConfigRestartSignal`]), which finalizes the current clip before restarting.
+fn restart_capture_for_config_change(app: &AppHandle) {
+    {
+        let state = app.state::<CaptureState>();
         let guard = match state.0.lock() {
             Ok(g) => g,
             Err(_) => return,
@@ -961,11 +1015,40 @@ fn restart_capture_for_config_change(app: &AppHandle) {
         match guard.as_ref() {
             None => return, // no capture running — change applies next start
             Some(running) if running.has_active_session() => {
+                // A session is recording into this capture. Hand the restart to
+                // the orchestrator so it can split the clip first instead of
+                // dropping the in-progress recording.
+                if let Some(sig) = app.try_state::<ConfigRestartSignal>() {
+                    sig.0.store(true, Ordering::Release);
+                }
                 tracing::info!(
-                    "settings: capture config changed mid-match; applying after the match ends"
+                    "settings: capture config changed mid-session; requesting a clean split restart"
                 );
                 return;
             }
+            Some(_) => {}
+        }
+    }
+    restart_capture_now(app);
+}
+
+/// Stop + restart the running capture against the same window so a new
+/// encode/audio config takes effect. Does **not** check for an active session —
+/// the caller must ensure none is teeing into the capture (the orchestrator
+/// finalizes its match/full session first). No-op if nothing is capturing.
+/// Best-effort: a failed restart leaves capture stopped, which the orchestrator
+/// re-starts on the next game-window poll.
+pub fn restart_capture_now(app: &AppHandle) {
+    // Read the target window, then drop the lock before stop/start (both take
+    // the same lock internally).
+    let hwnd = {
+        let state = app.state::<CaptureState>();
+        let guard = match state.0.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        match guard.as_ref() {
+            None => return, // no capture running — change applies next start
             Some(running) => running.hwnd(),
         }
     };

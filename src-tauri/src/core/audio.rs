@@ -31,8 +31,8 @@
 
 use std::collections::VecDeque;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use rusty_ffmpeg::ffi;
@@ -523,23 +523,67 @@ unsafe fn hicon_to_png(hicon: windows::Win32::UI::WindowsAndMessaging::HICON) ->
 // ---------------------------------------------------------------------------
 
 /// A running audio-capture session. Drop or [`stop`](Self::stop) to tear down.
+/// Live, restart-free control surface for a running [`AudioCapture`] — Medal's
+/// `AudioCaptureVolume` path (`RecordingSession.UpdateMicVolume` →
+/// `SetInputVolume`). Holds the current [`AudioConfig`] behind a lock plus a
+/// generation counter; the audio thread re-derives its per-source mix gains
+/// whenever the generation changes, so volume/mute edits apply mid-recording
+/// without tearing down the capture.
+///
+/// Only *volume* changes may be pushed here: the caller must have verified the
+/// new config is structurally identical (same inputs + output-track layout).
+/// A layout change can't be hot-applied and goes through a capture restart
+/// instead (see `commands::update_settings`).
+pub struct AudioControl {
+    cfg: Mutex<AudioConfig>,
+    generation: AtomicU64,
+}
+
+impl AudioControl {
+    pub fn new(cfg: AudioConfig) -> Arc<AudioControl> {
+        Arc::new(AudioControl {
+            cfg: Mutex::new(cfg),
+            generation: AtomicU64::new(0),
+        })
+    }
+
+    /// Replace the live config with `cfg` (expected to differ only in volumes)
+    /// and bump the generation so the audio thread re-derives its mix gains.
+    pub fn set_volumes(&self, cfg: AudioConfig) {
+        if let Ok(mut g) = self.cfg.lock() {
+            *g = cfg;
+        }
+        self.generation.fetch_add(1, Ordering::Release);
+    }
+
+    fn snapshot(&self) -> AudioConfig {
+        self.cfg.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+}
+
 pub struct AudioCapture {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl AudioCapture {
-    /// Start multi-source audio capture per `cfg`, pushing each output track's AAC
-    /// packets into the matching [`ClipBuffer`] audio track and publishing its
-    /// [`AudioMeta`] once the encoder opens. `game_pid` is the capture target's
-    /// process id (for the `specific_apps` "Game Audio" source). Returns `None`
-    /// if the thread couldn't be spawned (caller proceeds video-only).
+    /// Start multi-source audio capture driven by `control`, pushing each output
+    /// track's AAC packets into the matching [`ClipBuffer`] audio track and
+    /// publishing its [`AudioMeta`] once the encoder opens. `game_pid` is the
+    /// capture target's process id (for the `specific_apps` "Game Audio" source).
+    /// Returns `None` if the thread couldn't be spawned (caller proceeds
+    /// video-only). The initial config is read from `control`; later volume edits
+    /// pushed through it apply live (see [`AudioControl::set_volumes`]).
     ///
     /// Never blocks the caller meaningfully: setup happens on the audio thread
     /// and failures are logged — audio is best-effort relative to the recorder.
     pub fn start(
         clip: Arc<ClipBuffer>,
-        cfg: AudioConfig,
+        control: Arc<AudioControl>,
         game_pid: Option<u32>,
     ) -> Option<AudioCapture> {
         let stop = Arc::new(AtomicBool::new(false));
@@ -547,7 +591,7 @@ impl AudioCapture {
             let stop = stop.clone();
             std::thread::Builder::new()
                 .name("hako-audio".into())
-                .spawn(move || audio_thread(clip, stop, cfg, game_pid))
+                .spawn(move || audio_thread(clip, stop, control, game_pid))
                 .ok()?
         };
         Some(AudioCapture {
@@ -806,7 +850,12 @@ pub fn planned_track_names(cfg: &AudioConfig, game_pid: Option<u32>) -> Vec<Stri
 // Thread entry
 // ---------------------------------------------------------------------------
 
-fn audio_thread(clip: Arc<ClipBuffer>, stop: Arc<AtomicBool>, cfg: AudioConfig, game_pid: Option<u32>) {
+fn audio_thread(
+    clip: Arc<ClipBuffer>,
+    stop: Arc<AtomicBool>,
+    control: Arc<AudioControl>,
+    game_pid: Option<u32>,
+) {
     // Keep audio glitch-free even while the game saturates the CPU.
     crate::core::boost_current_thread_priority("audio");
     // Exempt from any process-level EcoQoS set while hidden to tray, so WASAPI
@@ -817,7 +866,7 @@ fn audio_thread(clip: Arc<ClipBuffer>, stop: Arc<AtomicBool>, cfg: AudioConfig, 
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     }
-    if let Err(e) = run_audio(&clip, &stop, &cfg, game_pid) {
+    if let Err(e) = run_audio(&clip, &stop, &control, game_pid) {
         tracing::warn!("audio capture disabled: {e}");
     }
     unsafe {
@@ -834,15 +883,32 @@ struct OutputTrack {
     encoder: AacEncoder,
 }
 
+/// Invert a plan's track→inputs map into `input → [(track, gain)]` routing so
+/// each drained input fans out to every track that mixes it. `input_count`
+/// fixes the length so the mix loop can index by source position safely even if
+/// a re-derived plan disagrees.
+fn invert_routing(tracks: &[TrackSpec], input_count: usize) -> Vec<Vec<(usize, f32)>> {
+    let mut routing: Vec<Vec<(usize, f32)>> = vec![Vec::new(); input_count];
+    for (t, spec) in tracks.iter().enumerate() {
+        for &(input_idx, gain) in &spec.sources {
+            if let Some(r) = routing.get_mut(input_idx) {
+                r.push((t, gain));
+            }
+        }
+    }
+    routing
+}
+
 fn run_audio(
     clip: &Arc<ClipBuffer>,
     stop: &Arc<AtomicBool>,
-    cfg: &AudioConfig,
+    control: &Arc<AudioControl>,
     game_pid: Option<u32>,
 ) -> Result<(), String> {
     unsafe {
-        let plan = plan(cfg, game_pid);
-        if plan.inputs.is_empty() || plan.tracks.is_empty() {
+        let cfg = control.snapshot();
+        let layout = plan(&cfg, game_pid);
+        if layout.inputs.is_empty() || layout.tracks.is_empty() {
             return Err("no audio sources enabled".into());
         }
 
@@ -856,8 +922,8 @@ fn run_audio(
         // track when it snapshots `audio_track_metas()` to declare the session
         // writer's streams — otherwise the session recording, and every auto-clip
         // cut from it, comes out video-only. See `valorant::orchestrator::start_match`.
-        let mut tracks: Vec<OutputTrack> = Vec::with_capacity(plan.tracks.len());
-        for (idx, _spec) in plan.tracks.iter().enumerate() {
+        let mut tracks: Vec<OutputTrack> = Vec::with_capacity(layout.tracks.len());
+        for (idx, _spec) in layout.tracks.iter().enumerate() {
             let encoder = AacEncoder::new()?;
             let block = encoder.frame_size();
             clip.set_audio_track_meta(
@@ -881,8 +947,8 @@ fn run_audio(
 
         // Open every planned input. Failures keep their slot (as `None`) so the
         // output tracks' input indices stay valid — a missing input is silence.
-        let mut sources: Vec<Option<Source>> = Vec::with_capacity(plan.inputs.len());
-        for spec in &plan.inputs {
+        let mut sources: Vec<Option<Source>> = Vec::with_capacity(layout.inputs.len());
+        for spec in &layout.inputs {
             match open_input(spec, &enumerator) {
                 Ok(s) => sources.push(Some(s)),
                 Err(e) => {
@@ -897,14 +963,12 @@ fn run_audio(
 
         // Invert the track→inputs map into input→(track, gain) routing so each
         // drained input fans out to every track that mixes it.
-        let mut routing: Vec<Vec<(usize, f32)>> = vec![Vec::new(); plan.inputs.len()];
-        for (t, spec) in plan.tracks.iter().enumerate() {
-            for &(input_idx, gain) in &spec.sources {
-                if let Some(r) = routing.get_mut(input_idx) {
-                    r.push((t, gain));
-                }
-            }
-        }
+        let input_count = layout.inputs.len();
+        let track_count = layout.tracks.len();
+        let mut routing = invert_routing(&layout.tracks, input_count);
+        // Track the live-control generation so a pushed volume change re-derives
+        // the mix gains in place — Medal's `SetInputVolume`, no capture restart.
+        let mut cur_gen = control.generation();
 
         for s in sources.iter().flatten() {
             s.start()?;
@@ -921,6 +985,18 @@ fn run_audio(
         let mut zero = Vec::<u8>::new();
 
         while !stop.load(Ordering::Acquire) {
+            // Live volume/mute: a pushed change bumps the generation; re-derive
+            // the mix gains from the new config. The caller only pushes
+            // structurally-identical configs, so the inputs + output tracks (and
+            // the open WASAPI sources) stay valid — only the gains differ.
+            let g = control.generation();
+            if g != cur_gen {
+                let np = plan(&control.snapshot(), game_pid);
+                if np.inputs.len() == input_count && np.tracks.len() == track_count {
+                    routing = invert_routing(&np.tracks, input_count);
+                }
+                cur_gen = g;
+            }
             let mut got_any = false;
             for i in 0..sources.len() {
                 let Some(src) = sources[i].as_mut() else {
