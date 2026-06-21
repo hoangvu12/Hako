@@ -1,0 +1,74 @@
+# Warm the Rust build cache on the default branch so release builds are fast.
+#
+# Why this exists: the release workflow only runs on tags, and GitHub Actions
+# caches are ref-scoped — a cache created on tag `vX` is invisible to tag `vY`.
+# Only caches created on the *default branch* are restorable by every other ref.
+# So releases were getting "No cache found" and recompiling the entire dependency
+# tree (~12 min) every single time. This job builds on every push to `main` and
+# saves the cache; the release job then restores it (matched by `shared-key`) and
+# only recompiles the `hako` crate + final ThinLTO/link instead of the world.
+#
+# It builds the *release* profile (so the cached `target` artifacts match what the
+# release needs) but skips installer bundling (`--bundles none`) to stay quick.
+#
+# Tip: push to `main` and let this finish before pushing the version tag, so the
+# cache is warm when the release run starts.
+name: CI (warm cache)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src-tauri/**"
+      - "src/**"
+      - "package.json"
+      - "bun.lock"
+      - ".cargo/**"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
+
+# A newer push to main supersedes an in-flight warm — no point finishing a stale one.
+concurrency:
+  group: ci-warm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  warm-cache:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # `shared-key` must match the release workflow so both share one cache
+      # namespace (the default key includes the job id, which would split them).
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+          shared-key: "hako-release"
+
+      - name: Fetch FFmpeg
+        shell: pwsh
+        run: ./scripts/fetch-ffmpeg.ps1
+
+      # Compile the release binary (warms the dep cache) without bundling.
+      # OAuth secrets are baked via build.rs; pass them so this build matches the
+      # release build exactly (any unset just disables that provider's button).
+      - name: Build (no bundle) to warm cache
+        run: bun tauri build --no-bundle
+        env:
+          HAKO_GOOGLE_CLIENT_ID: ${{ secrets.HAKO_GOOGLE_CLIENT_ID }}
+          HAKO_GOOGLE_CLIENT_SECRET: ${{ secrets.HAKO_GOOGLE_CLIENT_SECRET }}
+          HAKO_DROPBOX_CLIENT_ID: ${{ secrets.HAKO_DROPBOX_CLIENT_ID }}
+          HAKO_DROPBOX_CLIENT_SECRET: ${{ secrets.HAKO_DROPBOX_CLIENT_SECRET }}
+          HAKO_MICROSOFT_CLIENT_ID: ${{ secrets.HAKO_MICROSOFT_CLIENT_ID }}

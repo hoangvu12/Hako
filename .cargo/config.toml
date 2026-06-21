@@ -5,3 +5,14 @@
 FFMPEG_LIBS_DIR = { value = "src-tauri/ffmpeg/lib", relative = true }
 FFMPEG_BINDING_PATH = { value = "src-tauri/ffmpeg/binding.rs", relative = true }
 FFMPEG_LINK_MODE = "dynamic"
+
+# Link with LLVM's lld (in MSVC `lld-link` mode) instead of the slow default
+# `link.exe`. `rust-lld.exe` ships inside every Rust toolchain — rustc resolves
+# the bare name from its own `lib/rustlib/<target>/bin`, so this needs no
+# external LLVM install on dev machines or CI runners. lld-link is a drop-in
+# for link.exe and links our native deps (FFmpeg import libs, the windows crate,
+# mimalloc) fine. Speeds up every link, and dramatically speeds incremental dev
+# relinks. (Verified linking the full app on stable rustc 1.93, x64-msvc.)
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
+rustflags = ["-C", "linker-flavor=lld-link"]

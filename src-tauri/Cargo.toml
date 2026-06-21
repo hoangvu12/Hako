@@ -186,11 +186,20 @@ features = [
 incremental = true
 
 [profile.release]
-codegen-units = 1
-lto = true
-# Performance-first: optimize for speed (the real-time capture/encode/mux and
-# audio/thumbnail CPU paths), not size. `lto`/`codegen-units=1`/`panic=abort`
-# already minimize bloat; the binary grows modestly in exchange for faster code.
+# Performance-first, but tuned for a sane build time. We use ThinLTO + multiple
+# codegen units rather than fat LTO + `codegen-units = 1`:
+#   - Fat LTO merges the whole crate graph (tauri, windows-rs, opendal, ffmpeg,
+#     sqlite, …) into one LLVM module and optimizes it single-threaded with
+#     super-linear passes — it was the dominant cost of our ~12-min CI compile
+#     and, unlike dependency compilation, it can't be cached (it re-runs every
+#     build). ThinLTO keeps most of fat LTO's cross-crate inlining/devirt while
+#     optimizing units in parallel across all cores.
+#   - The runtime difference is negligible here: the real-time hot paths
+#     (capture/encode/mux/audio) are FFI/GPU/SIMD-bound, not LLVM-inlining-bound.
+# `opt-level = 3` + `panic = "abort"` + `strip` are unchanged. See also the lld
+# linker in .cargo/config.toml.
+codegen-units = 16
+lto = "thin"
 opt-level = 3
 panic = "abort"
 strip = true

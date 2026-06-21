@@ -43,10 +43,25 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # Restore the dependency cache warmed by ci.yml on `main`. `shared-key`
+      # must match ci.yml so both use one cache namespace. `save-if: false`:
+      # this runs on a tag ref, and tag-scoped caches aren't readable by other
+      # tags, so saving here would just burn time + storage for nothing — the
+      # `main` warm job owns saving.
       - name: Cache Rust build
         uses: swatinem/rust-cache@v2
         with:
           workspaces: "./src-tauri -> target"
+          shared-key: "hako-release"
+          save-if: false
+
+      # Cache Tauri's bundling toolchain (NSIS + nsis_tauri_utils.dll), which the
+      # bundler otherwise re-downloads from GitHub on every release.
+      - name: Cache NSIS tooling
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/tauri
+          key: tauri-bundler-${{ runner.os }}
 
       # FFmpeg shared build is gitignored (248 MB) and fetched on demand; the
       # Rust link step needs it present at src-tauri/ffmpeg before building.
