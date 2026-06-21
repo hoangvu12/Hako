@@ -919,8 +919,27 @@ fn replace_file_retrying(src: &Path, dst: &Path) -> Result<(), String> {
 }
 
 /// Current user settings.
+///
+/// Until `setup` swaps the on-disk settings into the managed state, the mutex
+/// still holds the builder placeholder (`Settings::default()` — crucially
+/// `onboarding_completed: false`). A webview `get_settings` that wins that startup
+/// race would read the placeholder and wrongly show the first-run wizard to an
+/// existing user. So while *unhydrated*, read straight from disk: the very first
+/// settings the UI sees are then authoritative, independent of the `state-hydrated`
+/// refetch (which still heals the managed copy). Once hydrated the managed mutex is
+/// the source of truth (it carries live edits that may not be flushed yet — though
+/// `update_settings` does persist synchronously).
 #[tauri::command]
-pub fn get_settings(settings: State<SettingsState>) -> Result<Settings, String> {
+pub fn get_settings(
+    app: AppHandle,
+    settings: State<SettingsState>,
+    hydrated: State<HydratedState>,
+) -> Result<Settings, String> {
+    if !hydrated.0.load(Ordering::Acquire) {
+        if let Ok(path) = settings_path(&app) {
+            return Ok(Settings::load(&path));
+        }
+    }
     Ok(settings.0.lock().map_err(|_| "settings poisoned")?.clone())
 }
 

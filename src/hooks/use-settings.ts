@@ -25,16 +25,29 @@ export function useSettings() {
  * and the clips list looks empty — because nothing remounts those query observers
  * to trigger a refetch (the settings observer lives in the always-mounted wizard).
  *
- * So when the `state-hydrated` event lands, invalidate both queries. We register
+ * So when the `state-hydrated` event lands, refresh both queries. We register
  * the listener first and *then* read `appHydrated()`: that ordering closes the
  * race where hydration completed before we subscribed (the event was missed) —
  * the flag is already true, so we refetch anyway. Mount once at the app root.
+ *
+ * `refresh` *cancels* the queries before invalidating. Without that cancel a read
+ * that's still resolving against the startup placeholder wins React Query's
+ * request dedup: `invalidateQueries` attaches to the in-flight fetch, that fetch
+ * resolves with the stale placeholder, and the invalidated flag clears — so the
+ * wizard stays up (onboarding_completed reads false) and the clips list stays
+ * empty. Cancelling discards that placeholder result, then invalidate forces a
+ * fresh fetch that runs *after* hydration.
  */
 export function useStateHydrationBridge() {
   const qc = useQueryClient();
   useEffect(() => {
     let cancelled = false;
-    const refresh = () => {
+    const refresh = async () => {
+      await Promise.all([
+        qc.cancelQueries({ queryKey: SETTINGS_KEY }),
+        qc.cancelQueries({ queryKey: ["clips"] }),
+      ]);
+      if (cancelled) return;
       qc.invalidateQueries({ queryKey: SETTINGS_KEY });
       qc.invalidateQueries({ queryKey: ["clips"] });
     };

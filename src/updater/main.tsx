@@ -3,10 +3,13 @@
 // decoupled from the main app bundle and paints instantly on launch.
 //
 // Flow: check GitHub Releases → if a signed update exists, download it (showing
-// progress) and relaunch into it; otherwise (or on any error/timeout) tell the
-// Rust side to reveal the already-restored main window and close this splash.
+// progress) and relaunch into it; otherwise (or on any error/timeout) wait for
+// the Rust core to finish hydrating its state from disk, then tell it to reveal
+// the already-restored main window and close this splash. Holding the splash
+// until hydration means the main window never paints with the startup
+// placeholder state — no onboarding-wizard flash, no momentarily-empty clip list.
 // The guiding rule is *never block launch*: every failure path falls through to
-// `finish_to_main`.
+// `finish_to_main`, and the hydration wait itself is capped.
 import React, { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { check } from "@tauri-apps/plugin-updater";
@@ -31,8 +34,32 @@ function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
   ]);
 }
 
-/** Reveal the main window and close this splash (Rust command). */
+/** Resolve once the Rust core has hydrated its settings/library from disk (the
+ *  `app_hydrated` flag flips at the end of `setup`), or after `capMs` as a safety
+ *  valve so a stuck hydration never strands the user on the splash. Hydration
+ *  runs early in `setup`, so this normally returns on the first poll. We poll the
+ *  `app_hydrated` *command* rather than listen for the `state-hydrated` event:
+ *  app commands are callable from any window without an ACL grant, so this needs
+ *  no extra capability for the updater window. */
+async function waitForHydration(capMs = 8_000): Promise<void> {
+  const start = Date.now();
+  for (;;) {
+    try {
+      if (await invoke<boolean>("app_hydrated")) return;
+    } catch (err) {
+      // Can't determine hydration state — don't block the reveal.
+      console.error("app_hydrated check failed", err);
+      return;
+    }
+    if (Date.now() - start >= capMs) return;
+    await delay(100);
+  }
+}
+
+/** Wait for state hydration, then reveal the main window and close this splash
+ *  (Rust command). The wait keeps the placeholder-state UI from ever showing. */
 async function finishToMain() {
+  await waitForHydration();
   try {
     await invoke("finish_to_main");
   } catch (err) {

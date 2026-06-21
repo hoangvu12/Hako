@@ -59,6 +59,19 @@ fn main() {
     let (cloud_state, cloud_rx) = cloud::CloudState::new();
 
     tauri::Builder::default()
+        // ── Single-instance guard — MUST be the first plugin ─────────────────
+        // Tauri requires this plugin to register before any other so it runs
+        // first and exits a duplicate launch before that process can touch the
+        // SQLite library / settings.json. Two concurrent Hako processes racing
+        // those files is what intermittently resurfaces the onboarding wizard
+        // (a second instance loads placeholder defaults — onboarding_completed =
+        // false — and a write from it clobbers the real settings on disk) and
+        // makes the clip list flicker/empty. When a second instance launches,
+        // this callback fires in the *original* instance: surface its window
+        // (it may be hidden to tray, minimized, or suspended) instead.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main(&app);
+        }))
         // Restore the main window's size/position/maximized state on launch.
         // Only those flags — not VISIBLE (we control reveal via the update
         // splash) and not DECORATIONS (the app is intentionally frameless). The
