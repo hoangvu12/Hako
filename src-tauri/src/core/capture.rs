@@ -114,12 +114,17 @@ struct Shared {
     /// SystemRelativeTime (100 ns) of the last frame whose content actually
     /// changed. Reserved for the Part B static watchdog; set on each live tick.
     last_fresh_time: AtomicI64,
-    /// True once the encode thread has the in-frame freeze overlay ("tabbed out"
-    /// card) live. Set before the source loop starts, so the source loop only does
-    /// its freeze-base snapshot + minimized keep-alive emit when the card will
-    /// actually be drawn (the feature is on AND the format is D2D-compatible AND
-    /// D2D init succeeded). See [`crate::core::overlay_card`].
+    /// True when the in-frame freeze overlay ("tabbed out" card) should be drawn:
+    /// the feature is currently **on** AND the capture is overlay-capable. Read
+    /// per-frame by the encode thread (draw gate) and per-tick by the source loop
+    /// (freeze-base snapshot + minimized keep-alive emit), so toggling the setting
+    /// applies live via [`RunningCapture::set_freeze_overlay`].
     overlay_active: AtomicBool,
+    /// True once the encode thread has confirmed the overlay can be drawn for this
+    /// capture (format is D2D-targetable AND `FreezeOverlay` init succeeded). Fixed
+    /// for the capture's life; gates the live `overlay_active` toggle so turning
+    /// the feature on can't enable drawing on an incapable capture.
+    overlay_capable: AtomicBool,
     /// Set by the source loop when the game changed its backbuffer resolution
     /// mid-capture (e.g. a 16:9 menu → a 4:3 stretched match). The recorder follows
     /// the game's native size, but a clip's dimensions are fixed for its lifetime
@@ -483,6 +488,16 @@ impl RunningCapture {
         self.audio_control.reconfigure(cfg);
     }
 
+    /// Toggle the in-frame freeze overlay ("tabbed out" card) on the live capture
+    /// without a restart — it's a per-frame flag. Clamped by overlay capability,
+    /// so turning it on does nothing when the capture format can't be annotated.
+    pub fn set_freeze_overlay(&self, on: bool) {
+        let capable = self.shared.overlay_capable.load(Ordering::Acquire);
+        self.shared
+            .overlay_active
+            .store(on && capable, Ordering::Release);
+    }
+
     /// Whether a Valorant match is actively being recorded into this capture.
     /// A restart while true would orphan the in-progress session's buffer, so
     /// the settings path defers config-change restarts until the match ends.
@@ -832,9 +847,14 @@ fn run_hook_pipeline(
     // typed format the converter reads). When the game renders in one D2D can't
     // target, we skip the overlay (and the source loop's keep-alive emit) rather
     // than ship un-annotated duplicate frames.
+    // The overlay is *capable* whenever the format is D2D-targetable; whether it's
+    // actually drawn is the live `overlay_active` toggle (the `freeze_overlay`
+    // setting), applied without a restart. We build the overlay resources up front
+    // when capable — even if the feature starts off — so it can be toggled on
+    // mid-capture.
     let overlay_format = typed_capture_format(first_desc.Format);
-    let overlay_wanted = enc_cfg.freeze_overlay && overlay_card::format_supported(overlay_format);
-    if enc_cfg.freeze_overlay && !overlay_wanted {
+    let overlay_capable = overlay_card::format_supported(overlay_format);
+    if enc_cfg.freeze_overlay && !overlay_capable {
         tracing::info!(
             format = overlay_format.0,
             "freeze overlay off: capture format is not Direct2D-targetable"
@@ -869,7 +889,7 @@ fn run_hook_pipeline(
             .spawn(move || {
                 encode_thread(
                     capture_device, capture_context, encode_device, encode_context, vendor, width,
-                    height, target_fps, enc_cfg, overlay_wanted, filled_rx, free_pool, shared, clip,
+                    height, target_fps, enc_cfg, overlay_capable, filled_rx, free_pool, shared, clip,
                     enc_ready_tx,
                 )
             })
@@ -1481,7 +1501,7 @@ fn encode_thread(
     height: u32,
     fps: u32,
     enc_cfg: EncodeSettings,
-    overlay_wanted: bool,
+    overlay_capable: bool,
     filled_rx: Receiver<(ID3D11Texture2D, i64)>,
     free_pool: Arc<Mutex<Vec<ID3D11Texture2D>>>,
     shared: Arc<Shared>,
@@ -1554,14 +1574,19 @@ fn encode_thread(
         }
     }
     // In-frame freeze overlay (the "tabbed out" card). Built on the capture device
-    // — it draws onto the BGRA staging textures, which the convert reads. Created
-    // before readiness so `overlay_active` is settled before the source loop spawns
-    // (it gates its keep-alive emit on this). A failure here is non-fatal: we just
-    // don't annotate frozen frames.
-    let overlay = if overlay_wanted {
+    // — it draws onto the BGRA staging textures, which the convert reads. Built
+    // whenever the capture is overlay-capable (not just when the feature is on),
+    // so it can be toggled live; drawing is gated per-frame on `overlay_active`.
+    // Built before readiness so `overlay_capable`/`overlay_active` are settled
+    // before the source loop spawns (it gates its keep-alive emit on the latter).
+    // A failure here is non-fatal: we just don't annotate frozen frames.
+    let overlay = if overlay_capable {
         match overlay_card::FreezeOverlay::new(&capture_device) {
             Ok(o) => {
-                shared.overlay_active.store(true, Ordering::Release);
+                shared.overlay_capable.store(true, Ordering::Release);
+                shared
+                    .overlay_active
+                    .store(enc_cfg.freeze_overlay, Ordering::Release);
                 Some(o)
             }
             Err(e) => {
@@ -1623,7 +1648,9 @@ fn encode_thread(
         // source loop re-sends the last frame). Gap-fill then repeats the carded
         // NV12, so the whole frozen stretch stays annotated.
         if let Some(o) = &overlay {
-            if shared.frozen.load(Ordering::Relaxed) {
+            if shared.frozen.load(Ordering::Relaxed)
+                && shared.overlay_active.load(Ordering::Relaxed)
+            {
                 if let Err(e) = o.draw(&staging) {
                     if !warned_overlay {
                         tracing::warn!("freeze overlay draw failed (first occurrence): {e}");

@@ -77,6 +77,10 @@ struct ActiveMatch {
     started_ticks: i64,
     /// Session temp MP4 path (deleted after clips are cut).
     session_path: PathBuf,
+    /// Live queue id this match is in (e.g. `competitive`), so the per-game-mode
+    /// auto-clip gate can discard the recording if the user turns that queue off
+    /// mid-match — presence isn't needed to re-check it.
+    queue_id: String,
     /// Capture fps (session video time base).
     fps: u32,
     /// Remote bootstrap (tokens + match id), resolved by match end.
@@ -163,6 +167,22 @@ async fn run(app: AppHandle) {
             }
             want_match_record = false;
             want_match_since = None;
+        }
+
+        // Per-game-mode mid-match gate: if the user turned auto-clip off for the
+        // queue this match is in *while in it*, discard the in-progress recording
+        // now — the same way the global toggle above does. Uses the queue id we
+        // stored at match start, so it needs no presence read.
+        if let Some(am) = active.as_ref() {
+            if !current_auto_clip_modes(&app).enabled(&am.queue_id) {
+                tracing::info!(
+                    "auto-clip: game mode '{}' disabled mid-match — discarding recording",
+                    am.queue_id
+                );
+                active.take().unwrap().discard();
+                want_match_record = false;
+                want_match_since = None;
+            }
         }
 
         // A restart-class settings change (video encode or audio track layout)
@@ -282,7 +302,11 @@ async fn run(app: AppHandle) {
         // retrying here until the encoder produces frames (or the match ends and
         // `MatchEnded` clears the latch). Re-checks the mode so switching to a
         // non-recording mode mid-match stops the attempts.
-        if want_match_record && active.is_none() && mode.records_match() {
+        if want_match_record
+            && active.is_none()
+            && mode.records_match()
+            && current_auto_clip_modes(&app).enabled(presence.queue_id())
+        {
             // Stop deferring for audio once the grace window elapses, so a capture
             // whose audio genuinely never comes up still records (video-only) the
             // match rather than dropping it entirely.
@@ -409,6 +433,7 @@ fn start_match(
         log_tail,
         started_ticks,
         session_path,
+        queue_id: presence.queue_id().to_string(),
         fps: meta.fps,
         bootstrap,
     })

@@ -936,6 +936,7 @@ pub fn update_settings(
     next.save(&path)?;
     let new_hotkey = next.save_hotkey.clone();
     let overlay_enabled = next.overlay_enabled;
+    let new_freeze_overlay = next.freeze_overlay;
     let new_audio = next.effective_audio();
     // Classify the capture-affecting change the way Medal does:
     //  - a layout-preserving audio change applies LIVE (no restart): a volume/
@@ -943,7 +944,7 @@ pub fn update_settings(
     //    mono flip that keeps the same track layout (`UpdateAudioCaptureAndProcessor`);
     //  - a video-encode change or an audio *layout* change (mic on/off, source
     //    add/remove, separate-tracks, mode switch) needs a capture RESTART.
-    let (old_hotkey, restart_needed, audio_live) = {
+    let (old_hotkey, restart_needed, audio_live, freeze_changed) = {
         let mut guard = settings.0.lock().map_err(|_| "settings poisoned")?;
         let prev_hotkey = guard.save_hotkey.clone();
         let old_audio = guard.effective_audio();
@@ -952,8 +953,10 @@ pub fn update_settings(
         // Layout-preserving change → hot-apply; layout change → restart.
         let audio_live = audio_changed && old_audio.layout_eq(&new_audio);
         let restart_needed = video_changed || (audio_changed && !old_audio.layout_eq(&new_audio));
+        // The freeze overlay is a per-frame flag — applied live, never a restart.
+        let freeze_changed = guard.freeze_overlay != new_freeze_overlay;
         *guard = next;
-        (prev_hotkey, restart_needed, audio_live)
+        (prev_hotkey, restart_needed, audio_live, freeze_changed)
     };
     if old_hotkey != new_hotkey {
         crate::set_clip_hotkey(&app, &new_hotkey);
@@ -976,6 +979,12 @@ pub fn update_settings(
         restart_capture_for_config_change(&app);
     } else if audio_live {
         apply_audio_config_live(&app, &new_audio);
+    }
+    // The in-frame freeze overlay ("tabbed out" card) is a per-frame flag, so a
+    // change applies to the running capture immediately — no restart, even
+    // mid-match.
+    if freeze_changed {
+        apply_freeze_overlay_live(&app, new_freeze_overlay);
     }
     // Keep a live overlay in sync: re-push the corner placement, and clear the
     // overlay immediately if the master switch was just turned off.
@@ -1001,6 +1010,21 @@ fn apply_audio_config_live(app: &AppHandle, audio: &AudioConfig) {
     if let Some(running) = guard.as_ref() {
         running.reconfigure_audio(audio.clone());
         tracing::info!("settings: applied live audio reconfigure (no capture restart)");
+    }
+}
+
+/// Toggle the in-frame freeze overlay on the running capture live (no restart —
+/// it's a per-frame flag). No-op when nothing is capturing (the change is already
+/// persisted and applied when capture next starts).
+fn apply_freeze_overlay_live(app: &AppHandle, on: bool) {
+    let state = app.state::<CaptureState>();
+    let guard = match state.0.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    if let Some(running) = guard.as_ref() {
+        running.set_freeze_overlay(on);
+        tracing::info!("settings: applied freeze-overlay toggle live ({on})");
     }
 }
 
