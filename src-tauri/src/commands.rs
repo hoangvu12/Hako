@@ -251,6 +251,7 @@ pub fn start_capture_with(
                 codec: encode::VideoCodec::from_setting(&s.codec),
                 bitrate_mbps: s.bitrate_mbps,
                 target_res: s.resolution_dims(),
+                freeze_overlay: s.freeze_overlay,
             },
             s.gpu_adapter_index(),
         )

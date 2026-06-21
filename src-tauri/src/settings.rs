@@ -33,6 +33,10 @@ pub struct Settings {
     pub codec: String,
     /// Target bitrate ceiling in Mbps (generous default).
     pub bitrate_mbps: u32,
+    /// Stamp the "tabbed out" freeze card onto frozen frames (game minimized /
+    /// alt-tabbed / stale swapchain) so a clip viewer sees an intentional notice
+    /// instead of a silently-held frame. On by default.
+    pub freeze_overlay: bool,
     /// Capture desktop (loopback) audio into clips ("Audio Source": All PC
     /// audio vs Off).
     pub capture_audio: bool,
@@ -160,6 +164,7 @@ impl Default for Settings {
             pad_after_secs: 4,
             codec: "h264".into(),
             bitrate_mbps: 20,
+            freeze_overlay: true,
             capture_audio: true,
             mic_source: "auto".into(),
             audio: None,

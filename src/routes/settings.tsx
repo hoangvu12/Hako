@@ -1065,6 +1065,18 @@ function SettingsPage() {
                   bufferSeconds={draft.buffer_seconds}
                 />
               )}
+
+              <Panel title="Tabbed out">
+                <Row
+                  label='Show "tabbed out" card'
+                  hint="When you alt-tab and the game stops drawing, stamp a card over the frozen frame so anyone watching the clip knows you stepped away — instead of a silently held frame."
+                >
+                  <Switch
+                    checked={draft.freeze_overlay}
+                    onCheckedChange={(v) => set("freeze_overlay", v)}
+                  />
+                </Row>
+              </Panel>
             </>
           )}
 

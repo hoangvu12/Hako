@@ -47,6 +47,7 @@ use crate::core::disk_buffer::DiskPacketRing;
 use crate::core::clock::{MasterClock, TICKS_PER_SECOND};
 use crate::core::convert::Converter;
 use crate::core::device;
+use crate::core::overlay_card;
 use crate::core::encode::{EncodeSettings, EncodedPacket, Encoder};
 use crate::core::hook::{HookCapture, RunningHook};
 use crate::core::mux::{self, AudioClip, ClipMeta};
@@ -113,6 +114,12 @@ struct Shared {
     /// SystemRelativeTime (100 ns) of the last frame whose content actually
     /// changed. Reserved for the Part B static watchdog; set on each live tick.
     last_fresh_time: AtomicI64,
+    /// True once the encode thread has the in-frame freeze overlay ("tabbed out"
+    /// card) live. Set before the source loop starts, so the source loop only does
+    /// its freeze-base snapshot + minimized keep-alive emit when the card will
+    /// actually be drawn (the feature is on AND the format is D2D-compatible AND
+    /// D2D init succeeded). See [`crate::core::overlay_card`].
+    overlay_active: AtomicBool,
     /// Set by the source loop when the game changed its backbuffer resolution
     /// mid-capture (e.g. a 16:9 menu → a 4:3 stretched match). The recorder follows
     /// the game's native size, but a clip's dimensions are fixed for its lifetime
@@ -803,6 +810,19 @@ fn run_hook_pipeline(
          formats may be rejected by the BGRA→NV12 VideoProcessor)"
     );
 
+    // The in-frame freeze overlay needs a D2D-targetable staging format (the same
+    // typed format the converter reads). When the game renders in one D2D can't
+    // target, we skip the overlay (and the source loop's keep-alive emit) rather
+    // than ship un-annotated duplicate frames.
+    let overlay_format = typed_capture_format(first_desc.Format);
+    let overlay_wanted = enc_cfg.freeze_overlay && overlay_card::format_supported(overlay_format);
+    if enc_cfg.freeze_overlay && !overlay_wanted {
+        tracing::info!(
+            format = overlay_format.0,
+            "freeze overlay off: capture format is not Direct2D-targetable"
+        );
+    }
+
     // Staging pool in the backbuffer's own format (the GPU→GPU copy needs source
     // and destination formats to match; the VideoProcessor input view then reads
     // whatever RGB format it is — BGRA or RGBA).
@@ -831,7 +851,8 @@ fn run_hook_pipeline(
             .spawn(move || {
                 encode_thread(
                     capture_device, capture_context, encode_device, encode_context, vendor, width,
-                    height, target_fps, enc_cfg, filled_rx, free_pool, shared, clip, enc_ready_tx,
+                    height, target_fps, enc_cfg, overlay_wanted, filled_rx, free_pool, shared, clip,
+                    enc_ready_tx,
                 )
             })
             .map_err(|e| format!("spawn encode thread: {e}"))?
@@ -950,6 +971,25 @@ fn hook_source_loop(
     let mut resize_pending: Option<(u32, u32)> = None;
     let mut resize_frames: u32 = 0;
 
+    // ── Freeze-overlay keep-alive ────────────────────────────────────────────
+    // While minimized the game stops presenting, so the source loop normally just
+    // skips — leaving the encoder to hold the last live frame. When the freeze
+    // overlay is active we instead keep a recent snapshot of the live frame and,
+    // during a minimize, re-emit it at a low rate so the encode thread can stamp
+    // the "tabbed out" card on it (it sees `frozen`). The emitted frame carries a
+    // wall-clock-synthesized timestamp so PTS keeps advancing in step with QPC and
+    // the real timeline resumes seamlessly when the game returns. Both the snapshot
+    // and the emit are gated on `overlay_active`, so this is a no-op otherwise.
+    const BASE_SNAPSHOT: Duration = Duration::from_millis(250);
+    const MINIMIZE_EMIT: Duration = Duration::from_millis(250);
+    let mut freeze_base: Option<ID3D11Texture2D> = None;
+    let mut last_base_snap = Instant::now() - BASE_SNAPSHOT;
+    let mut last_minimize_emit = Instant::now() - MINIMIZE_EMIT;
+    // Timestamp (100-ns ticks) of the last live frame, and when we observed it —
+    // the anchor for synthesizing minimized keep-alive timestamps.
+    let mut last_ts: i64 = 0;
+    let mut last_ts_at = Instant::now();
+
     while !stop.load(Ordering::Acquire) {
         // Pace to the target frame interval.
         let now = Instant::now();
@@ -974,6 +1014,47 @@ fn hook_source_loop(
                     "capture: game minimized/not presenting — frames frozen until it returns"
                 );
                 warned_frozen = true;
+            }
+            // Keep the timeline alive with the "tabbed out" card: re-emit the last
+            // live frame at a low rate (the encode thread draws the card because
+            // `frozen` is set; the encoder's gap-fill smooths the rest to CFR).
+            if shared.overlay_active.load(Ordering::Relaxed)
+                && last_minimize_emit.elapsed() >= MINIMIZE_EMIT
+            {
+                if let Some(base) = &freeze_base {
+                    if let Some(staging) = free_pool.lock().ok().and_then(|mut p| p.pop()) {
+                        let copied = (|| -> WinResult<()> {
+                            let dst: ID3D11Resource = staging.cast()?;
+                            let src: ID3D11Resource = base.cast()?;
+                            unsafe {
+                                context.CopySubresourceRegion(&dst, 0, 0, 0, 0, &src, 0, None);
+                            }
+                            Ok(())
+                        })();
+                        if copied.is_ok() {
+                            // Wall-clock-aligned synthetic tick (QPC advances during
+                            // the minimize, so this stays in step and the real ts
+                            // resumes monotonically on restore).
+                            let synth = last_ts
+                                + (last_ts_at.elapsed().as_secs_f64() * TICKS_PER_SECOND as f64)
+                                    as i64;
+                            last_minimize_emit = Instant::now();
+                            match filled_tx.try_send((staging, synth)) {
+                                Ok(()) => {
+                                    shared.handed.fetch_add(1, Ordering::Relaxed);
+                                }
+                                Err(TrySendError::Full((tex, _)))
+                                | Err(TrySendError::Disconnected((tex, _))) => {
+                                    if let Ok(mut p) = free_pool.lock() {
+                                        p.push(tex);
+                                    }
+                                }
+                            }
+                        } else if let Ok(mut p) = free_pool.lock() {
+                            p.push(staging);
+                        }
+                    }
+                }
             }
             continue;
         }
@@ -1164,6 +1245,39 @@ fn hook_source_loop(
             }
         }
 
+        // Anchor for synthesizing minimized keep-alive timestamps, and a throttled
+        // snapshot of the live frame for the freeze overlay to re-emit. The snapshot
+        // is a cheap GPU→GPU copy a few times a second; no-op when the overlay is
+        // inactive. `staging` is still owned here (handed off just below).
+        last_ts = ts;
+        last_ts_at = Instant::now();
+        if shared.overlay_active.load(Ordering::Relaxed) && last_base_snap.elapsed() >= BASE_SNAPSHOT
+        {
+            if freeze_base.is_none() {
+                // Same desc as the staging pool (BGRA, RENDER_TARGET), so it's a
+                // valid copy source/target and matches what the overlay draws on.
+                let mut bd = D3D11_TEXTURE2D_DESC::default();
+                unsafe { staging.GetDesc(&mut bd) };
+                let mut tex: Option<ID3D11Texture2D> = None;
+                if unsafe { device.CreateTexture2D(&bd, None, Some(&mut tex)) }.is_ok() {
+                    freeze_base = tex;
+                }
+            }
+            if let Some(base) = &freeze_base {
+                let snap = (|| -> WinResult<()> {
+                    let dst: ID3D11Resource = base.cast()?;
+                    let src: ID3D11Resource = staging.cast()?;
+                    unsafe {
+                        context.CopySubresourceRegion(&dst, 0, 0, 0, 0, &src, 0, None);
+                    }
+                    Ok(())
+                })();
+                if snap.is_ok() {
+                    last_base_snap = Instant::now();
+                }
+            }
+        }
+
         shared.last_handed_time.store(ts, Ordering::Relaxed);
         match filled_tx.try_send((staging, ts)) {
             Ok(()) => {
@@ -1349,6 +1463,7 @@ fn encode_thread(
     height: u32,
     fps: u32,
     enc_cfg: EncodeSettings,
+    overlay_wanted: bool,
     filled_rx: Receiver<(ID3D11Texture2D, i64)>,
     free_pool: Arc<Mutex<Vec<ID3D11Texture2D>>>,
     shared: Arc<Shared>,
@@ -1420,6 +1535,27 @@ fn encode_thread(
             }
         }
     }
+    // In-frame freeze overlay (the "tabbed out" card). Built on the capture device
+    // — it draws onto the BGRA staging textures, which the convert reads. Created
+    // before readiness so `overlay_active` is settled before the source loop spawns
+    // (it gates its keep-alive emit on this). A failure here is non-fatal: we just
+    // don't annotate frozen frames.
+    let overlay = if overlay_wanted {
+        match overlay_card::FreezeOverlay::new(&capture_device) {
+            Ok(o) => {
+                shared.overlay_active.store(true, Ordering::Release);
+                Some(o)
+            }
+            Err(e) => {
+                tracing::warn!("freeze overlay init failed; frozen frames won't be annotated: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mut warned_overlay = false;
+
     let _ = ready_tx.send(Ok(()));
 
     // Account for stats and store the compressed packets in the RAM ring. The
@@ -1461,6 +1597,23 @@ fn encode_thread(
     while let Ok((staging, ts)) = filled_rx.recv() {
         let nv12 = nv12_ring[idx % nv12_ring.len()].clone();
         idx += 1;
+
+        // Frozen frame → stamp the "tabbed out" card onto the staging texture
+        // before it's converted/encoded. Drawn here (not in the source loop) so a
+        // single path covers both freeze cases: the static-watchdog freeze (live
+        // staging frames keep flowing) and the minimized keep-alive emit (the
+        // source loop re-sends the last frame). Gap-fill then repeats the carded
+        // NV12, so the whole frozen stretch stays annotated.
+        if let Some(o) = &overlay {
+            if shared.frozen.load(Ordering::Relaxed) {
+                if let Err(e) = o.draw(&staging) {
+                    if !warned_overlay {
+                        tracing::warn!("freeze overlay draw failed (first occurrence): {e}");
+                        warned_overlay = true;
+                    }
+                }
+            }
+        }
 
         let conv = converter.convert(&staging, &nv12);
         // The blt reads `staging` on the same ordered context, so it can be

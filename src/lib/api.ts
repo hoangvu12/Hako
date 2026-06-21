@@ -566,6 +566,12 @@ export interface Settings {
   pad_after_secs: number;
   codec: string;
   bitrate_mbps: number;
+  /**
+   * Stamp the "tabbed out" freeze card onto frozen frames (game minimized /
+   * alt-tabbed / stale swapchain) so a clip viewer sees an intentional notice
+   * instead of a silently-held frame. On by default.
+   */
+  freeze_overlay: boolean;
   capture_audio: boolean;
   /** Microphone to mix in: "off", "auto" (system default), or a device id. */
   mic_source: string;

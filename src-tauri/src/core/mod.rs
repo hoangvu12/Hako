@@ -91,6 +91,7 @@ pub mod capture; // capture pipeline: hook source loop → channel → encode th
 pub mod hook; // OBS-style graphics-hook (Game Capture) — the capture backend
 pub mod wgc; // Windows.Graphics.Capture source — robustness fallback (Part D)
 pub mod convert; // ID3D11VideoProcessor BGRA → NV12/P010
+pub mod overlay_card; // in-frame "tabbed out" freeze card (Direct2D composite)
 pub mod encode; // FFmpeg hw device/frames ctx, encoder, packet out
 pub mod audio; // WASAPI loopback + mic, resample, AAC
 pub mod denoise; // offline mic noise suppression (DeepFilterNet 3), editor export only

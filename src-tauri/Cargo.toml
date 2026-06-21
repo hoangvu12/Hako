@@ -155,6 +155,10 @@ features = [
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",
+    # Direct2D: composite the in-frame "tabbed out" freeze card onto the captured
+    # BGRA staging texture before NV12 convert/encode (core::overlay_card).
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
     "Win32_System_WinRT",
     "Win32_System_WinRT_Direct3D11",
     "Win32_System_WinRT_Graphics_Capture",

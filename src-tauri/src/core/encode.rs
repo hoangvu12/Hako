@@ -306,6 +306,11 @@ pub struct EncodeSettings {
     /// scaling). The encode thread fits the captured frame into this box by
     /// height and never upscales (see [`crate::settings::Settings::resolution_dims`]).
     pub target_res: Option<(u32, u32)>,
+    /// Composite the "tabbed out" freeze card onto frozen frames before encoding
+    /// (minimized / alt-tabbed / stale swapchain), so a clip viewer sees an
+    /// intentional notice instead of a silently-held frame. See
+    /// [`crate::core::overlay_card`].
+    pub freeze_overlay: bool,
 }
 
 impl VideoCodec {
