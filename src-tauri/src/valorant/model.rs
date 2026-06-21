@@ -280,6 +280,7 @@ pub fn game_mode_name(asset: &str) -> &'static str {
         "/Game/GameModes/Bomb/BombGameMode.BombGameMode_C" => "Standard",
         "/Game/GameModes/Deathmatch/DeathmatchGameMode.DeathmatchGameMode_C" => "Deathmatch",
         "/Game/GameModes/GunGame/GunGameTeamsGameMode.GunGameTeamsGameMode_C" => "Escalation",
+        "/Game/GameModes/HURM/HURM_GameMode.HURM_GameMode_C" => "Team Deathmatch",
         "/Game/GameModes/NewPlayerExperience/NPEGameMode.NPEGameMode_C" => "Onboarding",
         "/Game/GameModes/OneForAll/OneForAll_GameMode.OneForAll_GameMode_C" => "Replication",
         "/Game/GameModes/QuickBomb/QuickBombGameMode.QuickBombGameMode_C" => "Spike Rush",
@@ -311,6 +312,79 @@ pub fn queue_id_name(queue_id: &str) -> &'static str {
         "newmap" => "New Map",
         "premier" => "Premier",
         _ => "",
+    }
+}
+
+/// Per-game-mode auto-clip toggles, keyed on the **live** presence `queueId`
+/// (the same vocabulary as [`queue_id_name`]). When a match starts in a queue
+/// whose flag is off, the orchestrator skips recording it (Highlights / Full
+/// match only — Session mode records continuously, independent of match mode).
+///
+/// `other` is the catch-all for any queue id not named below, so seasonal /
+/// rotating modes (Knockout, All Random One Site, …) and custom games stay
+/// controllable without a code change. Defaults to **all on**, preserving the
+/// historical "record every match" behavior; `#[serde(default)]` so older
+/// config files load forward-compatibly (missing → default).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GameModeToggles {
+    pub competitive: bool,
+    pub unrated: bool,
+    pub swiftplay: bool,
+    pub spikerush: bool,
+    pub deathmatch: bool,
+    /// `ggteam` — Escalation.
+    pub ggteam: bool,
+    /// `onefa` — Replication.
+    pub onefa: bool,
+    /// `hurm` — Team Deathmatch.
+    pub hurm: bool,
+    /// `snowball` — Snowball Fight.
+    pub snowball: bool,
+    /// `newmap` — the rotating "New Map" featured queue.
+    pub newmap: bool,
+    pub premier: bool,
+    /// Catch-all for any queue id not listed above (rotating / seasonal / custom).
+    pub other: bool,
+}
+
+impl Default for GameModeToggles {
+    fn default() -> Self {
+        GameModeToggles {
+            competitive: true,
+            unrated: true,
+            swiftplay: true,
+            spikerush: true,
+            deathmatch: true,
+            ggteam: true,
+            onefa: true,
+            hurm: true,
+            snowball: true,
+            newmap: true,
+            premier: true,
+            other: true,
+        }
+    }
+}
+
+impl GameModeToggles {
+    /// Whether auto-clip recording is enabled for a live `queue_id`. Matched
+    /// case-insensitively; any unrecognized id falls through to `other`.
+    pub fn enabled(&self, queue_id: &str) -> bool {
+        match queue_id.trim().to_ascii_lowercase().as_str() {
+            "competitive" => self.competitive,
+            "unrated" => self.unrated,
+            "swiftplay" => self.swiftplay,
+            "spikerush" => self.spikerush,
+            "deathmatch" => self.deathmatch,
+            "ggteam" => self.ggteam,
+            "onefa" => self.onefa,
+            "hurm" => self.hurm,
+            "snowball" => self.snowball,
+            "newmap" => self.newmap,
+            "premier" => self.premier,
+            _ => self.other,
+        }
     }
 }
 
@@ -666,6 +740,37 @@ mod tests {
         // Unknown / custom ids map to empty (caller falls back to the raw id).
         assert_eq!(queue_id_name("custom"), "");
         assert_eq!(queue_id_name(""), "");
+    }
+
+    #[test]
+    fn game_mode_name_maps_team_deathmatch() {
+        assert_eq!(
+            game_mode_name("/Game/GameModes/HURM/HURM_GameMode.HURM_GameMode_C"),
+            "Team Deathmatch"
+        );
+        assert_eq!(game_mode_name("/Game/GameModes/Unknown/X_C"), "");
+    }
+
+    #[test]
+    fn game_mode_toggles_default_all_on() {
+        let t = GameModeToggles::default();
+        assert!(t.enabled("competitive"));
+        assert!(t.enabled("hurm"));
+        // Unrecognized ids fall through to the `other` catch-all (on by default).
+        assert!(t.enabled("knockout"));
+    }
+
+    #[test]
+    fn game_mode_toggles_gate_by_queue() {
+        let mut t = GameModeToggles::default();
+        t.competitive = false;
+        t.other = false;
+        assert!(!t.enabled("competitive"));
+        // Case-insensitive match.
+        assert!(!t.enabled("COMPETITIVE"));
+        assert!(t.enabled("unrated"));
+        // Unknown id now follows the (disabled) catch-all.
+        assert!(!t.enabled("knockout"));
     }
 
     #[test]

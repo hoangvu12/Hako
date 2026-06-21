@@ -334,7 +334,16 @@ export const ClipsToolbar = React.memo(function ClipsToolbar({
       art: meta?.splash ? { image: meta.splash, fit: "cover" } : undefined,
     };
   });
-  const modeOptions: Option[] = facets.modes.map((m) => ({ value: m, label: m }));
+  const modeOptions: Option[] = facets.modes.map((m) => {
+    const meta = assets.modeFor(m);
+    return {
+      value: m,
+      label: m,
+      icon: meta?.icon,
+      // Full-bleed tall list art behind the row, mirroring the Map filter's splash.
+      art: meta?.tall ? { image: meta.tall, fit: "cover" } : undefined,
+    };
+  });
   const eventOptions: Option[] = facets.events.map((e) => ({ value: e, label: e }));
 
   const resultOpts: { value: ResultFilter; label: string }[] = [

@@ -13,7 +13,7 @@
 
 use serde::Serialize;
 
-use crate::valorant::model::{game_mode_name, MatchDetails};
+use crate::valorant::model::{game_mode_name, queue_id_name, MatchDetails};
 
 /// Everything we show after a match ends. Serialized to the webview as the
 /// `match-summary` event payload.
@@ -82,12 +82,24 @@ impl MatchSummary {
 /// display name and final title are filled in by the caller after the async
 /// agent lookup (here `agent` is empty and `title` uses "Unknown").
 pub fn build_summary(details: &MatchDetails, puuid: &str) -> MatchSummary {
+    // Prefer the live-queue display name so the bomb-based queues read as their
+    // actual mode (Competitive / Unrated / Swiftplay / Premier) instead of the
+    // generic "Standard" gameMode, and so auto-clips match the live/manual clip
+    // labels (the orchestrator tags those via `queue_id_name` too). Fall back to
+    // the post-match gameMode asset name — which covers custom games, where the
+    // queue id is absent — then to the raw queue id as a last resort.
     let mode = {
-        let name = game_mode_name(&details.match_info.game_mode);
-        if name.is_empty() {
-            details.match_info.queue_id.clone()
+        let queue = &details.match_info.queue_id;
+        let queue_name = queue_id_name(queue);
+        if !queue_name.is_empty() {
+            queue_name.to_string()
         } else {
-            name.to_string()
+            let asset_name = game_mode_name(&details.match_info.game_mode);
+            if asset_name.is_empty() {
+                queue.clone()
+            } else {
+                asset_name.to_string()
+            }
         }
     };
 
@@ -240,11 +252,50 @@ mod tests {
     }
 
     #[test]
-    fn mode_falls_back_to_queue_id_when_unmapped() {
+    fn bomb_queues_label_by_queue_not_generic_standard() {
+        // Competitive/Unrated/etc. all carry the Bomb gameMode ("Standard"); the
+        // queue id is what tells them apart, so we prefer it — auto-clips then read
+        // "Competitive" instead of the generic "Standard" (and match manual clips).
+        let mut d = details(); // gameMode is Bomb
+        d.match_info.queue_id = "competitive".into();
+        assert_eq!(build_summary(&d, "me").mode, "Competitive");
+
+        d.match_info.queue_id = "unrated".into();
+        assert_eq!(build_summary(&d, "me").mode, "Unrated");
+
+        // No queue id (custom game) → fall back to the gameMode asset name.
+        d.match_info.queue_id = "".into();
+        assert_eq!(build_summary(&d, "me").mode, "Standard");
+    }
+
+    #[test]
+    fn mode_falls_back_to_queue_name_when_asset_unmapped() {
         let mut d = details();
         d.match_info.game_mode = "/Game/GameModes/Unknown/Whatever_C".into();
         d.match_info.queue_id = "competitive".into();
         let s = build_summary(&d, "me");
-        assert_eq!(s.mode, "competitive");
+        // Prettified via the queue table, not the raw lowercase id.
+        assert_eq!(s.mode, "Competitive");
+    }
+
+    #[test]
+    fn team_deathmatch_resolves_via_queue_when_asset_unmapped() {
+        // A TDM match whose gameMode asset isn't in the table still labels as
+        // "Team Deathmatch" through the queue-id fallback (regression: it used to
+        // leak the raw "hurm" id).
+        let mut d = details();
+        d.match_info.game_mode = "/Game/GameModes/Some/Future_C".into();
+        d.match_info.queue_id = "hurm".into();
+        let s = build_summary(&d, "me");
+        assert_eq!(s.mode, "Team Deathmatch");
+    }
+
+    #[test]
+    fn mode_falls_back_to_raw_id_when_fully_unknown() {
+        let mut d = details();
+        d.match_info.game_mode = "/Game/GameModes/Unknown/Whatever_C".into();
+        d.match_info.queue_id = "somecustomqueue".into();
+        let s = build_summary(&d, "me");
+        assert_eq!(s.mode, "somecustomqueue");
     }
 }

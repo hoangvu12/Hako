@@ -306,6 +306,8 @@ impl Library {
             "ALTER TABLE clips ADD COLUMN evicted INTEGER NOT NULL DEFAULT 0",
             [],
         );
+        // One-time data migration (best-effort; never blocks open).
+        let _ = relabel_legacy_standard(&conn);
         Ok(Library { conn })
     }
 
@@ -831,9 +833,63 @@ fn now_unix_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// One-time relabel of the legacy "Standard" mode bucket → "Unrated".
+///
+/// Clips captured before auto-clips were labeled by live queue id stored every
+/// bomb-based queue (Competitive / Unrated / Swiftplay / Premier) under the
+/// generic "Standard" gameMode name. No queue id was persisted, so the buckets
+/// can't be split — they're collapsed to "Unrated" (the common case).
+///
+/// Guarded by SQLite's `user_version` so it runs **exactly once** per database:
+/// future custom-game clips, which legitimately carry "Standard" (no queue id),
+/// are left untouched. Idempotent — a second call is a no-op.
+fn relabel_legacy_standard(conn: &Connection) -> Result<(), String> {
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap_or(0);
+    if version >= 1 {
+        return Ok(());
+    }
+    conn.execute(
+        "UPDATE clips SET mode = 'Unrated' WHERE mode = 'Standard'",
+        [],
+    )
+    .map_err(|e| format!("relabel legacy standard: {e}"))?;
+    conn.execute_batch("PRAGMA user_version = 1;")
+        .map_err(|e| format!("bump user_version: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relabels_legacy_standard_once() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE clips (id INTEGER PRIMARY KEY, mode TEXT);
+             INSERT INTO clips (mode) VALUES ('Standard'), ('Competitive'), ('Standard'), (NULL);",
+        )
+        .unwrap();
+
+        // First pass (user_version 0): the two legacy "Standard" rows → "Unrated".
+        relabel_legacy_standard(&conn).unwrap();
+        let count = |m: &str| -> i64 {
+            conn.query_row("SELECT COUNT(*) FROM clips WHERE mode = ?1", [m], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(count("Unrated"), 2);
+        assert_eq!(count("Standard"), 0);
+        assert_eq!(count("Competitive"), 1); // other modes untouched
+
+        // A later custom-game "Standard" clip is preserved — the guard makes the
+        // second pass a no-op (it has no queue id and is legitimately "Standard").
+        conn.execute("INSERT INTO clips (mode) VALUES ('Standard')", [])
+            .unwrap();
+        relabel_legacy_standard(&conn).unwrap();
+        assert_eq!(count("Standard"), 1);
+        assert_eq!(count("Unrated"), 2);
+    }
 
     fn sample(path: &str, title: &str, event: Option<&str>) -> NewClip {
         NewClip {

@@ -196,6 +196,16 @@ async fn run(app: AppHandle) {
                     if !mode.records_match() {
                         continue;
                     }
+                    // Per-game-mode gate: skip a match whose live queue the user
+                    // turned off (unknown/rotating ids fall to the `other`
+                    // catch-all). Read each tick so it tracks settings changes.
+                    let qid = presence.queue_id();
+                    if !current_auto_clip_modes(&app).enabled(qid) {
+                        tracing::info!(
+                            "auto-clip: skipping match — game mode '{qid}' disabled"
+                        );
+                        continue;
+                    }
                     if let Some(stale) = active.take() {
                         tracing::warn!("auto-clip: new match started over an unfinished one");
                         stale.discard();
@@ -432,6 +442,14 @@ fn current_auto_mode(app: &AppHandle) -> AutoCaptureMode {
     app.try_state::<SettingsState>()
         .and_then(|s| s.0.lock().ok().map(|g| g.auto_mode()))
         .unwrap_or(AutoCaptureMode::Highlights)
+}
+
+/// The user's per-game-mode auto-clip gate (defaults to all-on when settings
+/// state isn't available yet — never silently drop a match on a read miss).
+fn current_auto_clip_modes(app: &AppHandle) -> model::GameModeToggles {
+    app.try_state::<SettingsState>()
+        .and_then(|s| s.0.lock().ok().map(|g| g.auto_clip_modes.clone()))
+        .unwrap_or_default()
 }
 
 /// A continuously-rolling full-session recording (Session mode): one writer teed

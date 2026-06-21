@@ -425,6 +425,34 @@ export interface EventTimings {
 /** Outplayed-style capture mode (mirrors Rust `Settings.auto_capture_mode`). */
 export type AutoCaptureMode = "manual" | "highlights" | "full_match" | "session";
 
+/**
+ * Per-game-mode auto-clip gate, keyed on the live presence `queueId` (mirrors
+ * Rust `GameModeToggles`). A match whose queue is off isn't recorded in the
+ * per-match modes (Highlights / Full match); Session mode is continuous and
+ * unaffected. `other` is the catch-all for rotating / seasonal / custom queues
+ * not named here. Defaults to all-on.
+ */
+export interface GameModeToggles {
+  competitive: boolean;
+  unrated: boolean;
+  swiftplay: boolean;
+  spikerush: boolean;
+  deathmatch: boolean;
+  /** Escalation. */
+  ggteam: boolean;
+  /** Replication. */
+  onefa: boolean;
+  /** Team Deathmatch. */
+  hurm: boolean;
+  /** Snowball Fight. */
+  snowball: boolean;
+  /** The rotating "New Map" featured queue. */
+  newmap: boolean;
+  premier: boolean;
+  /** Catch-all for any queue id not listed above. */
+  other: boolean;
+}
+
 /** A selected render endpoint in `all_pc_audio` mode (Rust `AudioDeviceSel`). */
 export interface AudioDeviceSel {
   /** WASAPI render-endpoint id, or "auto" for the system default output. */
@@ -573,6 +601,12 @@ export interface Settings {
    * whole match as one clip), or "session" (record continuously while in-game).
    */
   auto_capture_mode: AutoCaptureMode;
+  /**
+   * Per-game-mode auto-clip gate, keyed on the live `queueId`. A match in a
+   * mode that's toggled off is skipped in Highlights / Full match (Session is
+   * continuous and unaffected). Defaults to all-on.
+   */
+  auto_clip_modes: GameModeToggles;
   storage_dir: string | null;
   /**
    * Which quality preset card is highlighted: "low" | "standard" | "high" |

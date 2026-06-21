@@ -25,6 +25,7 @@ import {
   CloudArrowUp,
   FolderOpen,
   CircleNotch,
+  GameController,
   type Icon,
 } from "@phosphor-icons/react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -76,8 +77,10 @@ import {
   type AudioConfig,
   type AutoCaptureMode,
   type EventToggles,
+  type GameModeToggles,
   type Settings,
 } from "@/lib/api";
+import { useValorantAssets } from "@/hooks/use-valorant-assets";
 
 type SectionKey =
   | "clip"
@@ -161,6 +164,30 @@ const CAPTURE_MODES: { key: AutoCaptureMode; label: string; blurb: string }[] = 
   { key: "highlights", label: "Highlights", blurb: "Auto-clip the game events below" },
   { key: "full_match", label: "Full match", blurb: "Keep the entire match as one clip" },
   { key: "session", label: "Full session", blurb: "Record the whole time you're in-game" },
+];
+
+// Per-game-mode auto-clip toggles. `key` is the live presence queueId (mirrors
+// Rust `GameModeToggles`); `art` is the valorant-api gameMode display name used
+// to fetch the mode's icon — the four bomb-based queues share "Standard" artwork.
+// `other` is the rotating/seasonal/custom catch-all and carries no artwork.
+const GAME_MODE_LABELS: {
+  key: keyof GameModeToggles;
+  label: string;
+  hint: string;
+  art?: string;
+}[] = [
+  { key: "competitive", label: "Competitive", hint: "Ranked", art: "Standard" },
+  { key: "unrated", label: "Unrated", hint: "Standard 5v5", art: "Standard" },
+  { key: "swiftplay", label: "Swiftplay", hint: "Shortened matches", art: "Swiftplay" },
+  { key: "premier", label: "Premier", hint: "Competitive teams", art: "Standard" },
+  { key: "spikerush", label: "Spike Rush", hint: "Fast best-of-7", art: "Spike Rush" },
+  { key: "deathmatch", label: "Deathmatch", hint: "Free-for-all", art: "Deathmatch" },
+  { key: "hurm", label: "Team Deathmatch", hint: "First to 100 kills", art: "Team Deathmatch" },
+  { key: "ggteam", label: "Escalation", hint: "Team gun game", art: "Escalation" },
+  { key: "onefa", label: "Replication", hint: "One-agent teams", art: "Replication" },
+  { key: "snowball", label: "Snowball Fight", hint: "Seasonal", art: "Snowball Fight" },
+  { key: "newmap", label: "New Map", hint: "Featured map queue", art: "Standard" },
+  { key: "other", label: "Other modes", hint: "Rotating, seasonal & custom games" },
 ];
 
 // Quality presets (Medal-style). A preset is just a named bundle of the
@@ -521,6 +548,9 @@ function SettingsPage() {
     retry: false,
   });
   const search = useSearch({ from: "/settings" });
+  // Valorant gamemode artwork for the per-mode toggle rows (icons load lazily;
+  // rows fall back to a label-only look until the asset query resolves).
+  const assets = useValorantAssets();
   const [draft, setDraft] = useState<Settings | null>(null);
   // Latest draft mirrored into a ref so the mutators can read it without closing
   // over `draft` — that keeps their identity stable across renders, which lets
@@ -633,6 +663,17 @@ function SettingsPage() {
   const toggleEvent = (key: keyof EventToggles) => {
     const d = draftRef.current;
     if (d) persist({ ...d, events: { ...d.events, [key]: !d.events[key] } });
+  };
+  const toggleGameMode = (key: keyof GameModeToggles) => {
+    const d = draftRef.current;
+    if (d)
+      persist({
+        ...d,
+        auto_clip_modes: {
+          ...d.auto_clip_modes,
+          [key]: !d.auto_clip_modes[key],
+        },
+      });
   };
   // Per-event timing edits. `setTimingLocal` updates the draft live while
   // dragging (no save per pixel); `commitTiming` persists the final value on
@@ -1062,6 +1103,53 @@ function SettingsPage() {
                   ))}
                 </div>
               </Panel>
+
+              {/* Per-game-mode gate. Applies to the per-match recording modes
+                  (Highlights / Full match); Manual and Full session ignore it. */}
+              {(draft.auto_capture_mode === "highlights" ||
+                draft.auto_capture_mode === "full_match") && (
+                <Panel title="Game modes">
+                  <p className="-mt-1 pb-3 text-xs text-muted-foreground">
+                    Only auto-capture matches in the modes you turn on. Manual
+                    saves and Full session recording aren't affected.
+                  </p>
+                  {GAME_MODE_LABELS.map((gm) => {
+                    const icon = gm.art
+                      ? assets.modeFor(gm.art)?.icon
+                      : undefined;
+                    return (
+                      <div
+                        key={gm.key}
+                        className="flex items-center justify-between gap-6 py-4 last:pb-0"
+                      >
+                        <div className="flex min-w-0 items-center gap-3">
+                          {icon ? (
+                            <img
+                              src={icon}
+                              alt=""
+                              className="size-7 shrink-0 rounded object-contain"
+                            />
+                          ) : (
+                            <span className="flex size-7 shrink-0 items-center justify-center rounded bg-secondary/60 text-muted-foreground">
+                              <GameController className="size-4" />
+                            </span>
+                          )}
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium">{gm.label}</div>
+                            <p className="mt-0.5 text-xs text-muted-foreground">
+                              {gm.hint}
+                            </p>
+                          </div>
+                        </div>
+                        <Switch
+                          checked={draft.auto_clip_modes[gm.key]}
+                          onCheckedChange={() => toggleGameMode(gm.key)}
+                        />
+                      </div>
+                    );
+                  })}
+                </Panel>
+              )}
 
               {/* Events + timing only matter when auto-clipping highlights. */}
               {draft.auto_capture_mode === "highlights" && (

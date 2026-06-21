@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::valorant::model::GameModeToggles;
 use crate::valorant::reconcile::{EventTimings, EventToggles};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +76,11 @@ pub struct Settings {
     /// - `full_match` — keep the whole match as a single clip (no cutting),
     /// - `session` — record continuously while the game is open as one clip.
     pub auto_capture_mode: String,
+    /// Per-game-mode auto-clip gate, keyed on the live presence `queueId`. A
+    /// match whose queue is toggled off is not recorded in the per-match modes
+    /// (Highlights / Full match); Session mode is continuous and unaffected.
+    /// Defaults to all-on (record every mode), matching the historical behavior.
+    pub auto_clip_modes: GameModeToggles,
     /// Where clips are written (null → `<Videos>/Hako`).
     pub storage_dir: Option<String>,
     /// Which Medal-style quality preset the UI shows as selected: `low` |
@@ -163,6 +169,7 @@ impl Default for Settings {
             events: EventToggles::default(),
             event_timings: EventTimings::default(),
             auto_capture_mode: "highlights".into(),
+            auto_clip_modes: GameModeToggles::default(),
             storage_dir: None,
             quality_preset: "custom".into(),
             resolution: "native".into(),
