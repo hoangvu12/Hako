@@ -52,6 +52,12 @@ fn main() {
             rt
         });
 
+    // Cloud upload queue: build the state + its job receiver here so the state can
+    // be `manage`d on the builder (before any window exists — see the note on the
+    // state-management block below). The receiver is moved into `setup`, which
+    // starts the draining worker once the library/settings are hydrated.
+    let (cloud_state, cloud_rx) = cloud::CloudState::new();
+
     tauri::Builder::default()
         // Restore the main window's size/position/maximized state on launch.
         // Only those flags — not VISIBLE (we control reveal via the update
@@ -86,6 +92,29 @@ fn main() {
         // Shared live-match context (map/mode/agent) for tagging manual F9 clips;
         // kept current by the Valorant orchestrator.
         .manage(valorant::live::LiveMatchState::default())
+        // ── State the webview's IPC can reach MUST be managed before any window
+        // exists ──────────────────────────────────────────────────────────────
+        // WebView2's `CreateWebViewEnvironmentWithOptions` pumps the Win32 message
+        // loop *internally* while a window's webview is created. With multiple
+        // config-declared windows (main/updater/overlay), creating window N pumps
+        // the loop and can dispatch an `invoke()` the already-loaded window M
+        // queued — all of this happens *before* `.setup()` runs. If the command it
+        // dispatches resolves `State<SettingsState>` (etc.) before that state is
+        // managed, Tauri's `state()` panics; the unwind crosses the C++ FFI
+        // boundary and aborts the process (Windows exception 0xc0000409) at launch.
+        //
+        // So these are managed here on the builder — before the first window — with
+        // cheap placeholders (defaults / an in-memory DB). `setup` then *hydrates*
+        // them from disk. An `invoke` that wins the startup race now reads a
+        // placeholder for a few ms instead of crashing the app, and self-heals on
+        // the frontend's next refetch.
+        .manage(commands::SettingsState(std::sync::Mutex::new(
+            settings::Settings::default(),
+        )))
+        .manage(commands::LibraryState(std::sync::Mutex::new(
+            library::db::Library::open_in_memory().expect("in-memory library placeholder"),
+        )))
+        .manage(cloud_state)
         .invoke_handler(tauri::generate_handler![
             commands::recorder_status,
             commands::gpu_info,
@@ -126,7 +155,7 @@ fn main() {
             cloud::retention::cloud_free_up_space,
             finish_to_main
         ])
-        .setup(|app| {
+        .setup(move |app| {
             // The update splash is created hidden + unfocused (see tauri.conf.json)
             // precisely so it can never tab the user out of a fullscreen/borderless
             // game on launch. Reveal it *without activating it*: a plain `show()`
@@ -139,11 +168,24 @@ fn main() {
             if let Some(updater) = app.get_webview_window("updater") {
                 show_window_no_activate(&updater);
             }
-            app.manage(init_library(app.handle()));
-            app.manage(init_settings(app.handle()));
-            // Cloud upload: managed queue state + the single draining worker.
-            // After library/settings so the worker can read them when jobs land.
-            app.manage(init_cloud(app.handle()));
+            // Hydrate the placeholder state managed on the builder above from disk.
+            // Settings first (the hotkey registration below reads it), then the
+            // library (the cloud reset below reads it).
+            hydrate_settings(app.handle());
+            hydrate_library(app.handle());
+            // Cloud upload: clear uploads left mid-flight by a previous run, then
+            // start the single draining worker. After library hydration so the
+            // reset + worker read the real on-disk library.
+            if let Ok(guard) = app.state::<commands::LibraryState>().0.lock() {
+                match guard.cloud_reset_interrupted() {
+                    Ok(n) if n > 0 => {
+                        tracing::info!("cloud: reset {n} interrupted upload(s) on startup")
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("cloud: reset interrupted uploads failed: {e}"),
+                }
+            }
+            cloud::upload::spawn_worker(app.handle().clone(), cloud_rx);
             // Point the graphics-hook loader at the bundled OBS binaries
             // (`<resource_dir>/vendor/obs-hook`) so packaged builds find them.
             // In dev this dir doesn't exist under the resource root; the hook
@@ -435,9 +477,12 @@ fn init_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
     }
 }
 
-/// Open the clip library at `<AppData>/library.db`, falling back to an
-/// in-memory DB if the on-disk open fails (so the app still runs).
-fn init_library(app: &tauri::AppHandle) -> commands::LibraryState {
+/// Hydrate the managed [`commands::LibraryState`] from the on-disk clip library at
+/// `<AppData>/library.db`. The state is already managed (with an in-memory
+/// placeholder) on the builder so commands never hit an unmanaged `state()`; this
+/// swaps in the persistent DB. If the on-disk open fails the placeholder in-memory
+/// DB is left in place (so the app still runs, just without persistence).
+fn hydrate_library(app: &tauri::AppHandle) {
     use crate::library::db::Library;
     let on_disk = app.path().app_data_dir().ok().and_then(|dir| {
         let _ = std::fs::create_dir_all(&dir);
@@ -445,36 +490,20 @@ fn init_library(app: &tauri::AppHandle) -> commands::LibraryState {
             .map_err(|e| tracing::error!("open library db: {e}"))
             .ok()
     });
-    let lib = on_disk.unwrap_or_else(|| {
-        tracing::warn!("clip library falling back to in-memory (won't persist)");
-        Library::open_in_memory().expect("in-memory library")
-    });
-    commands::LibraryState(std::sync::Mutex::new(lib))
-}
-
-/// Build the cloud upload-queue state and spawn its single draining worker. The
-/// worker reads `LibraryState`/`SettingsState` and emits progress/status events,
-/// so this must run after those are managed.
-fn init_cloud(app: &tauri::AppHandle) -> cloud::CloudState {
-    // Clear any uploads left mid-flight by a previous run: the queue + worker are
-    // in-memory only, so a persisted `queued`/`uploading` row is a zombie that
-    // would otherwise show as an active upload forever. Best-effort.
-    if let Some(lib) = app.try_state::<commands::LibraryState>() {
-        if let Ok(guard) = lib.0.lock() {
-            match guard.cloud_reset_interrupted() {
-                Ok(n) if n > 0 => tracing::info!("cloud: reset {n} interrupted upload(s) on startup"),
-                Ok(_) => {}
-                Err(e) => tracing::warn!("cloud: reset interrupted uploads failed: {e}"),
+    match on_disk {
+        Some(lib) => {
+            if let Ok(mut guard) = app.state::<commands::LibraryState>().0.lock() {
+                *guard = lib;
             }
         }
+        None => tracing::warn!("clip library staying in-memory (won't persist)"),
     }
-    let (state, rx) = cloud::CloudState::new();
-    cloud::upload::spawn_worker(app.clone(), rx);
-    state
 }
 
-/// Load persisted settings (or defaults) from the app config dir.
-fn init_settings(app: &tauri::AppHandle) -> commands::SettingsState {
+/// Hydrate the managed [`commands::SettingsState`] with persisted settings (or
+/// defaults) from the app config dir. The state is already managed (with defaults)
+/// on the builder; this replaces the inner value with what's on disk.
+fn hydrate_settings(app: &tauri::AppHandle) {
     use crate::settings::Settings;
     let settings = app
         .path()
@@ -482,7 +511,9 @@ fn init_settings(app: &tauri::AppHandle) -> commands::SettingsState {
         .ok()
         .map(|dir| Settings::load(&Settings::file_in(&dir)))
         .unwrap_or_default();
-    commands::SettingsState(std::sync::Mutex::new(settings))
+    if let Ok(mut guard) = app.state::<commands::SettingsState>().0.lock() {
+        *guard = settings;
+    }
 }
 
 /// (Re-)register the global save-clip shortcut on the accelerator `accel`.
