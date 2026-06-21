@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createLazyRoute, useSearch } from "@tanstack/react-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Scissors,
   SlidersHorizontal,
@@ -24,6 +24,7 @@ import {
   Bell,
   CloudArrowUp,
   FolderOpen,
+  CircleNotch,
   type Icon,
 } from "@phosphor-icons/react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -50,6 +51,16 @@ import {
 import { RecordingStatus } from "@/components/settings/recording-status";
 import { RecordingAudio } from "@/components/settings/recording-audio";
 import { CloudProviders } from "@/components/settings/cloud-providers";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useSettings, useUpdateSettings } from "@/hooks/use-settings";
 import {
   useCloudProviders,
@@ -57,8 +68,10 @@ import {
   useRetentionStats,
 } from "@/hooks/use-cloud";
 import {
+  countClipsIn,
   effectiveAudioConfig,
   getGpuInfo,
+  migrateClipsTo,
   overlayTest,
   type AudioConfig,
   type AutoCaptureMode,
@@ -523,6 +536,23 @@ function SettingsPage() {
   const [navQuery, setNavQuery] = useState("");
   // Outplayed-style "Advanced options" disclosure for per-event timing.
   const [showTiming, setShowTiming] = useState(false);
+  // "Move existing clips to the new folder?" prompt, shown after the clip folder
+  // changes while clips still live in the old one. `null` = no prompt open.
+  const [movePrompt, setMovePrompt] = useState<{
+    from: string | null;
+    to: string | null;
+    count: number;
+  } | null>(null);
+  // The actual move (off the UI thread on the Rust side). `isPending` drives the
+  // dialog's spinner; clips refetch on success so cards point at the new paths.
+  const moveClips = useMutation({
+    mutationFn: ({ from, to }: { from: string | null; to: string | null }) =>
+      migrateClipsTo(from, to),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["clips"] });
+      qc.invalidateQueries({ queryKey: ["cloud-retention"] });
+    },
+  });
 
   // Initialise the draft once; instant-apply edits keep it in sync afterwards.
   useEffect(() => {
@@ -571,6 +601,22 @@ function SettingsPage() {
   const commit = () => {
     const d = draftRef.current;
     if (d) saveSettings(d);
+  };
+  // Persist a new clip folder, then — if existing clips still live in the old
+  // one — offer to move them. The old value is read from the persisted cache
+  // (not the draft, which live-updates as the user types) so it's the real
+  // previous folder. New clips already save to the new folder regardless.
+  const changeStorageDir = (next: string | null) => {
+    const value = next?.trim() ? next : null;
+    const prev =
+      qc.getQueryData<Settings>(["settings"])?.storage_dir?.trim() || null;
+    set("storage_dir", value);
+    if (value === prev) return; // no real change (e.g. blur without an edit)
+    void countClipsIn(prev)
+      .then((count) => {
+        if (count > 0) setMovePrompt({ from: prev, to: value, count });
+      })
+      .catch(() => {});
   };
   // Apply a preset: highlight its card and write its concrete knobs at once.
   const applyPreset = (p: (typeof PRESETS)[number]) => {
@@ -1107,7 +1153,7 @@ function SettingsPage() {
                       onChange={(e) =>
                         setLocal("storage_dir", e.target.value || null)
                       }
-                      onBlur={commit}
+                      onBlur={() => changeStorageDir(draftRef.current?.storage_dir ?? null)}
                     />
                     <Button
                       variant="secondary"
@@ -1119,7 +1165,7 @@ function SettingsPage() {
                             defaultPath: draft.storage_dir ?? undefined,
                           });
                           if (typeof picked === "string") {
-                            set("storage_dir", picked);
+                            changeStorageDir(picked);
                           }
                         })();
                       }}
@@ -1250,6 +1296,53 @@ function SettingsPage() {
           ) : null}
         </div>
       </div>
+
+      {/* Opt-in "move existing clips to the new folder?" prompt. The folder change
+          is already saved; this only relocates the files on disk. */}
+      <AlertDialog
+        open={movePrompt !== null}
+        onOpenChange={(open) => {
+          // Block dismissal while a move is running; otherwise close = "keep".
+          if (!open && !moveClips.isPending) setMovePrompt(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Move {movePrompt?.count}{" "}
+              {movePrompt?.count === 1 ? "clip" : "clips"} to the new folder?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              New clips already save to the new folder. Your{" "}
+              {movePrompt?.count === 1 ? "existing clip" : "existing clips"} can
+              be moved there too, or left in place — either way they stay in your
+              library.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={moveClips.isPending}>
+              Keep in place
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={moveClips.isPending}
+              onClick={(e) => {
+                // Keep the dialog open (with the spinner) until the move finishes.
+                e.preventDefault();
+                if (!movePrompt) return;
+                moveClips.mutate(
+                  { from: movePrompt.from, to: movePrompt.to },
+                  { onSettled: () => setMovePrompt(null) }
+                );
+              }}
+            >
+              {moveClips.isPending ? (
+                <CircleNotch className="size-4 animate-spin" />
+              ) : null}
+              {moveClips.isPending ? "Moving…" : "Move clips"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

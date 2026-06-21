@@ -648,6 +648,27 @@ export async function updateSettings(next: Settings): Promise<void> {
   await invoke("update_settings", { next });
 }
 
+/**
+ * How many existing clips live under the folder `dir` resolves to (null → the
+ * default `Videos/Hako`). Drives the "move N clips?" prompt shown when the clip
+ * folder changes; 0 means nothing would move.
+ */
+export async function countClipsIn(dir: string | null): Promise<number> {
+  return invoke<number>("count_clips_in", { dir });
+}
+
+/**
+ * Move existing clips (and their thumbnails) from the `from` folder to the `to`
+ * folder and repoint the library. Opt-in — only called after the user confirms
+ * the move prompt. Runs off the UI thread; resolves with the count moved.
+ */
+export async function migrateClipsTo(
+  from: string | null,
+  to: string | null
+): Promise<number> {
+  return invoke<number>("migrate_clips_to", { from, to });
+}
+
 // ---------------------------------------------------------------------------
 // Cloud upload (src-tauri/src/cloud)
 // ---------------------------------------------------------------------------

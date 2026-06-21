@@ -451,6 +451,29 @@ impl Library {
         Ok(())
     }
 
+    /// Repoint a clip's on-disk paths after its files are relocated (e.g. the
+    /// user changed the clip folder and existing clips were moved). Only rewrites
+    /// the location columns; media metadata and title are untouched.
+    pub fn update_paths(
+        &self,
+        id: i64,
+        path: &str,
+        thumb_path: Option<&str>,
+        filmstrip_path: Option<&str>,
+    ) -> Result<(), String> {
+        let n = self
+            .conn
+            .execute(
+                "UPDATE clips SET path = ?1, thumb_path = ?2, filmstrip_path = ?3 WHERE id = ?4",
+                params![path, thumb_path, filmstrip_path, id],
+            )
+            .map_err(|e| format!("update_paths: {e}"))?;
+        if n == 0 {
+            return Err(format!("no clip with id {id}"));
+        }
+        Ok(())
+    }
+
     /// Remove the row (does not touch the file on disk).
     pub fn delete(&self, id: i64) -> Result<(), String> {
         self.conn

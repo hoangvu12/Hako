@@ -142,6 +142,8 @@ fn main() {
             commands::remux_with_tracks,
             commands::get_settings,
             commands::update_settings,
+            commands::count_clips_in,
+            commands::migrate_clips_to,
             commands::app_hydrated,
             commands::valorant_status,
             commands::overlay_test,
@@ -178,6 +180,10 @@ fn main() {
             // library (the cloud reset below reads it).
             hydrate_settings(app.handle());
             hydrate_library(app.handle());
+            // Clips can live in a custom `storage_dir` outside the static
+            // `$VIDEO/Hako` asset scope — grant it so `convertFileSrc` (card
+            // video, posters, filmstrips) can load them.
+            commands::allow_storage_asset_scope(app.handle());
             // The real state is in place now. Flip the flag and tell the webview,
             // so any `get_settings`/`clips_list` that won the startup race and read
             // a placeholder (stale defaults / empty in-memory library) refetches —

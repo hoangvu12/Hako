@@ -131,21 +131,44 @@ fn parse_range(value: &str, size: u64) -> Option<Option<(u64, u64)>> {
     Some(Some((start, end)))
 }
 
-/// Only serve files under `<Videos>/Hako` (same trust boundary as the asset
-/// protocol scope) and only `.mp4`.
+/// Only serve `.mp4` files under a trusted clip root: the default `<Videos>/Hako`
+/// or the user's configured clip folder (`storage_dir`). Clips relocated to a
+/// custom folder must stay playable, so the boundary tracks the setting rather
+/// than the hardcoded default.
 fn is_allowed<R: Runtime>(ctx: &UriSchemeContext<'_, R>, path: &Path) -> bool {
     if path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("mp4")) != Some(true)
     {
         return false;
     }
-    let Ok(root) = ctx.app_handle().path().video_dir() else {
+    let Ok(canon) = std::fs::canonicalize(path) else {
         return false;
     };
-    let root = root.join("Hako");
-    match (std::fs::canonicalize(&root), std::fs::canonicalize(path)) {
-        (Ok(root), Ok(path)) => path.starts_with(root),
-        _ => false,
+    allowed_roots(ctx)
+        .iter()
+        .filter_map(|root| std::fs::canonicalize(root).ok())
+        .any(|root| canon.starts_with(root))
+}
+
+/// The clip roots this protocol will serve from: the default `<Videos>/Hako`
+/// plus the configured `storage_dir` when set. Mirrors `commands::clip_dir`'s
+/// resolution so streaming follows wherever clips are written.
+fn allowed_roots<R: Runtime>(ctx: &UriSchemeContext<'_, R>) -> Vec<PathBuf> {
+    let app = ctx.app_handle();
+    let mut roots = Vec::new();
+    if let Ok(videos) = app.path().video_dir() {
+        roots.push(videos.join("Hako"));
     }
+    if let Some(dir) = app
+        .try_state::<crate::commands::SettingsState>()
+        .and_then(|s| s.0.lock().ok().map(|g| g.storage_dir.clone()))
+        .flatten()
+    {
+        let dir = dir.trim();
+        if !dir.is_empty() {
+            roots.push(PathBuf::from(dir));
+        }
+    }
+    roots
 }
 
 /// Decode `%XX` escapes from `convertFileSrc` (encodeURIComponent) back to a path.
