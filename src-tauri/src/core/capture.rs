@@ -113,6 +113,12 @@ struct Shared {
     /// SystemRelativeTime (100 ns) of the last frame whose content actually
     /// changed. Reserved for the Part B static watchdog; set on each live tick.
     last_fresh_time: AtomicI64,
+    /// Set by the source loop when the game changed its backbuffer resolution
+    /// mid-capture (e.g. a 16:9 menu → a 4:3 stretched match). The recorder follows
+    /// the game's native size, but a clip's dimensions are fixed for its lifetime
+    /// (`ClipMeta` is a `OnceLock` and the buffer holds one resolution), so the
+    /// capture thread tears the pipeline down and restarts it at the new size.
+    resize_restart: AtomicBool,
 }
 
 /// Result of a successful clip save (used to build the library row).
@@ -667,6 +673,26 @@ fn hook_capture_thread(
             let _ = ready_tx.send(Ok(()));
             emit_loop(&app, target_fps, &stop, &shared);
             running.teardown();
+            // The source loop asks for a restart when the game changed resolution
+            // mid-capture, so the new clip records at the game's native size. Do it
+            // from a detached thread: the restart's `stop_capture_with` joins THIS
+            // capture thread, so this thread must be free to return first.
+            // `start_capture_with` re-detects the new size and builds a fresh clip
+            // buffer. A pending user stop wins (don't resurrect a stopped capture).
+            if shared.resize_restart.load(Ordering::Acquire) && !stop.load(Ordering::Acquire) {
+                let app = app.clone();
+                std::thread::spawn(move || {
+                    crate::commands::stop_capture_with(&app);
+                    match crate::commands::start_capture_with(&app, hwnd_raw, None, None) {
+                        Ok(()) => tracing::info!(
+                            "capture: restarted at the game's new resolution"
+                        ),
+                        Err(e) => tracing::warn!(
+                            "capture: restart after resolution change failed: {e}"
+                        ),
+                    }
+                });
+            }
         }
     }
 }
@@ -916,6 +942,14 @@ fn hook_source_loop(
     let mut same_frames: u64 = 0;
     let mut warned_static = false;
 
+    // Resize-follow: confirm a new backbuffer size persists for a few frames before
+    // restarting the pipeline at it, so a transient swapchain blip (alt-tab,
+    // fullscreen↔borderless toggle, a one-frame recreate) doesn't bounce capture.
+    // Mismatched frames are dropped until then.
+    const RESIZE_CONFIRM_FRAMES: u32 = 8;
+    let mut resize_pending: Option<(u32, u32)> = None;
+    let mut resize_frames: u32 = 0;
+
     while !stop.load(Ordering::Acquire) {
         // Pace to the target frame interval.
         let now = Instant::now();
@@ -982,6 +1016,45 @@ fn hook_source_loop(
         shared.width.store(width, Ordering::Relaxed);
         shared.height.store(height, Ordering::Relaxed);
 
+        // Follow the game's resolution. It can switch mid-capture (a 16:9 menu → a
+        // 4:3 stretched match), reopening a differently-sized backbuffer; we record
+        // at whatever size the game renders rather than padding it. The clip's
+        // dimensions are fixed once it opens (the buffer holds one resolution), so
+        // we can't change the output in place — restart the pipeline at the new
+        // size. Confirm it holds for a few frames first (a transient swapchain blip
+        // shouldn't bounce capture), and drop the mismatched frames meanwhile —
+        // copying the old-sized box out of a resized texture is what leaves a stale
+        // strip.
+        let (live_w, live_h) = {
+            let mut d = D3D11_TEXTURE2D_DESC::default();
+            unsafe { shared_tex.GetDesc(&mut d) };
+            (d.Width & !1, d.Height & !1)
+        };
+        if live_w >= 2 && live_h >= 2 && (live_w != width || live_h != height) {
+            match resize_pending {
+                Some((pw, ph)) if pw == live_w && ph == live_h => resize_frames += 1,
+                _ => {
+                    resize_pending = Some((live_w, live_h));
+                    resize_frames = 1;
+                }
+            }
+            if resize_frames >= RESIZE_CONFIRM_FRAMES {
+                tracing::info!(
+                    from_w = width,
+                    from_h = height,
+                    to_w = live_w,
+                    to_h = live_h,
+                    "capture: game changed resolution mid-capture — restarting to record at new size"
+                );
+                shared.resize_restart.store(true, Ordering::Release);
+                break;
+            }
+            continue;
+        } else if resize_pending.is_some() {
+            resize_pending = None;
+            resize_frames = 0;
+        }
+
         // Grab a free staging texture; none → encoder backpressure, drop.
         let staging = match free_pool.lock() {
             Ok(mut p) => p.pop(),
@@ -991,8 +1064,10 @@ fn hook_source_loop(
             continue;
         };
 
-        // GPU→GPU copy of the even sub-rect. The shared texture has no keyed
-        // mutex (legacy share), so copy promptly before the game's next present.
+        // GPU→GPU copy of the even sub-rect (sizes match here — a differing live
+        // size is handled by the resize-follow restart above). The shared texture
+        // has no keyed mutex (legacy share), so copy promptly before the game's
+        // next present.
         let copy = (|| -> WinResult<()> {
             let dst: ID3D11Resource = staging.cast()?;
             let src: ID3D11Resource = shared_tex.cast()?;
@@ -1455,7 +1530,9 @@ fn emit_loop(app: &AppHandle, target_fps: u32, stop: &Arc<AtomicBool>, shared: &
     // 300 ms while the dashboard is visible; backed off to 1 s while the main
     // window is hidden to tray (gameplay), where the emit is skipped anyway.
     let mut interval_ms = 300u64;
-    while !stop.load(Ordering::Acquire) {
+    // Also break when the source loop asks for a resize restart, so the capture
+    // thread can relaunch the pipeline at the game's new resolution.
+    while !stop.load(Ordering::Acquire) && !shared.resize_restart.load(Ordering::Acquire) {
         std::thread::sleep(Duration::from_millis(interval_ms));
         // While hidden to tray during a match, nothing consumes capture-stats and
         // the renderer is suspended — so skip the per-tick IPC serialize + cross-
