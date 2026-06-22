@@ -202,7 +202,7 @@ function ClipGameContext({ clip }: { clip: ClipRecord }) {
             <img
               src={agent.icon}
               alt=""
-              className="size-10 shrink-0 rounded-md bg-black/30 object-cover"
+              className="size-10 shrink-0 rounded-md bg-black/30 object-cover outline outline-1 -outline-offset-1 outline-white/10"
             />
           ) : null}
           <div className="min-w-0 flex-1">

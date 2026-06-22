@@ -628,7 +628,7 @@ function ViewerStage({
                   setMuted(v === 0);
                 }}
                 aria-label="Volume"
-                className="h-1 w-0 cursor-pointer appearance-none rounded-full bg-white/30 opacity-0 transition-all duration-200 outline-none group-hover/vol:w-20 group-hover/vol:opacity-100 [&::-webkit-slider-thumb]:size-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white"
+                className="h-1 w-0 cursor-pointer appearance-none rounded-full bg-white/30 opacity-0 transition-[width,opacity] duration-200 outline-none group-hover/vol:w-20 group-hover/vol:opacity-100 [&::-webkit-slider-thumb]:size-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white"
               />
             </div>
 
