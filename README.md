@@ -5,7 +5,7 @@ the background, keeps the last couple of minutes of gameplay in a buffer, and cu
 your kills into clips on its own. Think of it as a lighter Medal.tv that does less,
 but does it without eating your frames.
 
-![Hako recording and clip library](.github/assets/screenshot.png)
+![Hako — performance-first Valorant clipper](.github/assets/og-image.png)
 
 **Stack:** Tauri v2 + Rust for the core, React 19 with TanStack Router/Query for the
 UI, TailwindCSS v4 and shadcn/ui for the styling. Windows only.
