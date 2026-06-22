@@ -5,7 +5,6 @@ import { FilmStrip } from "@phosphor-icons/react";
 
 import { predecodeImage } from "@/lib/image-predecode";
 
-import { ClipCard } from "@/components/clips/clip-card";
 import { ClipsToolbar } from "@/components/clips/clips-toolbar";
 import { ClipsBulkBar } from "@/components/clips/clips-bulk-bar";
 import { useClipFilters } from "@/components/clips/use-clip-filters";
@@ -24,151 +23,18 @@ import {
 } from "@/hooks/use-library";
 import { useUploadClip } from "@/hooks/use-cloud";
 import { useSettings } from "@/hooks/use-settings";
-import {
-  useValorantAssets,
-  type ValorantAssets,
-} from "@/hooks/use-valorant-assets";
+import { useValorantAssets } from "@/hooks/use-valorant-assets";
 import type { ClipRecord } from "@/lib/api";
-
-// Grid metrics (kept in sync with the row layout below). `GAP` mirrors the
-// `gap-3`; `MIN_CARD` is the smallest comfortable card width before we drop a
-// column. `EST_HEADER_ROW` seeds header scroll math.
-const GAP = 12;
-const MIN_CARD = 340;
-const EST_CLIP_ROW = 280; // fallback until the container width is known
-const EST_HEADER_ROW = 44;
-// Fixed chrome below each card's aspect-video thumbnail: border (2) + meta block
-// (~76: p-3.5 padding + single-line title row + meta line) + the row's bottom
-// padding (pb-3 = 12). This is constant regardless of width — the title is
-// truncated and the meta is one line — so a clip row's height is fully
-// determined by the card width. That lets us size rows mathematically and skip
-// per-row measurement (no ResizeObserver layout reads on the scroll path).
-const CARD_CHROME = 90;
-// How many rows beyond the rendered (visible + overscan) window to pre-decode
-// thumbnails for, in each scroll direction. Wide enough to stay ahead of a fast
-// flick without flooding the decode queue.
-const DECODE_AHEAD_ROWS = 6;
-
-/**
- * Responsive column count *and* content width of the scroll container (so the
- * grid tracks the panel, not the window). One ResizeObserver feeds both; the
- * width drives deterministic fixed row heights below.
- */
-function useGridMetrics(ref: React.RefObject<HTMLElement | null>): {
-  columns: number;
-  width: number;
-} {
-  const [metrics, setMetrics] = React.useState({ columns: 1, width: 0 });
-  React.useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const compute = (w: number) =>
-      Math.max(1, Math.floor((w + GAP) / (MIN_CARD + GAP)));
-    const apply = (w: number) =>
-      setMetrics((m) => {
-        const columns = compute(w);
-        return m.columns === columns && m.width === w
-          ? m
-          : { columns, width: w };
-      });
-    // Measure synchronously here, before paint, so the first frame already has
-    // the right column count. The ResizeObserver's initial callback is delivered
-    // *after* paint, so relying on it alone flashes a single column on mount
-    // (e.g. returning from the clip detail). `clientWidth` minus horizontal
-    // padding matches the content-box width the observer reports below.
-    const style = getComputedStyle(el);
-    const padX =
-      parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
-    apply(el.clientWidth - padX);
-    const ro = new ResizeObserver((entries) => {
-      apply(entries[0]?.contentRect.width ?? 0);
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [ref]);
-  return metrics;
-}
-
-/** A flattened virtual row: either a date header or a row of up to `columns`
- * clips. Flattening lets one virtualizer drive the whole album view. */
-type VirtualRow =
-  | { type: "header"; key: string; label: string; count: number }
-  | { type: "clips"; key: string; clips: ClipRecord[] };
-
-function flattenSections(
-  sections: { key: string; label: string; clips: ClipRecord[] }[],
-  columns: number
-): VirtualRow[] {
-  const rows: VirtualRow[] = [];
-  for (const sec of sections) {
-    rows.push({
-      type: "header",
-      key: `h:${sec.key}`,
-      label: sec.label,
-      count: sec.clips.length,
-    });
-    for (let i = 0; i < sec.clips.length; i += columns) {
-      rows.push({
-        type: "clips",
-        key: `${sec.key}:${i}`,
-        clips: sec.clips.slice(i, i + columns),
-      });
-    }
-  }
-  return rows;
-}
-
-// Memoized row pieces. The virtualizer re-renders `ClipsPage` on every scroll
-// tick; with these boundaries (and stable props — the `rows`/`row.clips` arrays
-// are memoized, the handlers and `assets` are stable) an already-mounted header
-// or clip row short-circuits instead of re-rendering as you scroll.
-const HeaderRow = React.memo(function HeaderRow({
-  label,
-  count,
-}: {
-  label: string;
-  count: number;
-}) {
-  return (
-    <div className="flex items-baseline gap-2 pb-3 pt-1">
-      <h2 className="text-sm font-semibold text-foreground">{label}</h2>
-      <span className="text-xs font-medium text-muted-foreground">
-        {count} {count === 1 ? "clip" : "clips"}
-      </span>
-    </div>
-  );
-});
-
-const ClipRow = React.memo(function ClipRow({
-  clips,
-  columns,
-  assets,
-  onDelete,
-  onRename,
-}: {
-  clips: ClipRecord[];
-  columns: number;
-  assets: ValorantAssets;
-  onDelete: (clip: ClipRecord) => void;
-  onRename: (clip: ClipRecord) => void;
-}) {
-  return (
-    <div
-      className="grid gap-3 pb-3"
-      style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
-    >
-      {clips.map((clip) => (
-        <ClipCard
-          key={clip.id}
-          clip={clip}
-          assets={assets}
-          onDelete={onDelete}
-          onRename={onRename}
-        />
-      ))}
-    </div>
-  );
-});
+import {
+  CARD_CHROME,
+  DECODE_AHEAD_ROWS,
+  EST_CLIP_ROW,
+  EST_HEADER_ROW,
+  GAP,
+  useGridMetrics,
+} from "@/components/clips/grid/metrics";
+import { flattenSections } from "@/components/clips/grid/virtual-rows";
+import { ClipRow, HeaderRow } from "@/components/clips/grid/row-components";
 
 // Remember the grid's scroll offset across mounts. The route component unmounts
 // when you open a clip detail, so a component-local ref would reset to 0 — this

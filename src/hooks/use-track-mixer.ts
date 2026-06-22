@@ -1,14 +1,10 @@
 import * as React from "react";
-import {
-  ALL_FORMATS,
-  AudioBufferSink,
-  CustomSource,
-  Input,
-  type InputAudioTrack,
-} from "mediabunny";
+import { Input } from "mediabunny";
 
-import { readClipRange, type AudioTrackInfo } from "@/lib/api";
 import { denoiseAudioBufferForPreview } from "@/lib/denoise-preview";
+import { DRIFT_MAX, GAIN_RAMP, START_LOOKAHEAD } from "./track-mixer/constants";
+import { createStemInput, decodeStem } from "./track-mixer/decode";
+import type { Anchor, Graph, UseTrackMixerArgs } from "./track-mixer/types";
 
 /**
  * Live per-stem audio mixing for the clip editor.
@@ -26,91 +22,12 @@ import { denoiseAudioBufferForPreview } from "@/lib/denoise-preview";
  * Decoding runs off the main path: until it finishes (or if it fails, or there
  * are no stems) `active` is false and the caller leaves the native `<video>`
  * audio playing — a seamless fallback that also covers single-track clips.
+ *
+ * Stem decoding (`createStemInput` / `decodeStem`), the time/graph types
+ * (`Anchor`, `Graph`, `UseTrackMixerArgs`), and the drift/ramp constants live in
+ * sibling `track-mixer/` modules; this file owns the React state, refs, and
+ * effects that wire them to the live `<video>`.
  */
-
-/** Lead time when (re)starting buffer sources, so `start()` isn't in the past. */
-const START_LOOKAHEAD = 0.03;
-/** Resync once |audio − video| exceeds this (seconds). Above human-perceptible. */
-const DRIFT_MAX = 0.05;
-/** Gain ramp to dodge zipper clicks on mute/volume changes (seconds). */
-const GAIN_RAMP = 0.012;
-
-export interface UseTrackMixerArgs {
-  /** Clip id — stem bytes are pulled over IPC (mediabunny can't fetch the
-   *  `hakoclip://` scheme; see `readClipRange`). */
-  clipId: number;
-  /** Clip file size in bytes — the `CustomSource`'s `getSize`. */
-  fileSize: number;
-  /** Audio stems (index ≥ 1); empty ⇒ mixer disabled, native audio kept. */
-  stems: AudioTrackInfo[];
-  videoRef: React.RefObject<HTMLVideoElement | null>;
-  /** Per-stem linear gain (0..1) keyed by stem index — solo/mute already resolved. */
-  stemGains: Map<number, number>;
-  /** Master monitor gain (0..1) from the top-bar mute/volume. */
-  masterGain: number;
-  /** Stem indices to noise-cancel in the preview (RNNoise) — kept in lockstep
-   *  with the export's per-stem denoise flag so preview ≈ what you save. */
-  denoiseStemIdx: number[];
-}
-
-/** One playing buffer-source set's time anchor, for drift math. */
-interface Anchor {
-  /** `AudioContext.currentTime` at which the sources begin. */
-  ctxTime: number;
-  /** Media time (video clock, seconds) the sources begin at. */
-  mediaTime: number;
-  /** Playback rate captured at (re)start. */
-  rate: number;
-}
-
-interface Graph {
-  ctx: AudioContext;
-  master: GainNode;
-  /** Per-stem gain node, keyed by stem index. */
-  gains: Map<number, GainNode>;
-  /** Per-stem decoded buffer, keyed by stem index (empty stems omitted). */
-  buffers: Map<number, AudioBuffer>;
-}
-
-/**
- * Decode one stem track fully into a single `AudioBuffer` on `ctx`, preserving
- * gaps (each chunk is placed at its own timestamp). Returns null for an empty
- * track.
- */
-async function decodeStem(
-  ctx: AudioContext,
-  track: InputAudioTrack,
-): Promise<AudioBuffer | null> {
-  const sink = new AudioBufferSink(track);
-  const chunks: { buffer: AudioBuffer; timestamp: number }[] = [];
-  let channels = 0;
-  let sampleRate = 0;
-  let endTime = 0;
-  for await (const { buffer, timestamp } of sink.buffers()) {
-    channels = Math.max(channels, buffer.numberOfChannels);
-    sampleRate = sampleRate || buffer.sampleRate;
-    endTime = Math.max(endTime, timestamp + buffer.duration);
-    chunks.push({ buffer, timestamp });
-  }
-  if (!chunks.length || !sampleRate) return null;
-
-  const length = Math.max(1, Math.ceil(endTime * sampleRate));
-  const out = ctx.createBuffer(channels, length, sampleRate);
-  for (const { buffer, timestamp } of chunks) {
-    const at = Math.round(timestamp * sampleRate);
-    if (at >= length) continue;
-    const copy = Math.min(buffer.length, length - at);
-    for (let ch = 0; ch < channels; ch++) {
-      // Stems are uniformly mono or stereo; if a chunk is narrower, reuse its
-      // last channel rather than leaving a silent gap.
-      const srcCh = Math.min(ch, buffer.numberOfChannels - 1);
-      const data = buffer.getChannelData(srcCh);
-      out.getChannelData(ch).set(data.subarray(0, copy), at);
-    }
-  }
-  return out;
-}
-
 export function useTrackMixer({
   clipId,
   fileSize,
@@ -229,31 +146,8 @@ export function useTrackMixer({
 
     (async () => {
       try {
-        input = new Input({
-          // mediabunny can't `fetch()` the `hakoclip://` scheme (WebView2 blocks
-          // cross-scheme fetch by CORS), so stem bytes come over IPC. `end` is
-          // exclusive; the backend clamps it to the file size.
-          source: new CustomSource({
-            read: (start, end) =>
-              readClipRange(clipId, start, end).then((b) => new Uint8Array(b)),
-            getSize: () => fileSize,
-            // Audio is finely interleaved with 20 Mbps video, so decoding a stem
-            // touches byte ranges spanning the *whole* file. mediabunny's default
-            // ("none") issues one IPC round-trip per granular read — thousands of
-            // tiny `read_clip_range` invokes (~30s). "fileSystem" (fixed 64 KiB
-            // windows) barely helped because each window still holds ~1 audio
-            // frame. "network" instead grows the read-ahead exponentially up to
-            // 8 MiB for the sequential forward scan a full-track decode is,
-            // collapsing thousands of reads into a few dozen big ones. Padded
-            // ranges are clamped to the file size by the orchestrator, so they
-            // never exceed EOF (the backend would otherwise return a short
-            // buffer). The big cache lets the parallel per-stem scans (below)
-            // share fetched windows instead of each re-reading the whole file.
-            prefetchProfile: "network",
-            maxCacheSize: 64 * 2 ** 20,
-          }),
-          formats: ALL_FORMATS,
-        });
+        // `end` is exclusive; the backend clamps it to the file size.
+        input = createStemInput(clipId, fileSize);
         const audioTracks = await input.getAudioTracks();
         if (cancelled) return;
 
