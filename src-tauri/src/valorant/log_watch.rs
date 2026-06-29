@@ -174,27 +174,9 @@ pub fn buy_phase_ticks(game_mode: &str) -> i64 {
     secs * TICKS_PER_SECOND
 }
 
-/// `QueryPerformanceCounter` in 100-ns ticks — same domain as WGC
-/// `SystemRelativeTime`, so anchors line up with session packet timestamps.
-#[cfg(windows)]
-pub fn now_ticks() -> i64 {
-    use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
-    let (mut c, mut f) = (0i64, 0i64);
-    unsafe {
-        let _ = QueryPerformanceCounter(&mut c);
-        let _ = QueryPerformanceFrequency(&mut f);
-    }
-    if f <= 0 {
-        return 0;
-    }
-    // ticks(100ns) = qpc / freq * 1e7, in i128 to avoid overflow.
-    (c as i128 * TICKS_PER_SECOND as i128 / f as i128) as i64
-}
-
-#[cfg(not(windows))]
-pub fn now_ticks() -> i64 {
-    0
-}
+// `now_ticks` is the shared capture clock reading; it moved to `core::clock`
+// (League uses it too). Re-exported so the `log_watch::now_ticks` paths still work.
+pub use crate::core::clock::now_ticks;
 
 /// Largest age (ms) we'll back-date a log line by. We read the log on a ~2 s
 /// poll, so a real line is at most a few seconds old; anything older means the

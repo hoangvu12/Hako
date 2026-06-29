@@ -22,6 +22,8 @@ mod settings;
 
 // Performance-critical capture/encode pipeline.
 mod core;
+// Multi-game integration layer (shared trait + per-game modules).
+mod games;
 // Riot/Valorant integration.
 mod valorant;
 // Clip library + thumbnails.
@@ -109,6 +111,9 @@ fn main() {
         // Shared live-match context (map/mode/agent) for tagging manual F9 clips;
         // kept current by the Valorant orchestrator.
         .manage(valorant::live::LiveMatchState::default())
+        // Arbiter for the single global auto-capture: only the game whose match is
+        // in progress drives recording (see `games::CaptureOwner`).
+        .manage(games::CaptureOwner::default())
         // ── State the webview's IPC can reach MUST be managed before any window
         // exists ──────────────────────────────────────────────────────────────
         // WebView2's `CreateWebViewEnvironmentWithOptions` pumps the Win32 message
@@ -248,10 +253,11 @@ fn main() {
                 .map(|s| s.save_hotkey.clone())
                 .unwrap_or_else(|_| "F9".into());
             set_clip_hotkey(app.handle(), &accel);
-            // Live Valorant detection: poll presence, record full matches, and
-            // auto-cut highlight clips on match end (Mode B). Degrades to manual
-            // clips if Riot/capture aren't available.
-            valorant::orchestrator::spawn(app.handle().clone());
+            // Live game detection: spawn every registered game integration
+            // (Valorant, League). Each polls its own match state, records full
+            // matches, and auto-cuts highlight clips on match end (Mode B).
+            // Degrades to manual clips if the game API/capture aren't available.
+            games::orchestrator::spawn(app.handle().clone());
             // In-game overlay: warn on the overlay when the clips drive runs low
             // (edge-triggered, only while capturing).
             overlay::spawn_disk_monitor(app.handle().clone());

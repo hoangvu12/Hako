@@ -68,6 +68,8 @@ nnnoiseless = { version = "0.5", default-features = false }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 base64 = "0.22"
 sysinfo = "0.33"
+# Object-safe async methods on the GameIntegration trait (per-game `run` loops).
+async-trait = "0.1"
 
 # Clip library: bundled SQLite so there's no system dependency on Windows.
 rusqlite = { version = "0.32", features = ["bundled"] }

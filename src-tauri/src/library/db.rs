@@ -100,6 +100,9 @@ pub struct ClipRecord {
     pub assists: Option<i64>,
     /// Headshot % over recorded damage, 0–100 (auto-clips only).
     pub headshot_pct: Option<f64>,
+    /// Which game this clip is from: `"valorant"` | `"lol"` (or `None` for clips
+    /// predating multi-game support — treated as Valorant by the UI/backfill).
+    pub game: Option<String>,
 
     /// True once cloud retention deleted the local files (the clip is now
     /// cloud-only and plays from its provider's presigned URL). `path` still
@@ -134,6 +137,8 @@ pub struct NewClip {
     pub deaths: Option<i64>,
     pub assists: Option<i64>,
     pub headshot_pct: Option<f64>,
+    /// Source game (`"valorant"` | `"lol"`); `None` ⇒ no game context.
+    pub game: Option<String>,
 }
 
 impl NewClip {
@@ -152,6 +157,7 @@ impl NewClip {
             deaths: rec.deaths,
             assists: rec.assists,
             headshot_pct: rec.headshot_pct,
+            game: rec.game.clone(),
             ..Default::default()
         }
     }
@@ -251,6 +257,8 @@ impl Library {
                 deaths          INTEGER,
                 assists         INTEGER,
                 headshot_pct    REAL,
+                -- Source game (valorant | lol); NULL on pre-multi-game rows.
+                game            TEXT,
                 -- Local files deleted by cloud retention (free up space); the row
                 -- stays as a cloud-only clip, played from its presigned URL.
                 evicted         INTEGER NOT NULL DEFAULT 0
@@ -306,8 +314,11 @@ impl Library {
             "ALTER TABLE clips ADD COLUMN evicted INTEGER NOT NULL DEFAULT 0",
             [],
         );
-        // One-time data migration (best-effort; never blocks open).
+        // Multi-game: source game column (DBs created before multi-game support).
+        let _ = conn.execute("ALTER TABLE clips ADD COLUMN game TEXT", []);
+        // One-time data migrations (best-effort; never block open).
         let _ = relabel_legacy_standard(&conn);
+        let _ = backfill_game_valorant(&conn);
         Ok(Library { conn })
     }
 
@@ -327,8 +338,8 @@ impl Library {
             .execute(
                 "INSERT INTO clips
                    (path, title, event, duration_secs, width, height, size_bytes, thumb_path, filmstrip_path, events, event_marks, created_unix_ms,
-                    agent, agent_id, map, mode, won, kills, deaths, assists, headshot_pct)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+                    agent, agent_id, map, mode, won, kills, deaths, assists, headshot_pct, game)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
                 params![
                     clip.path,
                     clip.title,
@@ -351,6 +362,7 @@ impl Library {
                     clip.deaths,
                     clip.assists,
                     clip.headshot_pct,
+                    clip.game,
                 ],
             )
             .map_err(|e| format!("insert clip: {e}"))?;
@@ -365,7 +377,7 @@ impl Library {
                 "SELECT id, path, title, event, duration_secs, width, height, size_bytes,
                         thumb_path, filmstrip_path, created_unix_ms, events,
                         agent, agent_id, map, mode, won, kills, deaths, assists, headshot_pct,
-                        event_marks, evicted
+                        event_marks, evicted, game
                  FROM clips ORDER BY created_unix_ms DESC",
             )
             .map_err(|e| format!("prepare list: {e}"))?;
@@ -386,7 +398,7 @@ impl Library {
                 "SELECT id, path, title, event, duration_secs, width, height, size_bytes,
                         thumb_path, filmstrip_path, created_unix_ms, events,
                         agent, agent_id, map, mode, won, kills, deaths, assists, headshot_pct,
-                        event_marks, evicted
+                        event_marks, evicted, game
                  FROM clips WHERE id = ?1",
             )
             .map_err(|e| format!("prepare get: {e}"))?;
@@ -798,6 +810,9 @@ fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<ClipRecord> {
         .unwrap_or_default();
     // `evicted` (col 22) — stored as 0/1; absent on very old rows ⇒ false.
     let evicted: i64 = row.get(22).unwrap_or(0);
+    // `game` (col 23) — NULL on pre-multi-game rows (the backfill labels existing
+    // rows "valorant"; a NULL here just means "unknown", handled by the UI).
+    let game: Option<String> = row.get(23).unwrap_or(None);
     Ok(ClipRecord {
         id: row.get(0)?,
         path: row.get(1)?,
@@ -822,6 +837,7 @@ fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<ClipRecord> {
         deaths: row.get(18)?,
         assists: row.get(19)?,
         headshot_pct: row.get(20)?,
+        game,
         evicted: evicted != 0,
     })
 }
@@ -856,6 +872,22 @@ fn relabel_legacy_standard(conn: &Connection) -> Result<(), String> {
     )
     .map_err(|e| format!("relabel legacy standard: {e}"))?;
     conn.execute_batch("PRAGMA user_version = 1;")
+        .map_err(|e| format!("bump user_version: {e}"))
+}
+
+/// One-time backfill of the `game` column → `"valorant"` for every existing clip
+/// (the only game before multi-game support). Guarded by `user_version >= 2` so
+/// it runs exactly once; later clips carry their own `game` and are untouched.
+fn backfill_game_valorant(conn: &Connection) -> Result<(), String> {
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap_or(0);
+    if version >= 2 {
+        return Ok(());
+    }
+    conn.execute("UPDATE clips SET game = 'valorant' WHERE game IS NULL", [])
+        .map_err(|e| format!("backfill game: {e}"))?;
+    conn.execute_batch("PRAGMA user_version = 2;")
         .map_err(|e| format!("bump user_version: {e}"))
 }
 

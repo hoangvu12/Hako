@@ -77,7 +77,10 @@ pub fn recorder_status_snapshot(app: &AppHandle) -> RecorderStatus {
             None => (false, false),
         })
         .unwrap_or((false, false));
-    let valorant_detected = capture::find_valorant_window().is_some();
+    // Which supported game's window is present (Valorant or League), if any.
+    let detected = crate::games::detected_game();
+    let valorant_detected = detected.is_some();
+    let game_name = detected.map(|g| g.display_name()).unwrap_or("game");
     let buffer_seconds = app
         .state::<SettingsState>()
         .0
@@ -86,13 +89,12 @@ pub fn recorder_status_snapshot(app: &AppHandle) -> RecorderStatus {
         .unwrap_or(30);
     let message = match (valorant_detected, capturing, capturing_live) {
         // Capturing but frozen — be honest that footage is paused.
-        (_, true, false) => "Paused — game minimized",
-        (true, true, true) => "Recording Valorant",
-        (true, false, _) => "Valorant detected",
-        (false, true, true) => "Capturing",
-        (false, false, _) => "Waiting for game",
-    }
-    .to_string();
+        (_, true, false) => "Paused — game minimized".to_string(),
+        (true, true, true) => format!("Recording {game_name}"),
+        (true, false, _) => format!("{game_name} detected"),
+        (false, true, true) => "Capturing".to_string(),
+        (false, false, _) => "Waiting for game".to_string(),
+    };
     RecorderStatus {
         capturing,
         capturing_live,

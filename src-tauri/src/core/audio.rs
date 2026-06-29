@@ -926,7 +926,7 @@ fn run_audio(
         // starts (i.e. Hako was opened mid-game) still sees every planned audio
         // track when it snapshots `audio_track_metas()` to declare the session
         // writer's streams — otherwise the session recording, and every auto-clip
-        // cut from it, comes out video-only. See `valorant::orchestrator::start_match`.
+        // cut from it, comes out video-only. See `valorant::integration::start_match`.
         let mut tracks: Vec<OutputTrack> = Vec::with_capacity(layout.tracks.len());
         for (idx, _spec) in layout.tracks.iter().enumerate() {
             let encoder = AacEncoder::new()?;

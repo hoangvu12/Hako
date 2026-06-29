@@ -1,7 +1,7 @@
 import * as React from "react";
 
 import { ClipCard } from "@/components/clips/clip-card";
-import type { ValorantAssets } from "@/hooks/use-valorant-assets";
+import type { GameAssets } from "@/games/use-game-assets";
 import type { ClipRecord } from "@/lib/api";
 
 // Memoized row pieces. The virtualizer re-renders `ClipsPage` on every scroll
@@ -34,7 +34,7 @@ export const ClipRow = React.memo(function ClipRow({
 }: {
   clips: ClipRecord[];
   columns: number;
-  assets: ValorantAssets;
+  assets: GameAssets;
   onDelete: (clip: ClipRecord) => void;
   onRename: (clip: ClipRecord) => void;
 }) {

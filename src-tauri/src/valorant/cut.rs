@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::commands::{self, SettingsState};
+use crate::commands::SettingsState;
 use crate::core::clock::TICKS_PER_SECOND;
 use crate::events;
 use crate::settings::AutoCaptureMode;
@@ -533,123 +533,26 @@ async fn cut_highlights(cx: &CutParams<'_>, details: &MatchDetails) -> Result<()
         return Err("no events could be reconciled to the session timeline".into());
     }
 
-    // Merge windows whose padding nearly touches (Medal `OverlapMergeGrouper`,
-    // tol = the widest after-pad among enabled kinds so near events still fuse).
+    // Hand the placed windows to the shared cut tail (merge overlapping windows
+    // → skip mostly-frozen ones → stream-copy each out → register). `max_after`
+    // sizes the merge tolerance (the widest after-pad among enabled kinds).
     let (_, max_after) = timings.max_pad(&toggles);
-    let tol_pts = max_after.max(1) as i64 * fps as i64;
-    let windows: Vec<(i64, i64)> = placed.iter().map(|&(s, e, _)| (s, e)).collect();
-    let merged = reconcile::merge_windows_tol(windows, tol_pts);
-
-    tracing::info!(
-        "auto-clip: {} event(s) → {} clip(s)",
-        placed.len(),
-        merged.len()
+    crate::games::recording::cut_placed_windows(
+        &crate::games::recording::CutWindows {
+            app: cx.app,
+            session_path: cx.session_path,
+            frozen_spans: cx.frozen_spans,
+            fps,
+            max_clip_secs: MAX_AUTOCLIP_SECS,
+            merge_after_secs: max_after,
+            game_label: "Valorant",
+            title_suffix: &summary.agent,
+            clip_context: summary.clip_context(),
+        },
+        &placed,
+        &marks_all,
     );
-
-    let mut cut = 0usize;
-    let mut skipped_frozen = 0usize;
-    for (s, e) in merged {
-        // Re-clamp the merged span. A merged window can cover several events
-        // (e.g. a spike-defuse then a kill): collect them all in time order, and
-        // keep the strongest as the headline `kind` for back-compat + sorting.
-        let end = e.min(s + max_len_pts);
-        let kind = dominant_kind(&placed, s, end).unwrap_or(EventKind::Kill);
-        let kinds = kinds_in_window(&placed, s, end);
-        let event_labels: Vec<String> = kinds.iter().map(|k| k.label().to_string()).collect();
-        // Per-event positions within this clip (offset from its start), for the
-        // editor's seek-bar markers.
-        let event_marks = marks_in_window(&marks_all, s, end, fps as i64);
-        let start_sec = s as f64 / fps as f64;
-        let end_sec = end as f64 / fps as f64;
-        if end_sec <= start_sec {
-            continue;
-        }
-
-        // Skip a clip whose window was mostly frozen (game minimized / stale
-        // swapchain) — it would be a dead, single-frame clip. Both the window and
-        // the spans are in session-PTS (1/fps) units, so they compare directly.
-        let span_pts = end - s;
-        let frozen_pts = frozen_overlap(cx.frozen_spans, s, end);
-        if span_pts > 0 && frozen_pts * 2 > span_pts {
-            tracing::warn!(
-                "auto-clip: skipping {start_sec:.1}-{end_sec:.1}s — {}% frozen \
-                 (game minimized/not presenting during the match)",
-                (frozen_pts * 100 / span_pts).min(100)
-            );
-            skipped_frozen += 1;
-            continue;
-        }
-
-        let out = match commands::auto_clip_output_path(cx.app) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!("auto-clip: output path: {e}");
-                continue;
-            }
-        };
-        // Stream-copy the window out of the session file (no re-encode).
-        match crate::library::trim::trim_clip(cx.session_path, &out, start_sec, end_sec, false) {
-            Ok(res) => {
-                // Stream copy snaps the cut start forward to the nearest keyframe;
-                // rebase the markers (measured from the *requested* start) by that
-                // snap so every event lines up with the clip the user actually sees.
-                let event_marks =
-                    crate::library::db::shift_marks(&event_marks, res.start_shift_secs);
-                // Tag the clip with all its events + the match's agent when
-                // known (e.g. "Spike Defused + Kill — Jett"), else events +
-                // duration.
-                let label = commands::events_summary(kind.label(), &event_labels);
-                let title = if summary.agent.is_empty() {
-                    format!("{} — {:.0}s", label, end_sec - start_sec)
-                } else {
-                    format!("{} — {}", label, summary.agent)
-                };
-                if let Err(err) = commands::finalize_auto_clip(
-                    cx.app,
-                    out,
-                    title,
-                    kind.label(),
-                    &event_labels,
-                    event_marks,
-                    res.width,
-                    res.height,
-                    res.duration_secs,
-                    summary.clip_context(),
-                ) {
-                    tracing::warn!("auto-clip: library insert failed: {err}");
-                } else {
-                    cut += 1;
-                }
-            }
-            Err(err) => tracing::warn!("auto-clip: cut {start_sec:.1}-{end_sec:.1}s failed: {err}"),
-        }
-    }
-    tracing::info!("auto-clip: wrote {cut} clip(s) to the library");
-    if skipped_frozen > 0 {
-        // Surface it honestly: the user alt-tabbed / switched display mode and the
-        // injection-path capture froze, so some highlights had no live footage.
-        let msg = if cut == 0 {
-            format!(
-                "Skipped {skipped_frozen} clip(s) — Valorant was minimized or not \
-                 rendering for the match, so there was no live gameplay to clip."
-            )
-        } else {
-            format!("Skipped {skipped_frozen} clip(s) — the game was minimized during those moments.")
-        };
-        tracing::warn!("auto-clip: {msg}");
-        let _ = cx.app.emit(events::RECORDER_ERROR, &msg);
-    }
     Ok(())
-}
-
-/// Total overlap (session PTS) between clip window `[s, end)` and the frozen
-/// spans. The spans are non-overlapping and ascending, so this is a simple sum of
-/// per-span intersections.
-fn frozen_overlap(spans: &[(i64, i64)], s: i64, end: i64) -> i64 {
-    spans
-        .iter()
-        .map(|&(a, b)| (end.min(b) - s.max(a)).max(0))
-        .sum()
 }
 
 /// Fetch `match-details`, retrying while Riot finalizes the match (6 × 20 s).
@@ -678,96 +581,6 @@ async fn fetch_match_details_retry(
     None
 }
 
-/// The strongest highlight kind whose anchor falls inside `[start, end]` (so the
-/// merged clip is tagged by its best moment, e.g. an Ace over a stray Kill).
-fn dominant_kind(placed: &[(i64, i64, EventKind)], start: i64, end: i64) -> Option<EventKind> {
-    placed
-        .iter()
-        .filter(|&&(s, _, _)| s >= start - 1 && s <= end)
-        .map(|&(_, _, k)| k)
-        .max_by_key(|k| kind_priority(*k))
-}
-
-/// Every distinct event kind anchored inside `[start, end]`, in time order — so
-/// a merged window lists its events as they happened (e.g. spike-defuse → kill).
-/// Deduplicated by label so repeated kinds (two kills) collapse to one tag.
-fn kinds_in_window(placed: &[(i64, i64, EventKind)], start: i64, end: i64) -> Vec<EventKind> {
-    let mut hits: Vec<(i64, EventKind)> = placed
-        .iter()
-        .filter(|&&(s, _, _)| s >= start - 1 && s <= end)
-        .map(|&(s, _, k)| (s, k))
-        .collect();
-    hits.sort_by_key(|&(s, _)| s);
-    let mut out: Vec<EventKind> = Vec::new();
-    for (_, k) in hits {
-        if !out.iter().any(|e| e.label() == k.label()) {
-            out.push(k);
-        }
-    }
-    out
-}
-
-/// The seek-bar markers landing inside `[start, end]` — each reconciled marker's
-/// label plus its offset (seconds) from the clip's start. Keeps every occurrence
-/// (two kills → two markers) so the bar shows where each moment actually
-/// happened. Markers at (near-)identical times are de-duplicated, keeping the
-/// higher-priority label — a clutch kill and the multi-kill tier it also belongs
-/// to reconcile to the same PTS, and should show as one marker, not two stacked.
-fn marks_in_window(
-    marks: &[(i64, EventKind)],
-    start: i64,
-    end: i64,
-    fps: i64,
-) -> Vec<crate::library::db::EventMark> {
-    let fps = fps.max(1);
-    let mut hits: Vec<(i64, EventKind)> = marks
-        .iter()
-        .filter(|&&(p, _)| p >= start && p <= end)
-        .copied()
-        .collect();
-    hits.sort_by_key(|&(p, _)| p);
-    // Collapse markers within ~0.2 s of each other (distinct kills are ≥ ~1 s
-    // apart in practice, so this only fuses two labels for the *same* moment).
-    let tol = (fps / 5).max(1);
-    let mut deduped: Vec<(i64, EventKind)> = Vec::new();
-    for (p, k) in hits {
-        match deduped.last_mut() {
-            Some(last) if (p - last.0).abs() <= tol => {
-                if kind_priority(k) > kind_priority(last.1) {
-                    *last = (p, k);
-                }
-            }
-            _ => deduped.push((p, k)),
-        }
-    }
-    deduped
-        .into_iter()
-        .map(|(p, k)| crate::library::db::EventMark {
-            label: k.label().to_string(),
-            at: ((p - start).max(0) as f64) / fps as f64,
-        })
-        .collect()
-}
-
-/// Tag priority: the headline moments (Victory/Ace/Clutch) outrank multi-kills,
-/// which outrank single kills, spike plays, deaths, and assists.
-fn kind_priority(k: EventKind) -> u8 {
-    match k {
-        EventKind::Victory => 11,
-        EventKind::Ace => 10,
-        EventKind::Clutch => 9,
-        EventKind::QuadraKill => 8,
-        EventKind::TripleKill => 7,
-        EventKind::Knife => 6,
-        EventKind::DoubleKill => 5,
-        EventKind::SpikeDefused => 4,
-        EventKind::SpikeDetonated => 3,
-        EventKind::Kill => 2,
-        EventKind::Assist => 1,
-        EventKind::Death => 0,
-    }
-}
-
 /// Read the user's event toggles from settings (defaults match Medal's
 /// `events.json` if settings are unavailable).
 fn load_toggles(app: &AppHandle) -> EventToggles {
@@ -784,75 +597,8 @@ fn load_timings(app: &AppHandle) -> EventTimings {
         .unwrap_or_default()
 }
 
-/// Save a whole Mode-B session file as a single library clip (FullMatch / Session
-/// modes): stream-copy it into the clips dir (which also probes its real
-/// dimensions + duration), tag it with `event`, and register it. The session temp
-/// is dropped by the caller.
-pub fn save_whole_session(
-    app: &AppHandle,
-    session_path: &std::path::Path,
-    title: &str,
-    event: &str,
-    // Game context (agent/map/mode/result). `NewClip::default()` when none is
-    // known (e.g. Session-mode recordings with no match-details fetch).
-    context: crate::library::db::NewClip,
-) -> Result<(), String> {
-    /// Upper bound on a session's length (s) — trim copies to EOF within it.
-    const WHOLE_FILE_SECS: f64 = 24.0 * 60.0 * 60.0;
-    let out = commands::auto_clip_output_path(app)?;
-    let res = crate::library::trim::trim_clip(session_path, &out, 0.0, WHOLE_FILE_SECS, false)
-        .map_err(|e| format!("whole-session copy failed: {e}"))?;
-    commands::finalize_auto_clip(
-        app,
-        out,
-        title.to_string(),
-        event,
-        std::slice::from_ref(&event.to_string()),
-        // A whole-match save has no per-event positions to mark.
-        Vec::new(),
-        res.width,
-        res.height,
-        res.duration_secs,
-        context,
-    )?;
-    tracing::info!("auto-clip: saved {event} ({:.0}s)", res.duration_secs);
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn marks_dedup_keeps_higher_priority_at_same_moment() {
-        // A clutch kill that is also the 2nd kill of a double lands on the same PTS
-        // from both events; the two labels collapse to the higher-priority one so
-        // each kill shows exactly one marker. (60 fps; PTS 600 = 10 s, 1200 = 20 s.)
-        let marks = vec![
-            (600, EventKind::Kill),
-            (600, EventKind::Clutch),
-            (1200, EventKind::DoubleKill),
-        ];
-        let out = marks_in_window(&marks, 0, 2000, 60);
-        assert_eq!(out.len(), 2);
-        assert_eq!(out[0].label, "Clutch"); // Clutch outranks Kill at the same time
-        assert_eq!(out[0].at, 10.0);
-        assert_eq!(out[1].label, "Double Kill");
-        assert_eq!(out[1].at, 20.0);
-    }
-
-    #[test]
-    fn marks_keep_distinct_close_kills() {
-        // Two kills ~1.16 s apart (70 frames @ 60 fps) stay two markers — the dedup
-        // tolerance (~0.2 s) only fuses labels for the *same* instant.
-        let marks = vec![(1540, EventKind::Kill), (1610, EventKind::DoubleKill)];
-        assert_eq!(marks_in_window(&marks, 0, 5000, 60).len(), 2);
-    }
-
-    #[test]
-    fn marks_outside_window_are_dropped() {
-        let marks = vec![(100, EventKind::Kill), (9000, EventKind::Ace)];
-        let out = marks_in_window(&marks, 500, 2000, 60);
-        assert_eq!(out.len(), 0);
-    }
-}
+// Whole-session save now lives in the shared recording layer; re-exported so the
+// `cut::save_whole_session` call sites (here + the integration loop) keep working.
+// The window/marker tests that lived here moved with that logic to
+// `crate::games::recording`.
+pub use crate::games::recording::save_whole_session;

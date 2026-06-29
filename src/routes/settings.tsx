@@ -22,6 +22,8 @@ import {
   migrateClipsTo,
   type EventToggles,
   type GameModeToggles,
+  type LolEventToggles,
+  type AutoCaptureMode,
   type Settings,
 } from "@/lib/api";
 import {
@@ -221,6 +223,64 @@ function SettingsPage() {
     if (d) persist(timingNext(d, key, field, value));
   };
 
+  // --- League (per-game) auto-capture handlers, operating on games.lol -------
+  const setLolMode = (mode: AutoCaptureMode) => {
+    const d = draftRef.current;
+    if (d)
+      persist({
+        ...d,
+        games: { ...d.games, lol: { ...d.games.lol, auto_capture_mode: mode } },
+      });
+  };
+  const toggleLolEvent = (key: keyof LolEventToggles) => {
+    const d = draftRef.current;
+    if (d)
+      persist({
+        ...d,
+        games: {
+          ...d.games,
+          lol: {
+            ...d.games.lol,
+            events: { ...d.games.lol.events, [key]: !d.games.lol.events[key] },
+          },
+        },
+      });
+  };
+  const lolTimingNext = (
+    d: Settings,
+    key: keyof LolEventToggles,
+    field: "before" | "after",
+    value: number
+  ): Settings => ({
+    ...d,
+    games: {
+      ...d.games,
+      lol: {
+        ...d.games.lol,
+        event_timings: {
+          ...d.games.lol.event_timings,
+          [key]: { ...d.games.lol.event_timings[key], [field]: value },
+        },
+      },
+    },
+  });
+  const setLolTimingLocal = (
+    key: keyof LolEventToggles,
+    field: "before" | "after",
+    value: number
+  ) => {
+    const d = draftRef.current;
+    if (d) setDraft(lolTimingNext(d, key, field, value));
+  };
+  const commitLolTiming = (
+    key: keyof LolEventToggles,
+    field: "before" | "after",
+    value: number
+  ) => {
+    const d = draftRef.current;
+    if (d) persist(lolTimingNext(d, key, field, value));
+  };
+
   const q = navQuery.trim().toLowerCase();
   // Single pass: filter each group's items and keep only non-empty groups in one
   // reduce, instead of mapping then filtering over the group list twice.
@@ -301,6 +361,10 @@ function SettingsPage() {
               toggleGameMode={toggleGameMode}
               setTimingLocal={setTimingLocal}
               commitTiming={commitTiming}
+              setLolMode={setLolMode}
+              toggleLolEvent={toggleLolEvent}
+              setLolTimingLocal={setLolTimingLocal}
+              commitLolTiming={commitLolTiming}
             />
           )}
 

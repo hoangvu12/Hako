@@ -54,6 +54,10 @@ export interface ClipRecord {
   assists: number | null;
   /** Headshot % over recorded damage, 0–100 (auto-clips only). */
   headshot_pct: number | null;
+  /** Source game: "valorant" | "lol". Null on clips predating multi-game
+   * support (treated as Valorant). For League, `agent` holds the champion name,
+   * `map`/`mode` the map + queue, and `headshot_pct` is unused. */
+  game: string | null;
 
   /** True once cloud retention deleted the local files. The clip is now
    * cloud-only — `path`/`thumb_path` no longer point at real files, so playback

@@ -211,7 +211,7 @@ pub struct ClipBuffer {
     video_base: OnceLock<i64>,
     /// Active Mode-B session writer (Valorant full-match recording). When
     /// installed, every pushed packet is also teed to it; `None` otherwise. The
-    /// orchestrator installs/takes it on match start/end (`valorant::orchestrator`).
+    /// orchestrator installs/takes it on match start/end (`valorant::integration`).
     session: Mutex<Option<Arc<SessionWriter>>>,
 }
 
@@ -332,7 +332,7 @@ impl ClipBuffer {
     /// Hako is opened mid-game the audio thread may still be opening its
     /// (per-process loopback) inputs, and an empty/partial snapshot would declare
     /// a video-only session, leaving every auto-clip silent. See
-    /// `valorant::orchestrator::start_match`.
+    /// `valorant::integration::start_match`.
     pub fn audio_track_metas(&self) -> Vec<(String, AudioMeta)> {
         self.audio_tracks
             .iter()
@@ -558,15 +558,30 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
 /// detects the game process. Matches the game window's exact title; returns its
 /// HWND or `None` if the game isn't running.
 pub fn find_valorant_window() -> Option<i64> {
-    let mut found: i64 = 0;
-    // SAFETY: `found` outlives the EnumWindows call; the callback only writes it.
+    find_window_by_title("VALORANT")
+}
+
+/// Find the first visible top-level window whose (trimmed) title matches `want`
+/// case-insensitively, returning its HWND. The game-agnostic window detector each
+/// [`crate::games`] integration uses to auto-start capture when its game appears
+/// (Valorant → "VALORANT", League → "League of Legends (TM) Client"). The exact
+/// (trimmed) compare avoids matching browser tabs like "VALORANT - YouTube".
+pub fn find_window_by_title(want: &str) -> Option<i64> {
+    let mut search = TitleSearch { want, found: 0 };
+    // SAFETY: `search` outlives the EnumWindows call; the callback only writes it.
     unsafe {
         let _ = EnumWindows(
-            Some(find_valorant_proc),
-            LPARAM(&mut found as *mut i64 as isize),
+            Some(find_title_proc),
+            LPARAM(&mut search as *mut TitleSearch as isize),
         );
     }
-    (found != 0).then_some(found)
+    (search.found != 0).then_some(search.found)
+}
+
+/// State threaded through [`find_title_proc`] via `EnumWindows`' `LPARAM`.
+struct TitleSearch<'a> {
+    want: &'a str,
+    found: i64,
 }
 
 /// The process id that owns `hwnd_raw` (for the `specific_apps` "Game Audio"
@@ -590,8 +605,8 @@ pub fn is_window_minimized(hwnd: i64) -> bool {
     unsafe { IsIconic(HWND(hwnd as *mut c_void)).as_bool() }
 }
 
-unsafe extern "system" fn find_valorant_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    let out = &mut *(lparam.0 as *mut i64);
+unsafe extern "system" fn find_title_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let search = &mut *(lparam.0 as *mut TitleSearch);
     if IsWindowVisible(hwnd).as_bool() {
         let len = GetWindowTextLengthW(hwnd);
         if len > 0 {
@@ -599,11 +614,8 @@ unsafe extern "system" fn find_valorant_proc(hwnd: HWND, lparam: LPARAM) -> BOOL
             let n = GetWindowTextW(hwnd, &mut buf);
             if n > 0 {
                 let title = String::from_utf16_lossy(&buf[..n as usize]);
-                // The game window is titled exactly "VALORANT"; the Riot launcher
-                // is "Riot Client", and tab titles like "VALORANT - YouTube" won't
-                // match the trimmed-exact compare.
-                if title.trim().eq_ignore_ascii_case("VALORANT") {
-                    *out = hwnd.0 as i64;
+                if title.trim().eq_ignore_ascii_case(search.want) {
+                    search.found = hwnd.0 as i64;
                     return BOOL(0); // stop enumeration
                 }
             }

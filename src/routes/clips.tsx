@@ -23,7 +23,7 @@ import {
 } from "@/hooks/use-library";
 import { useUploadClip } from "@/hooks/use-cloud";
 import { useSettings } from "@/hooks/use-settings";
-import { useValorantAssets } from "@/hooks/use-valorant-assets";
+import { useGameAssets } from "@/games/use-game-assets";
 import type { ClipRecord } from "@/lib/api";
 import {
   CARD_CHROME,
@@ -55,8 +55,9 @@ export default function ClipsPage() {
   const { mutate: deleteClip } = useDeleteClip();
   const { mutate: renameClip } = useRenameClip();
   const { mutate: uploadClip, isPending: uploading } = useUploadClip();
-  const assets = useValorantAssets();
-
+  const assets = useGameAssets();
+  // One library across every game — scoping is done via the toolbar's Game
+  // filter, not a separate page mode.
   const allClips = React.useMemo(() => clips ?? [], [clips]);
   const { filters, facets, sections, total, activeCount, update, toggle, reset } =
     useClipFilters(allClips);

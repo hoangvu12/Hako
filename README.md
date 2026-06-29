@@ -1,9 +1,16 @@
 # Hako
 
-A performance-first clip recorder built for one game: Valorant. It runs quietly in
-the background, keeps the last couple of minutes of gameplay in a buffer, and cuts
-your kills into clips on its own. Think of it as a lighter Medal.tv that does less,
-but does it without eating your frames.
+A performance-first clip recorder for Valorant and League of Legends. It runs
+quietly in the background, keeps the last couple of minutes of gameplay in a
+buffer, and cuts your kills into clips on its own. Think of it as a lighter
+Medal.tv that does less, but does it without eating your frames.
+
+Game integrations are modular: each game lives behind a `GameIntegration` in
+`src-tauri/src/games/` and plugs into one shared capture/record/cut pipeline, so a
+new title is a self-contained module rather than a rewrite. Valorant follows a
+match by Riot's local/remote API and reconciles kills post-match; League reads the
+local **Live Client Data API** event feed in real time. Both produce the same
+highlight clips.
 
 ![Hako — performance-first Valorant clipper](.github/assets/og-image.png)
 
@@ -112,8 +119,10 @@ cargo build --manifest-path src-tauri/Cargo.toml    # compile the Rust core
   Valorant (live match status), and Settings. Shadcn components live under
   `components/ui`, and `lib/api` holds the typed invoke wrappers.
 - `src-tauri/src/` is the Rust core. `core/` holds capture, encode, and buffering;
-  `valorant/` holds the Riot integration; `library/` holds clips, trimming, and
-  thumbnails; `commands.rs` is the invoke surface the UI calls.
+  `games/` holds the shared multi-game layer (the `GameIntegration` trait, the
+  recording/cut machinery, and the `lol/` integration), with the Valorant
+  integration in `valorant/`; `library/` holds clips, trimming, and thumbnails;
+  `commands.rs` is the invoke surface the UI calls.
 - Clips and thumbnails are written to `<Videos>/Hako`.
 - `src-tauri/app-icon.png` is the source image for `bun tauri icon`.
 

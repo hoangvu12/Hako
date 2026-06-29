@@ -75,6 +75,56 @@ export interface GameModeToggles {
   other: boolean;
 }
 
+/** Per-event auto-clip toggles for League (mirrors Rust `LolEventToggles`). */
+export interface LolEventToggles {
+  kill: boolean;
+  double_kill: boolean;
+  triple_kill: boolean;
+  quadra_kill: boolean;
+  pentakill: boolean;
+  ace: boolean;
+  first_blood: boolean;
+  death: boolean;
+  assist: boolean;
+  dragon: boolean;
+  baron: boolean;
+  herald: boolean;
+  turret: boolean;
+  inhibitor: boolean;
+  victory: boolean;
+}
+
+/** Per-event clip windows for League (mirrors Rust `LolEventTimings`). */
+export interface LolEventTimings {
+  kill: EventTiming;
+  double_kill: EventTiming;
+  triple_kill: EventTiming;
+  quadra_kill: EventTiming;
+  pentakill: EventTiming;
+  ace: EventTiming;
+  first_blood: EventTiming;
+  death: EventTiming;
+  assist: EventTiming;
+  dragon: EventTiming;
+  baron: EventTiming;
+  herald: EventTiming;
+  turret: EventTiming;
+  inhibitor: EventTiming;
+  victory: EventTiming;
+}
+
+/** League auto-capture config (mirrors Rust `LolGameSettings`). */
+export interface LolGameSettings {
+  auto_capture_mode: AutoCaptureMode;
+  events: LolEventToggles;
+  event_timings: LolEventTimings;
+}
+
+/** Per-game settings for non-Valorant games (mirrors Rust `GamesSettings`). */
+export interface GamesSettings {
+  lol: LolGameSettings;
+}
+
 /** Mirrors the Rust `Settings` (src-tauri/src/settings.rs). */
 export interface Settings {
   target_fps: number;
@@ -136,6 +186,9 @@ export interface Settings {
    * continuous and unaffected). Defaults to all-on.
    */
   auto_clip_modes: GameModeToggles;
+  /** Per-game settings for non-Valorant games (currently League). Valorant's
+   * config stays in the flat fields above. */
+  games: GamesSettings;
   storage_dir: string | null;
   /**
    * Which quality preset card is highlighted: "low" | "standard" | "high" |

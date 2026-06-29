@@ -2,6 +2,7 @@ import * as React from "react";
 
 import type { ClipRecord } from "@/lib/api";
 import { mapNameFromPath } from "@/hooks/use-valorant-assets";
+import { GAMES, clipGame, type GameId } from "@/games/registry";
 
 /** Sort orders offered in the toolbar. */
 export type SortKey = "newest" | "oldest" | "largest" | "longest";
@@ -17,6 +18,7 @@ export const SORTS: { key: SortKey; label: string }[] = [
 
 export interface ClipFilters {
   search: string;
+  games: string[]; // game ids ("valorant" | "lol")
   agents: string[]; // agent display names
   maps: string[]; // map asset paths
   modes: string[]; // mode display names
@@ -28,6 +30,7 @@ export interface ClipFilters {
 
 const EMPTY: ClipFilters = {
   search: "",
+  games: [],
   agents: [],
   maps: [],
   modes: [],
@@ -46,6 +49,7 @@ export interface MapFacet {
 /** The distinct values actually present in the library — drives which filter
  * options we offer (no empty/irrelevant choices). */
 export interface Facets {
+  games: GameId[];
   agents: string[];
   maps: MapFacet[];
   modes: string[];
@@ -76,7 +80,10 @@ function uniqueSorted(values: (string | null)[]): string[] {
 
 function deriveFacets(clips: ClipRecord[]): Facets {
   const mapPaths = uniqueSorted(clips.map((c) => c.map));
+  // Games actually present in the library, in registry (display) order.
+  const present = new Set(clips.map((c) => clipGame(c.game)));
   return {
+    games: GAMES.map((g) => g.id).filter((id) => present.has(id)),
     agents: uniqueSorted(clips.map((c) => c.agent)),
     maps: mapPaths.map((path) => ({ path, name: mapNameFromPath(path) })),
     modes: uniqueSorted(clips.map((c) => c.mode)),
@@ -97,6 +104,7 @@ function matches(clip: ClipRecord, f: ClipFilters): boolean {
       .toLowerCase();
     if (!hay.includes(q)) return false;
   }
+  if (f.games.length && !f.games.includes(clipGame(clip.game))) return false;
   if (f.agents.length && !(clip.agent && f.agents.includes(clip.agent)))
     return false;
   if (f.maps.length && !(clip.map && f.maps.includes(clip.map))) return false;
@@ -169,6 +177,7 @@ function buildSections(clips: ClipRecord[], f: ClipFilters): ClipSection[] {
 function countActive(f: ClipFilters): number {
   return (
     (f.search.trim() ? 1 : 0) +
+    f.games.length +
     f.agents.length +
     f.maps.length +
     f.modes.length +
@@ -202,7 +211,7 @@ export function useClipFilters(clips: ClipRecord[]) {
     []
   );
   const toggle = React.useCallback(
-    (key: "agents" | "maps" | "modes" | "events", value: string) =>
+    (key: "games" | "agents" | "maps" | "modes" | "events", value: string) =>
       setFilters((f) => {
         const set = new Set(f[key]);
         set.has(value) ? set.delete(value) : set.add(value);

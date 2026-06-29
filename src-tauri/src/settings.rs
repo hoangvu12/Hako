@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::games::lol::events::{LolEventTimings, LolEventToggles};
 use crate::valorant::model::GameModeToggles;
 use crate::valorant::reconcile::{EventTimings, EventToggles};
 
@@ -85,6 +86,10 @@ pub struct Settings {
     /// (Highlights / Full match); Session mode is continuous and unaffected.
     /// Defaults to all-on (record every mode), matching the historical behavior.
     pub auto_clip_modes: GameModeToggles,
+    /// Per-game settings for games other than Valorant (whose config stays in the
+    /// flat fields above for back-compat). Currently just League of Legends.
+    /// `#[serde(default)]` so older configs (no `games` key) load fine.
+    pub games: GamesSettings,
     /// Where clips are written (null → `<Videos>/Hako`).
     pub storage_dir: Option<String>,
     /// Which Medal-style quality preset the UI shows as selected: `low` |
@@ -175,6 +180,7 @@ impl Default for Settings {
             event_timings: EventTimings::default(),
             auto_capture_mode: "highlights".into(),
             auto_clip_modes: GameModeToggles::default(),
+            games: GamesSettings::default(),
             storage_dir: None,
             quality_preset: "custom".into(),
             resolution: "native".into(),
@@ -225,6 +231,38 @@ impl AutoCaptureMode {
     /// Whether this mode records a per-match session (Highlights or FullMatch).
     pub fn records_match(self) -> bool {
         matches!(self, AutoCaptureMode::Highlights | AutoCaptureMode::FullMatch)
+    }
+}
+
+/// Per-game settings for non-Valorant games. Valorant's config stays in the flat
+/// top-level [`Settings`] fields (so pre-`games` configs keep their behavior);
+/// every other game nests here. Forward/back-compatible via `#[serde(default)]`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GamesSettings {
+    pub lol: LolGameSettings,
+}
+
+/// League of Legends auto-capture config (mirrors the Valorant flat fields, but
+/// with League's own event taxonomy + timings).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LolGameSettings {
+    /// `manual` | `highlights` | `full_match` | `session` (see [`AutoCaptureMode`]).
+    pub auto_capture_mode: String,
+    /// Per-event auto-clip toggles.
+    pub events: LolEventToggles,
+    /// Per-event clip windows (before/after seconds).
+    pub event_timings: LolEventTimings,
+}
+
+impl Default for LolGameSettings {
+    fn default() -> Self {
+        LolGameSettings {
+            auto_capture_mode: "highlights".into(),
+            events: LolEventToggles::default(),
+            event_timings: LolEventTimings::default(),
+        }
     }
 }
 
@@ -424,6 +462,11 @@ impl Settings {
         AutoCaptureMode::parse(&self.auto_capture_mode)
     }
 
+    /// The League auto-capture mode (from the per-game settings bundle).
+    pub fn lol_auto_mode(&self) -> AutoCaptureMode {
+        AutoCaptureMode::parse(&self.games.lol.auto_capture_mode)
+    }
+
     /// Seconds the save-clip hotkey should capture: the configured `clip_seconds`
     /// clamped to what the buffer actually holds (`buffer_seconds`), and never
     /// zero. You can't save more gameplay than is buffered.
@@ -570,6 +613,21 @@ mod tests {
         assert_eq!(loaded.codec, "hevc");
         assert!(loaded.events.kill);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn legacy_config_without_games_loads_lol_defaults() {
+        // A settings.json written before multi-game support has no `games` key;
+        // `#[serde(default)]` must synthesize the League defaults (Highlights mode,
+        // default toggles) so League auto-clip works out of the box.
+        let legacy = r#"{ "target_fps": 60, "auto_capture_mode": "highlights" }"#;
+        let s: Settings = serde_json::from_str(legacy).unwrap();
+        assert_eq!(s.lol_auto_mode(), AutoCaptureMode::Highlights);
+        assert!(s.games.lol.events.pentakill); // a default-on League event
+        // And the nested bundle round-trips through disk.
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.games.lol.auto_capture_mode, "highlights");
     }
 
     #[test]

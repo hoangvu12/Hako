@@ -61,6 +61,7 @@ impl MatchSummary {
             deaths: Some(self.deaths as i64),
             assists: Some(self.assists as i64),
             headshot_pct: Some(self.headshot_pct),
+            game: Some("valorant".to_string()),
             ..Default::default()
         }
     }

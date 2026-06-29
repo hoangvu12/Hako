@@ -11,6 +11,32 @@
 /// 100-nanosecond ticks per second — the unit of WGC `SystemRelativeTime`.
 pub const TICKS_PER_SECOND: i64 = 10_000_000;
 
+/// Current capture clock reading in 100-ns ticks — `QueryPerformanceCounter`
+/// normalized to the same domain as WGC `SystemRelativeTime`, so a wall-clock
+/// stamped here lines up with session packet timestamps. Used by Valorant's log
+/// anchors and by League's live-event receipt timestamps to reconcile against the
+/// session [`crate::games::timeline::TimelineIndex`].
+#[cfg(windows)]
+pub fn now_ticks() -> i64 {
+    use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
+    let (mut c, mut f) = (0i64, 0i64);
+    // SAFETY: both calls just read counters into locals.
+    unsafe {
+        let _ = QueryPerformanceCounter(&mut c);
+        let _ = QueryPerformanceFrequency(&mut f);
+    }
+    if f <= 0 {
+        return 0;
+    }
+    // ticks(100ns) = qpc / freq * 1e7, in i128 to avoid overflow.
+    (c as i128 * TICKS_PER_SECOND as i128 / f as i128) as i64
+}
+
+#[cfg(not(windows))]
+pub fn now_ticks() -> i64 {
+    0
+}
+
 /// Map a capture timestamp (100-ns ticks) to a presentation timestamp in
 /// `1/fps` units relative to `base_ticks`.
 ///

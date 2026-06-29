@@ -17,6 +17,12 @@ import {
   Bell,
   CloudArrowUp,
   Pulse,
+  Drop,
+  Star,
+  Eye,
+  Buildings,
+  Cube,
+  Shield,
   type Icon,
 } from "@phosphor-icons/react";
 
@@ -24,6 +30,7 @@ import type {
   AutoCaptureMode,
   EventToggles,
   GameModeToggles,
+  LolEventToggles,
   Settings,
 } from "@/lib/api";
 
@@ -101,6 +108,31 @@ export const EVENT_LABELS: {
   { key: "assist", label: "Assist", hint: "Assisted eliminations", icon: Handshake },
   { key: "spike_detonated", label: "Spike detonated", hint: "A spike you planted exploded", icon: Bomb },
   { key: "spike_defused", label: "Spike defused", hint: "You defused the spike", icon: Wrench },
+];
+
+// League of Legends auto-clip events (mirrors Rust `LolEventToggles`). Champion
+// combat + objectives + the match result.
+export const LOL_EVENT_LABELS: {
+  key: keyof LolEventToggles;
+  label: string;
+  hint: string;
+  icon: Icon;
+}[] = [
+  { key: "victory", label: "Victory", hint: "You won the match", icon: Trophy },
+  { key: "pentakill", label: "Pentakill", hint: "Five-kill streak", icon: Star },
+  { key: "ace", label: "Ace", hint: "Your team aced the enemy", icon: Crown },
+  { key: "first_blood", label: "First blood", hint: "First takedown of the game", icon: Drop },
+  { key: "quadra_kill", label: "Quadra kill", hint: "4-kill streak", icon: Sword },
+  { key: "triple_kill", label: "Triple kill", hint: "3-kill streak", icon: Sword },
+  { key: "double_kill", label: "Double kill", hint: "2-kill streak", icon: Sword },
+  { key: "kill", label: "Kill", hint: "Any takedown", icon: Sword },
+  { key: "death", label: "Death", hint: "Your deaths", icon: Skull },
+  { key: "assist", label: "Assist", hint: "Assisted takedowns", icon: Handshake },
+  { key: "baron", label: "Baron Nashor", hint: "You secured Baron", icon: Shield },
+  { key: "dragon", label: "Dragon", hint: "You secured a dragon", icon: Fire },
+  { key: "herald", label: "Rift Herald", hint: "You secured the Herald", icon: Eye },
+  { key: "turret", label: "Turret", hint: "You destroyed a turret", icon: Buildings },
+  { key: "inhibitor", label: "Inhibitor", hint: "You destroyed an inhibitor", icon: Cube },
 ];
 
 // Slider ranges for the per-event timing rows. Before can run long (the 45 s

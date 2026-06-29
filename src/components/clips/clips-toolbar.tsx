@@ -15,7 +15,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import type { ValorantAssets } from "@/hooks/use-valorant-assets";
+import type { GameAssets } from "@/games/use-game-assets";
 import {
   SORTS,
   type ClipFilters,
@@ -55,12 +55,15 @@ export const ClipsToolbar = React.memo(function ClipsToolbar({
   update: (patch: Partial<ClipFilters>) => void;
   toggle: (key: MultiKey, value: string) => void;
   reset: () => void;
-  assets: ValorantAssets;
+  assets: GameAssets;
 }) {
-  const { agentOptions, mapOptions, modeOptions, eventOptions } =
-    buildFacetOptions(facets, assets);
+  const { gameOptions, agentOptions, mapOptions, modeOptions, eventOptions } =
+    buildFacetOptions(facets, assets.valorant);
 
+  // The Game facet only earns a chip once the library spans more than one game.
+  const showGame = gameOptions.length > 1;
   const hasFacets =
+    showGame ||
     agentOptions.length > 0 ||
     mapOptions.length > 0 ||
     modeOptions.length > 0 ||
@@ -92,6 +95,14 @@ export const ClipsToolbar = React.memo(function ClipsToolbar({
         {/* Filter group: tight internal spacing marks it as one cluster. */}
         {hasFilters ? (
           <div className="flex flex-wrap items-center gap-1.5">
+            {showGame ? (
+              <MultiSelectFilter
+                label="Game"
+                options={gameOptions}
+                selected={filters.games}
+                onToggle={(v) => toggle("games", v)}
+              />
+            ) : null}
             <MultiSelectFilter
               label="Agent"
               options={agentOptions}

@@ -19,10 +19,11 @@
 
 #![allow(dead_code)]
 
+// `TimelineIndex` now lives in the shared games layer; re-exported here so the
+// existing `valorant::reconcile::TimelineIndex` paths (cut, pending, session)
+// keep resolving during the migration.
+pub use crate::games::timeline::{TimelineIndex, TICKS_PER_MS};
 use crate::valorant::model::{EventKind, EventMoment, GameEvent, MatchDetails};
-
-/// 100-ns ticks per millisecond (Riot times are ms; our clock is 100-ns ticks).
-const TICKS_PER_MS: i64 = 10_000;
 
 /// Per-event enable flags. Defaults match Medal's stored Valorant
 /// config (`fW3AZxHf_c`): highlight-worthy on,
@@ -82,6 +83,8 @@ impl EventToggles {
             EventKind::Clutch => self.clutch,
             EventKind::SpikeDetonated => self.spike_detonated,
             EventKind::SpikeDefused => self.spike_defused,
+            // League-only kinds are never produced by the Valorant deriver.
+            _ => false,
         }
     }
 }
@@ -166,6 +169,7 @@ impl EventTimings {
             EventKind::Clutch => self.clutch,
             EventKind::SpikeDetonated => self.spike_detonated,
             EventKind::SpikeDefused => self.spike_defused,
+            _ => self.kill,
         }
     }
 
@@ -512,77 +516,6 @@ pub struct RoundAnchor {
     pub start_wallclock_ticks: i64,
 }
 
-/// Maps wall-clock (100-ns ticks) ↔ session-file PTS. Built by the Mode-B
-/// session writer as it muxes packets: each entry pairs a packet's capture
-/// timestamp with its PTS. Lookups linearly interpolate and clamp to the ends.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct TimelineIndex {
-    /// `(wallclock_ticks, pts)` pairs, kept sorted by wall-clock.
-    samples: Vec<(i64, i64)>,
-}
-
-impl TimelineIndex {
-    pub fn new() -> Self {
-        TimelineIndex { samples: Vec::new() }
-    }
-
-    /// Record a sample. Kept sorted; out-of-order pushes are inserted in place.
-    pub fn push(&mut self, wallclock_ticks: i64, pts: i64) {
-        match self.samples.last() {
-            Some(&(w, _)) if wallclock_ticks >= w => self.samples.push((wallclock_ticks, pts)),
-            _ => {
-                let idx = self
-                    .samples
-                    .partition_point(|&(w, _)| w < wallclock_ticks);
-                self.samples.insert(idx, (wallclock_ticks, pts));
-            }
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.samples.is_empty()
-    }
-
-    /// PTS at `wallclock_ticks`, linearly interpolated between bracketing
-    /// samples and clamped to the recorded range. `None` if no samples.
-    pub fn pts_at(&self, wallclock_ticks: i64) -> Option<i64> {
-        if self.samples.is_empty() {
-            return None;
-        }
-        let first = self.samples[0];
-        let last = self.samples[self.samples.len() - 1];
-        if wallclock_ticks <= first.0 {
-            return Some(first.1);
-        }
-        if wallclock_ticks >= last.0 {
-            return Some(last.1);
-        }
-        let i = self.samples.partition_point(|&(w, _)| w <= wallclock_ticks);
-        let (w0, p0) = self.samples[i - 1];
-        let (w1, p1) = self.samples[i];
-        if w1 == w0 {
-            return Some(p0);
-        }
-        let frac = (wallclock_ticks - w0) as f64 / (w1 - w0) as f64;
-        Some(p0 + ((p1 - p0) as f64 * frac).round() as i64)
-    }
-
-    /// PTS at `wallclock_ticks`, but only if it lands within the recorded range
-    /// (± `tol` ticks of either end). `None` when the moment was never captured —
-    /// the recording started *after* it (the game was already in progress when we
-    /// began recording) or stopped *before* it. Unlike [`pts_at`], this does NOT
-    /// clamp a far-out-of-range timestamp onto a file end, so events that predate
-    /// a mid-game recording start are dropped instead of piling onto PTS 0.
-    pub fn pts_at_within(&self, wallclock_ticks: i64, tol: i64) -> Option<i64> {
-        let first = *self.samples.first()?;
-        let last = *self.samples.last()?;
-        if wallclock_ticks < first.0 - tol || wallclock_ticks > last.0 + tol {
-            return None;
-        }
-        self.pts_at(wallclock_ticks)
-    }
-}
-
 /// Estimate an event's wall-clock (100-ns ticks): prefer the per-round anchor
 /// (`round_start + timeSinceRoundStart`), else the game-start anchor
 /// (`game_start + timeSinceGameStart`).
@@ -698,55 +631,14 @@ pub fn moment_pts(
     timeline.pts_at(wall)
 }
 
-/// Clip window `[center − before, center + after]` in PTS units, clamped to ≥ 0.
-pub fn clip_window(center_pts: i64, pad_before_secs: u32, pad_after_secs: u32, fps: u32) -> (i64, i64) {
-    clip_window_span(center_pts, center_pts, pad_before_secs, pad_after_secs, fps)
-}
-
-/// Clip window for a reconciled `[start_pts, end_pts]` span: pad `before` ahead
-/// of the start (the sequence's first action) and `after` past the end (its
-/// last). `[start − before, end + after]`, clamped to ≥ 0. A single-moment event
-/// passes `start == end` (see [`clip_window`]).
-pub fn clip_window_span(
-    start_pts: i64,
-    end_pts: i64,
-    pad_before_secs: u32,
-    pad_after_secs: u32,
-    fps: u32,
-) -> (i64, i64) {
-    let fps = fps.max(1) as i64;
-    let start = (start_pts - pad_before_secs as i64 * fps).max(0);
-    let end = end_pts + pad_after_secs as i64 * fps;
-    (start, end)
-}
-
-/// Merge overlapping/adjacent clip windows into one (multi-kills clustered in
-/// time become a single clip). Input order-independent; output sorted.
-pub fn merge_windows(windows: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
-    merge_windows_tol(windows, 0)
-}
-
-/// Like [`merge_windows`] but also fuses windows separated by a gap of up to
-/// `tol_pts` (in PTS units). Medal's `OverlapMergeGrouper` merges events whose
-/// windows are within `EventWindow` (10 s for Valorant) of each other, so two
-/// near-but-not-touching highlights become one clip rather than two with
-/// overlapping padding.
-pub fn merge_windows_tol(mut windows: Vec<(i64, i64)>, tol_pts: i64) -> Vec<(i64, i64)> {
-    if windows.is_empty() {
-        return windows;
-    }
-    windows.sort_by_key(|w| w.0);
-    let mut merged = vec![windows[0]];
-    for &(s, e) in &windows[1..] {
-        let last = merged.last_mut().unwrap();
-        if s <= last.1 + tol_pts {
-            last.1 = last.1.max(e);
-        } else {
-            merged.push((s, e));
-        }
-    }
-    merged
-}
+// The clip-window math (pad/clamp/merge) is game-agnostic and now lives in the
+// shared recording layer; re-exported so `valorant::reconcile::{clip_window,…}`
+// paths (the cut + these tests) keep resolving. Some are only referenced from the
+// test module, hence the allow.
+#[allow(unused_imports)]
+pub use crate::games::recording::{
+    clip_window, clip_window_span, merge_windows, merge_windows_tol,
+};
 
 #[cfg(test)]
 mod tests {

@@ -45,7 +45,7 @@ use crate::core::audio::AudioMeta;
 use crate::core::clock::TICKS_PER_SECOND;
 use crate::core::encode::{av_err, EncodedPacket};
 use crate::core::mux::ClipMeta;
-use crate::valorant::reconcile::TimelineIndex;
+use crate::games::timeline::TimelineIndex;
 
 // Raw FFmpeg flag values (ABI-stable; mirrors `mux.rs` — avoids depending on the
 // prebuilt binding exporting them as constants).

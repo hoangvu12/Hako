@@ -16,7 +16,7 @@ pub const STATE_HYDRATED: &str = "state-hydrated";
 pub const RECORDER_STATUS: &str = "recorder-status";
 
 /// Valorant match state transitions (loop state, score, recording flag).
-/// Payload: [`crate::valorant::orchestrator::MatchStatePayload`].
+/// Payload: [`crate::valorant::integration::MatchStatePayload`].
 pub const MATCH_STATE_CHANGED: &str = "match-state-changed";
 
 /// A new clip was written to the library (manual save or Valorant auto-clip).

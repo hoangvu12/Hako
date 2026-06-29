@@ -1,13 +1,19 @@
 import type { ValorantAssets } from "@/hooks/use-valorant-assets";
 import type { Facets } from "@/components/clips/use-clip-filters";
+import { gameMeta } from "@/games/registry";
 import type { Option } from "./types";
 
 /**
  * Turn the raw facet values into renderable filter `Option`s, attaching the
- * matching Valorant artwork (agent portraits + signature gradients, map splashes,
- * mode list art) so the popovers read as Hako rather than plain text rows.
+ * matching artwork — game logos for the Game facet, Valorant agent portraits +
+ * signature gradients, map splashes, and mode list art for the rest — so the
+ * popovers read as Hako rather than plain text rows.
  */
 export function buildFacetOptions(facets: Facets, assets: ValorantAssets) {
+  const gameOptions: Option[] = facets.games.map((id) => {
+    const meta = gameMeta(id);
+    return { value: id, label: meta.label, icon: meta.logo };
+  });
   const agentOptions: Option[] = facets.agents.map((name) => {
     const a = assets.agentByName(name);
     return {
@@ -42,5 +48,5 @@ export function buildFacetOptions(facets: Facets, assets: ValorantAssets) {
   });
   const eventOptions: Option[] = facets.events.map((e) => ({ value: e, label: e }));
 
-  return { agentOptions, mapOptions, modeOptions, eventOptions };
+  return { gameOptions, agentOptions, mapOptions, modeOptions, eventOptions };
 }

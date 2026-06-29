@@ -1,6 +1,6 @@
 import type { ResultFilter, SourceFilter } from "@/components/clips/use-clip-filters";
 
-export type MultiKey = "agents" | "maps" | "modes" | "events";
+export type MultiKey = "games" | "agents" | "maps" | "modes" | "events";
 
 /** Full-bleed row artwork. `gradient` is a CSS gradient drawn behind `image`;
  * `fit` controls how the image sits (maps splash = cover; agent texture = cover

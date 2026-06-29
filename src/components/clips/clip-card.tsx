@@ -1,7 +1,7 @@
 import * as React from "react";
 
 import { cn } from "@/lib/utils";
-import type { ValorantAssets } from "@/hooks/use-valorant-assets";
+import type { GameAssets } from "@/games/use-game-assets";
 import type { ClipRecord } from "@/lib/api";
 import {
   toggleClipSelected,
@@ -33,7 +33,7 @@ export const ClipCard = React.memo(function ClipCard({
   clip: ClipRecord;
   onDelete: (clip: ClipRecord) => void;
   onRename: (clip: ClipRecord) => void;
-  assets?: ValorantAssets;
+  assets: GameAssets;
 }) {
   // Per-card selection: subscribed individually so toggling another card never
   // re-renders this one (see `use-clip-selection`). Drives both the corner

@@ -11,7 +11,8 @@ import {
 } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
-import { useValorantAssets, mapNameFromPath } from "@/hooks/use-valorant-assets";
+import { useGameAssets } from "@/games/use-game-assets";
+import { clipGame } from "@/games/registry";
 import { revealClip } from "@/lib/api";
 import type { ClipRecord } from "@/lib/api";
 import { fmtDate, fmtSize, fmtTime } from "./format";
@@ -173,16 +174,15 @@ export const DetailsPanel = React.memo(function DetailsPanel({
 });
 
 /**
- * Valorant match context for the open clip — agent, map, mode, result and
- * K/D/A. Renders nothing for clips cut outside a match (all fields null), so the
- * details panel stays clean for non-match clips. Mirrors the card badges'
- * artwork via the shared asset lookups.
+ * Match context for the open clip — champion/agent, map, mode, result and K/D/A.
+ * Game-aware: Valorant resolves agent artwork from valorant-api, League resolves
+ * champion icons from Data Dragon. Renders nothing for clips cut outside a match
+ * (all fields null), so the panel stays clean for non-match clips.
  */
 function ClipGameContext({ clip }: { clip: ClipRecord }) {
-  const assets = useValorantAssets();
-  const agent = assets.agentFor(clip);
-  const agentName = agent?.name ?? clip.agent ?? null;
-  const mapName = assets.mapFor(clip.map)?.name ?? mapNameFromPath(clip.map);
+  const assets = useGameAssets();
+  const isLol = clipGame(clip.game) === "lol";
+  const { icon, primaryName: agentName, mapName } = assets.resolve(clip);
   const hasResult = clip.won != null;
   const hasKda =
     clip.kills != null && clip.deaths != null && clip.assists != null;
@@ -198,16 +198,16 @@ function ClipGameContext({ clip }: { clip: ClipRecord }) {
       </span>
       <div className="flex flex-col gap-3 rounded-lg border border-border/60 bg-card/40 p-3.5">
         <div className="flex items-center gap-3">
-          {agent?.icon ? (
+          {icon ? (
             <img
-              src={agent.icon}
+              src={icon}
               alt=""
               className="size-10 shrink-0 rounded-md bg-black/30 object-cover outline outline-1 -outline-offset-1 outline-white/10"
             />
           ) : null}
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold text-foreground">
-              {agentName ?? "Unknown agent"}
+              {agentName ?? (isLol ? "Unknown champion" : "Unknown agent")}
             </div>
             {sub ? (
               <div className="truncate text-xs text-muted-foreground">{sub}</div>

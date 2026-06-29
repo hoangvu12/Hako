@@ -9,51 +9,9 @@
 
 use std::path::PathBuf;
 
-use base64::Engine;
-
-/// Parsed lockfile contents.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Lockfile {
-    pub name: String,
-    pub pid: u32,
-    pub port: u16,
-    pub password: String,
-    /// Usually `https`.
-    pub protocol: String,
-}
-
-impl Lockfile {
-    /// Parse the `name:pid:port:password:protocol` line.
-    pub fn parse(contents: &str) -> Result<Lockfile, String> {
-        let line = contents.trim();
-        let parts: Vec<&str> = line.split(':').collect();
-        if parts.len() != 5 {
-            return Err(format!(
-                "lockfile has {} fields, expected 5 (name:pid:port:password:protocol)",
-                parts.len()
-            ));
-        }
-        Ok(Lockfile {
-            name: parts[0].to_string(),
-            pid: parts[1].parse().map_err(|_| "bad pid in lockfile")?,
-            port: parts[2].parse().map_err(|_| "bad port in lockfile")?,
-            password: parts[3].to_string(),
-            protocol: parts[4].to_string(),
-        })
-    }
-
-    /// Local API base URL, e.g. `https://127.0.0.1:51234`.
-    pub fn base_url(&self) -> String {
-        format!("{}://127.0.0.1:{}", self.protocol, self.port)
-    }
-
-    /// `Authorization: Basic ...` header value (user `riot`, lockfile password).
-    pub fn basic_auth_header(&self) -> String {
-        let raw = format!("riot:{}", self.password);
-        let b64 = base64::engine::general_purpose::STANDARD.encode(raw.as_bytes());
-        format!("Basic {b64}")
-    }
-}
+// The lockfile *format* + Basic-auth are shared across Riot titles; only the
+// Riot-Client lockfile *location* is Valorant-specific and stays here.
+pub use crate::games::lockfile::Lockfile;
 
 /// Default lockfile path on this machine (`%LOCALAPPDATA%\Riot Games\...`).
 pub fn default_path() -> Option<PathBuf> {

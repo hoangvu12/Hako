@@ -22,10 +22,13 @@ pub struct LiveMatch {
     /// Game-mode display name derived from the live queue id.
     pub mode: Option<String>,
     /// Agent display name, resolved best-effort once per match (`None` until the
-    /// core-game fetch lands, or if it fails).
+    /// core-game fetch lands, or if it fails). For League this is the champion.
     pub agent: Option<String>,
-    /// Agent UUID paired with `agent`.
+    /// Agent UUID paired with `agent` (Valorant only; `None` for League).
     pub agent_id: Option<String>,
+    /// Which game is live (`"valorant"` | `"lol"`), so a manual save is tagged
+    /// with the right game. `None` when not in a match.
+    pub game: Option<String>,
 }
 
 impl LiveMatch {
@@ -41,6 +44,7 @@ impl LiveMatch {
             agent_id: self.agent_id.clone(),
             map: self.map.clone(),
             mode: self.mode.clone(),
+            game: self.game.clone(),
             ..Default::default()
         }
     }
