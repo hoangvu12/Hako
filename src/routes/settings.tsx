@@ -23,6 +23,7 @@ import {
   type EventToggles,
   type GameModeToggles,
   type LolEventToggles,
+  type RematchEventToggles,
   type AutoCaptureMode,
   type Settings,
 } from "@/lib/api";
@@ -281,6 +282,64 @@ function SettingsPage() {
     if (d) persist(lolTimingNext(d, key, field, value));
   };
 
+  // --- Rematch (per-game) auto-capture handlers, operating on games.rematch ---
+  const setRematchMode = (mode: AutoCaptureMode) => {
+    const d = draftRef.current;
+    if (d)
+      persist({
+        ...d,
+        games: { ...d.games, rematch: { ...d.games.rematch, auto_capture_mode: mode } },
+      });
+  };
+  const toggleRematchEvent = (key: keyof RematchEventToggles) => {
+    const d = draftRef.current;
+    if (d)
+      persist({
+        ...d,
+        games: {
+          ...d.games,
+          rematch: {
+            ...d.games.rematch,
+            events: { ...d.games.rematch.events, [key]: !d.games.rematch.events[key] },
+          },
+        },
+      });
+  };
+  const rematchTimingNext = (
+    d: Settings,
+    key: keyof RematchEventToggles,
+    field: "before" | "after",
+    value: number
+  ): Settings => ({
+    ...d,
+    games: {
+      ...d.games,
+      rematch: {
+        ...d.games.rematch,
+        event_timings: {
+          ...d.games.rematch.event_timings,
+          [key]: { ...d.games.rematch.event_timings[key], [field]: value },
+        },
+      },
+    },
+  });
+  const setRematchTimingLocal = (
+    key: keyof RematchEventToggles,
+    field: "before" | "after",
+    value: number
+  ) => {
+    const d = draftRef.current;
+    if (d) setDraft(rematchTimingNext(d, key, field, value));
+  };
+  const commitRematchTiming = (
+    key: keyof RematchEventToggles,
+    field: "before" | "after",
+    value: number
+  ) => {
+    const d = draftRef.current;
+    if (d) persist(rematchTimingNext(d, key, field, value));
+  };
+
   const q = navQuery.trim().toLowerCase();
   // Single pass: filter each group's items and keep only non-empty groups in one
   // reduce, instead of mapping then filtering over the group list twice.
@@ -365,6 +424,10 @@ function SettingsPage() {
               toggleLolEvent={toggleLolEvent}
               setLolTimingLocal={setLolTimingLocal}
               commitLolTiming={commitLolTiming}
+              setRematchMode={setRematchMode}
+              toggleRematchEvent={toggleRematchEvent}
+              setRematchTimingLocal={setRematchTimingLocal}
+              commitRematchTiming={commitRematchTiming}
             />
           )}
 

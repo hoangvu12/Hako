@@ -50,6 +50,10 @@ pub struct RecorderStatus {
     /// so the UI shows an honest "paused" state instead of "recording".
     pub capturing_live: bool,
     pub valorant_detected: bool,
+    /// Display name of the supported game whose window is present ("Valorant",
+    /// "League of Legends", "Rematch"), or `None` when none is detected. Drives
+    /// the titlebar's "Now Clipping <game>" label so it names the real game.
+    pub detected_game: Option<String>,
     pub encoder: Option<String>,
     pub buffer_seconds: u32,
     pub message: String,
@@ -99,6 +103,7 @@ pub fn recorder_status_snapshot(app: &AppHandle) -> RecorderStatus {
         capturing,
         capturing_live,
         valorant_detected,
+        detected_game: detected.map(|g| g.display_name().to_string()),
         encoder: None,
         buffer_seconds,
         message,

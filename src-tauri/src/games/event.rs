@@ -53,6 +53,11 @@ pub enum EventKind {
     TurretKilled,
     /// We destroyed an enemy inhibitor.
     InhibKilled,
+
+    // ── Rematch ─────────────────────────────────────────────────────────────
+    /// A goal was scored in the match (Rematch's lone highlight event, matching
+    /// Medal's "Goal Scored").
+    Goal,
 }
 
 impl EventKind {
@@ -78,6 +83,7 @@ impl EventKind {
             EventKind::HeraldKill => "Herald",
             EventKind::TurretKilled => "Turret",
             EventKind::InhibKilled => "Inhibitor",
+            EventKind::Goal => "Goal",
         }
     }
 
@@ -110,6 +116,8 @@ impl EventKind {
     pub fn priority(self) -> u8 {
         match self {
             EventKind::Victory => 30,
+            // Rematch's lone event — the headline of any Rematch clip it lands in.
+            EventKind::Goal => 25,
             EventKind::Pentakill => 22,
             EventKind::Ace => 21,
             EventKind::Clutch => 20,

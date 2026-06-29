@@ -88,6 +88,9 @@ export function RecorderStatusPopover() {
   // would imply live footage is being buffered.
   const live = status?.capturing_live ?? false;
   const frozen = capturing && !live;
+  // The actual detected game, so the indicator names it instead of always
+  // claiming "Valorant" (the label is game-agnostic now).
+  const gameName = status?.detected_game ?? "Game";
 
   const fps = settings?.target_fps ?? 60;
   const codec = (settings?.codec ?? "h264").toUpperCase();
@@ -122,7 +125,7 @@ export function RecorderStatusPopover() {
                 <span className="absolute inline-flex size-full animate-ping rounded-full bg-success/70" />
                 <span className="relative inline-flex size-2 rounded-full bg-success" />
               </span>
-              Now Clipping Valorant
+              Now Clipping {gameName}
             </>
           ) : frozen ? (
             <>
@@ -132,7 +135,7 @@ export function RecorderStatusPopover() {
           ) : detected ? (
             <>
               <span className="relative inline-flex size-2 rounded-full bg-amber-400" />
-              Valorant Detected
+              {gameName} Detected
             </>
           ) : (
             <>
@@ -156,7 +159,7 @@ export function RecorderStatusPopover() {
                   </span>
                 </div>
                 <div className="text-sm font-semibold text-foreground">
-                  Now clipping Valorant
+                  Now clipping {gameName}
                 </div>
                 <p className="mt-0.5 text-xs text-muted-foreground">
                   {status?.message ?? "Gameplay is being buffered."}
@@ -181,7 +184,7 @@ export function RecorderStatusPopover() {
                   <span className="relative inline-flex size-2.5 rounded-full bg-amber-400" />
                 </div>
                 <div className="text-sm font-semibold text-foreground">
-                  Valorant detected, not recording yet
+                  {gameName} detected, not recording yet
                 </div>
                 <p className="mt-0.5 text-xs text-muted-foreground">
                   Capture hasn&apos;t started, so there&apos;s nothing to save.

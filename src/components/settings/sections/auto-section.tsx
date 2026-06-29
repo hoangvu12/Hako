@@ -16,6 +16,7 @@ import {
   GAME_MODE_LABELS,
   EVENT_LABELS,
   LOL_EVENT_LABELS,
+  REMATCH_EVENT_LABELS,
   MAX_BEFORE_SECS,
   MAX_AFTER_SECS,
   type SettingsSet,
@@ -28,6 +29,7 @@ import type {
   EventToggles,
   GameModeToggles,
   LolEventToggles,
+  RematchEventToggles,
   Settings,
 } from "@/lib/api";
 
@@ -420,6 +422,10 @@ export function AutoSection({
   toggleLolEvent,
   setLolTimingLocal,
   commitLolTiming,
+  setRematchMode,
+  toggleRematchEvent,
+  setRematchTimingLocal,
+  commitRematchTiming,
 }: {
   draft: Settings;
   set: SettingsSet;
@@ -431,6 +437,18 @@ export function AutoSection({
   toggleLolEvent: (key: keyof LolEventToggles) => void;
   setLolTimingLocal: (key: keyof LolEventToggles, field: "before" | "after", value: number) => void;
   commitLolTiming: (key: keyof LolEventToggles, field: "before" | "after", value: number) => void;
+  setRematchMode: (mode: AutoCaptureMode) => void;
+  toggleRematchEvent: (key: keyof RematchEventToggles) => void;
+  setRematchTimingLocal: (
+    key: keyof RematchEventToggles,
+    field: "before" | "after",
+    value: number
+  ) => void;
+  commitRematchTiming: (
+    key: keyof RematchEventToggles,
+    field: "before" | "after",
+    value: number
+  ) => void;
 }) {
   const assets = useValorantAssets();
 
@@ -438,6 +456,7 @@ export function AutoSection({
   // in, then render the registry in order. The only game-specific code lives in
   // these builders; the card UI above is fully generic.
   const lol = draft.games.lol;
+  const rematch = draft.games.rematch;
   const models: Record<GameId, GameAutoModel> = {
     valorant: {
       meta: gameMeta("valorant"),
@@ -466,6 +485,17 @@ export function AutoSection({
       timing: (k) => lol.event_timings[k as keyof LolEventToggles],
       setTimingLocal: (k, f, v) => setLolTimingLocal(k as keyof LolEventToggles, f, v),
       commitTiming: (k, f, v) => commitLolTiming(k as keyof LolEventToggles, f, v),
+    },
+    rematch: {
+      meta: gameMeta("rematch"),
+      mode: rematch.auto_capture_mode,
+      setMode: setRematchMode,
+      events: REMATCH_EVENT_LABELS,
+      enabled: (k) => rematch.events[k as keyof RematchEventToggles],
+      toggleEvent: (k) => toggleRematchEvent(k as keyof RematchEventToggles),
+      timing: (k) => rematch.event_timings[k as keyof RematchEventToggles],
+      setTimingLocal: (k, f, v) => setRematchTimingLocal(k as keyof RematchEventToggles, f, v),
+      commitTiming: (k, f, v) => commitRematchTiming(k as keyof RematchEventToggles, f, v),
     },
   };
 

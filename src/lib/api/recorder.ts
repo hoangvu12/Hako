@@ -11,6 +11,10 @@ export interface RecorderStatus {
    * honest "paused" state instead of "recording". */
   capturing_live: boolean;
   valorant_detected: boolean;
+  /** Display name of the detected game ("Valorant", "League of Legends",
+   * "Rematch"), or null when none is present. Drives the "Now Clipping <game>"
+   * titlebar label. */
+  detected_game: string | null;
   encoder: string | null;
   buffer_seconds: number;
   message: string;

@@ -584,6 +584,61 @@ struct TitleSearch<'a> {
     found: i64,
 }
 
+/// Find the first visible top-level window owned by a process whose name matches
+/// any of `process_names` (case-insensitive), returning its HWND. Used when a
+/// game's window title is unreliable/unknown but its executable name is certain
+/// (Rematch → "RuntimeClient-Win64-Shipping.exe"). Two passes: resolve the target
+/// PIDs via `sysinfo`, then enumerate windows and match the owning PID.
+pub fn find_window_by_process(process_names: &[&str]) -> Option<i64> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    let pids: std::collections::HashSet<u32> = sys
+        .processes()
+        .iter()
+        .filter(|(_, p)| {
+            p.name()
+                .to_str()
+                .map(|n| process_names.iter().any(|w| n.eq_ignore_ascii_case(w)))
+                .unwrap_or(false)
+        })
+        .map(|(pid, _)| pid.as_u32())
+        .collect();
+    if pids.is_empty() {
+        return None;
+    }
+    let mut search = ProcessSearch { pids: &pids, found: 0 };
+    // SAFETY: `search` outlives the EnumWindows call; the callback only writes it.
+    unsafe {
+        let _ = EnumWindows(
+            Some(find_process_proc),
+            LPARAM(&mut search as *mut ProcessSearch as isize),
+        );
+    }
+    (search.found != 0).then_some(search.found)
+}
+
+/// State threaded through [`find_process_proc`] via `EnumWindows`' `LPARAM`.
+struct ProcessSearch<'a> {
+    pids: &'a std::collections::HashSet<u32>,
+    found: i64,
+}
+
+unsafe extern "system" fn find_process_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let search = &mut *(lparam.0 as *mut ProcessSearch);
+    // Only visible, titled top-level windows (skips the game's hidden helper
+    // windows / splash so we latch the real render surface).
+    if IsWindowVisible(hwnd).as_bool() && GetWindowTextLengthW(hwnd) > 0 {
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid != 0 && search.pids.contains(&pid) {
+            search.found = hwnd.0 as i64;
+            return BOOL(0); // stop enumeration
+        }
+    }
+    BOOL(1)
+}
+
 /// The process id that owns `hwnd_raw` (for the `specific_apps` "Game Audio"
 /// source — the capture target's PID). `None` for an invalid window.
 pub fn pid_for_hwnd(hwnd_raw: i64) -> Option<u32> {

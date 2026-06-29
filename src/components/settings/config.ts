@@ -23,6 +23,7 @@ import {
   Buildings,
   Cube,
   Shield,
+  SoccerBall,
   type Icon,
 } from "@phosphor-icons/react";
 
@@ -31,6 +32,7 @@ import type {
   EventToggles,
   GameModeToggles,
   LolEventToggles,
+  RematchEventToggles,
   Settings,
 } from "@/lib/api";
 
@@ -133,6 +135,17 @@ export const LOL_EVENT_LABELS: {
   { key: "herald", label: "Rift Herald", hint: "You secured the Herald", icon: Eye },
   { key: "turret", label: "Turret", hint: "You destroyed a turret", icon: Buildings },
   { key: "inhibitor", label: "Inhibitor", hint: "You destroyed an inhibitor", icon: Cube },
+];
+
+// Rematch auto-clip events (mirrors Rust `RematchEventToggles`) — its lone
+// highlight, matching Medal's "Goal Scored".
+export const REMATCH_EVENT_LABELS: {
+  key: keyof RematchEventToggles;
+  label: string;
+  hint: string;
+  icon: Icon;
+}[] = [
+  { key: "goal", label: "Goal", hint: "A goal was scored in the match", icon: SoccerBall },
 ];
 
 // Slider ranges for the per-event timing rows. Before can run long (the 45 s

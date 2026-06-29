@@ -120,9 +120,27 @@ export interface LolGameSettings {
   event_timings: LolEventTimings;
 }
 
+/** Per-event auto-clip toggles for Rematch (mirrors Rust `RematchEventToggles`). */
+export interface RematchEventToggles {
+  goal: boolean;
+}
+
+/** Per-event clip windows for Rematch (mirrors Rust `RematchEventTimings`). */
+export interface RematchEventTimings {
+  goal: EventTiming;
+}
+
+/** Rematch auto-capture config (mirrors Rust `RematchGameSettings`). */
+export interface RematchGameSettings {
+  auto_capture_mode: AutoCaptureMode;
+  events: RematchEventToggles;
+  event_timings: RematchEventTimings;
+}
+
 /** Per-game settings for non-Valorant games (mirrors Rust `GamesSettings`). */
 export interface GamesSettings {
   lol: LolGameSettings;
+  rematch: RematchGameSettings;
 }
 
 /** Mirrors the Rust `Settings` (src-tauri/src/settings.rs). */

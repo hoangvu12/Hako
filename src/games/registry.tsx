@@ -1,4 +1,10 @@
-import { Crosshair, Sword, GameController, type Icon } from "@phosphor-icons/react";
+import {
+  Crosshair,
+  Sword,
+  SoccerBall,
+  GameController,
+  type Icon,
+} from "@phosphor-icons/react";
 
 /**
  * Frontend game registry — the single source of truth for which games Hako's UI
@@ -12,7 +18,7 @@ import { Crosshair, Sword, GameController, type Icon } from "@phosphor-icons/rea
  */
 
 /** Stable lowercase id, matching the clip DB's `game` column + settings keys. */
-export type GameId = "valorant" | "lol";
+export type GameId = "valorant" | "lol" | "rematch";
 
 export interface GameMeta {
   id: GameId;
@@ -42,6 +48,13 @@ export const GAMES: GameMeta[] = [
     Icon: Sword,
     accent: "#C89B3C",
   },
+  {
+    id: "rematch",
+    label: "Rematch",
+    logo: "/games/rematch.svg",
+    Icon: SoccerBall,
+    accent: "#4F9D5B",
+  },
 ];
 
 const BY_ID = new Map(GAMES.map((g) => [g.id, g]));
@@ -66,5 +79,7 @@ export function gameMeta(id: GameId): GameMeta {
  * the UI never drops a clip.
  */
 export function clipGame(game: string | null | undefined): GameId {
-  return game === "lol" ? "lol" : "valorant";
+  if (game === "lol") return "lol";
+  if (game === "rematch") return "rematch";
+  return "valorant";
 }

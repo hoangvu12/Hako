@@ -26,6 +26,7 @@ pub mod lockfile;
 pub mod net;
 pub mod orchestrator;
 pub mod recording;
+pub mod rematch;
 pub mod timeline;
 
 use std::sync::Mutex;
@@ -43,6 +44,7 @@ use recording::GameCtx;
 pub enum GameId {
     Valorant,
     Lol,
+    Rematch,
 }
 
 #[allow(dead_code)] // `as_str`/`from_str` are part of the GameId API surface.
@@ -52,6 +54,7 @@ impl GameId {
         match self {
             GameId::Valorant => "valorant",
             GameId::Lol => "lol",
+            GameId::Rematch => "rematch",
         }
     }
 
@@ -60,6 +63,7 @@ impl GameId {
         match self {
             GameId::Valorant => "Valorant",
             GameId::Lol => "League of Legends",
+            GameId::Rematch => "Rematch",
         }
     }
 
@@ -68,6 +72,7 @@ impl GameId {
         match s.trim().to_ascii_lowercase().as_str() {
             "valorant" => Some(GameId::Valorant),
             "lol" | "leagueoflegends" | "league_of_legends" => Some(GameId::Lol),
+            "rematch" => Some(GameId::Rematch),
             _ => None,
         }
     }
@@ -109,6 +114,7 @@ pub fn registry() -> Vec<std::sync::Arc<dyn GameIntegration>> {
     vec![
         std::sync::Arc::new(valorant::Integration),
         std::sync::Arc::new(lol::Integration),
+        std::sync::Arc::new(rematch::Integration),
     ]
 }
 

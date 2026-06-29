@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::games::lol::events::{LolEventTimings, LolEventToggles};
+use crate::games::rematch::events::{RematchEventTimings, RematchEventToggles};
 use crate::valorant::model::GameModeToggles;
 use crate::valorant::reconcile::{EventTimings, EventToggles};
 
@@ -241,6 +242,7 @@ impl AutoCaptureMode {
 #[serde(default)]
 pub struct GamesSettings {
     pub lol: LolGameSettings,
+    pub rematch: RematchGameSettings,
 }
 
 /// League of Legends auto-capture config (mirrors the Valorant flat fields, but
@@ -262,6 +264,28 @@ impl Default for LolGameSettings {
             auto_capture_mode: "highlights".into(),
             events: LolEventToggles::default(),
             event_timings: LolEventTimings::default(),
+        }
+    }
+}
+
+/// Rematch auto-capture config (its lone event — Goal — plus its clip window).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RematchGameSettings {
+    /// `manual` | `highlights` | `full_match` | `session` (see [`AutoCaptureMode`]).
+    pub auto_capture_mode: String,
+    /// Per-event auto-clip toggles.
+    pub events: RematchEventToggles,
+    /// Per-event clip windows (before/after seconds).
+    pub event_timings: RematchEventTimings,
+}
+
+impl Default for RematchGameSettings {
+    fn default() -> Self {
+        RematchGameSettings {
+            auto_capture_mode: "highlights".into(),
+            events: RematchEventToggles::default(),
+            event_timings: RematchEventTimings::default(),
         }
     }
 }
@@ -465,6 +489,10 @@ impl Settings {
     /// The League auto-capture mode (from the per-game settings bundle).
     pub fn lol_auto_mode(&self) -> AutoCaptureMode {
         AutoCaptureMode::parse(&self.games.lol.auto_capture_mode)
+    }
+
+    pub fn rematch_auto_mode(&self) -> AutoCaptureMode {
+        AutoCaptureMode::parse(&self.games.rematch.auto_capture_mode)
     }
 
     /// Seconds the save-clip hotkey should capture: the configured `clip_seconds`

@@ -32,10 +32,20 @@ export function useGameAssets() {
 
   return React.useMemo(() => {
     const resolve = (clip: ClipRecord): ResolvedClipArt => {
-      if (clipGame(clip.game) === "lol") {
+      const game = clipGame(clip.game);
+      if (game === "lol") {
         return {
           icon: lol.champFor(clip.agent)?.icon,
           primaryName: clip.agent,
+          mapName: clip.map ?? "",
+        };
+      }
+      if (game === "rematch") {
+        // Rematch has no agent/champion art; the stadium is already a readable
+        // name and lives in `map`.
+        return {
+          icon: undefined,
+          primaryName: clip.agent ?? null,
           mapName: clip.map ?? "",
         };
       }
