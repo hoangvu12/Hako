@@ -12,7 +12,7 @@ import {
 
 import { cn } from "@/lib/utils";
 import { useGameAssets } from "@/games/use-game-assets";
-import { clipGame } from "@/games/registry";
+import { clipPresenter } from "@/games/clip-presenter";
 import { revealClip } from "@/lib/api";
 import type { ClipRecord } from "@/lib/api";
 import { fmtDate, fmtSize, fmtTime } from "./format";
@@ -181,15 +181,18 @@ export const DetailsPanel = React.memo(function DetailsPanel({
  */
 function ClipGameContext({ clip }: { clip: ClipRecord }) {
   const assets = useGameAssets();
-  const isLol = clipGame(clip.game) === "lol";
-  const { icon, primaryName: agentName, mapName } = assets.resolve(clip);
+  const { icon, name, fallback, sub, showKda } = clipPresenter(clip).detail(
+    clip,
+    assets,
+  );
   const hasResult = clip.won != null;
   const hasKda =
-    clip.kills != null && clip.deaths != null && clip.assists != null;
+    showKda &&
+    clip.kills != null &&
+    clip.deaths != null &&
+    clip.assists != null;
 
-  if (!agentName && !mapName && !clip.mode && !hasResult) return null;
-
-  const sub = [mapName, clip.mode].filter(Boolean).join(" · ");
+  if (!name && !sub && !hasResult && !hasKda) return null;
 
   return (
     <div className="flex flex-col gap-2">
@@ -207,7 +210,7 @@ function ClipGameContext({ clip }: { clip: ClipRecord }) {
           ) : null}
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold text-foreground">
-              {agentName ?? (isLol ? "Unknown champion" : "Unknown agent")}
+              {name ?? fallback}
             </div>
             {sub ? (
               <div className="truncate text-xs text-muted-foreground">{sub}</div>

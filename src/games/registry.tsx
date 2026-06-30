@@ -9,12 +9,14 @@ import {
 /**
  * Frontend game registry — the single source of truth for which games Hako's UI
  * knows about. Mirrors the Rust `GameId` enum + `registry()`
- * (src-tauri/src/games/mod.rs): adding a game is one `GAMES` entry here (+ its
- * logo asset, event labels, and per-game settings slice).
+ * (src-tauri/src/games/mod.rs): adding a game is one `GAMES` entry here, plus its
+ * logo asset, event labels, per-game settings slice, artwork hook
+ * (`use-game-assets.ts`), and clip presenter (`clip-presenter.ts`).
  *
  * Everything game-aware in the UI — the clips Game filter, the per-clip artwork
- * resolver (`useGameAssets`), and the Auto-Capture cards — iterates this list
- * rather than hard-coding "valorant"/"lol".
+ * hook (`useGameAssets`), the clip presenters that turn a clip into card pills /
+ * detail fields, and the Auto-Capture cards — keys off this list rather than
+ * hard-coding "valorant"/"lol".
  */
 
 /** Stable lowercase id, matching the clip DB's `game` column + settings keys. */

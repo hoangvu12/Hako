@@ -1,18 +1,19 @@
 import { cn } from "@/lib/utils";
 import type { GameAssets } from "@/games/use-game-assets";
+import { clipPresenter } from "@/games/clip-presenter";
 import type { ClipRecord } from "@/lib/api";
 
 /**
- * Game-context overlay on the thumbnail: champion/agent portrait + name, map, and
- * a W/L pill — whatever the clip carries. Game-aware via the shared
- * `GameAssets.resolve` (Valorant agents from valorant-api, League champions from
- * Data Dragon), so this stays game-agnostic. Pointer-events-none so it never
- * blocks the card's click target; degrades to text (or nothing) when
- * artwork/fields are absent (old clips, manual saves).
+ * Game-context overlay on the thumbnail: the source game's clip pills (champion /
+ * agent portrait, map, mode, … — whatever that game surfaces) plus a W/L pill.
+ * Content is game-defined via the per-game presenter (`clip-presenter.ts`), so
+ * this component stays game-agnostic and a new game needs no change here.
+ * Pointer-events-none so it never blocks the card's click target; renders nothing
+ * when a clip carries no context (old clips, manual saves).
  *
- * Layout leaves the top-left corner free for the selection checkbox: the W/L
- * pill sits top-right, while the agent + map move to the bottom-left and fade on
- * hover (like the duration badge) so they never clash with the hover controls.
+ * Layout leaves the top-left corner free for the selection checkbox: the W/L pill
+ * sits top-right, while the game pills sit bottom-left and fade on hover (like the
+ * duration badge) so they never clash with the hover controls.
  */
 export function ClipBadges({
   clip,
@@ -21,10 +22,10 @@ export function ClipBadges({
   clip: ClipRecord;
   assets: GameAssets;
 }) {
-  const { icon, primaryName, secondaryLabel } = assets.resolve(clip);
+  const badges = clipPresenter(clip).cardBadges(clip, assets);
   const hasResult = clip.won != null;
 
-  if (!primaryName && !secondaryLabel && !hasResult) return null;
+  if (!badges.length && !hasResult) return null;
 
   return (
     <>
@@ -39,27 +40,34 @@ export function ClipBadges({
         </span>
       ) : null}
 
-      {primaryName || secondaryLabel ? (
+      {badges.length ? (
         <div className="pointer-events-none absolute inset-x-2 bottom-2 z-10 flex max-w-[75%] flex-wrap items-center gap-1.5 transition-opacity group-hover/media:opacity-0">
-          {primaryName ? (
-            <span className="flex items-center gap-1 rounded-full bg-black/70 py-0.5 pr-2 pl-0.5 text-[10px] font-semibold text-white">
-              {icon ? (
-                <img
-                  src={icon}
-                  alt=""
-                  className="size-4 rounded-full object-cover"
-                />
-              ) : (
-                <span className="size-4" />
-              )}
-              {primaryName}
-            </span>
-          ) : null}
-          {secondaryLabel ? (
-            <span className="rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-medium text-white">
-              {secondaryLabel}
-            </span>
-          ) : null}
+          {badges.map((badge, i) =>
+            badge.portrait ? (
+              <span
+                key={i}
+                className="flex items-center gap-1 rounded-full bg-black/70 py-0.5 pr-2 pl-0.5 text-[10px] font-semibold text-white"
+              >
+                {badge.icon ? (
+                  <img
+                    src={badge.icon}
+                    alt=""
+                    className="size-4 rounded-full object-cover"
+                  />
+                ) : (
+                  <span className="size-4" />
+                )}
+                {badge.label}
+              </span>
+            ) : (
+              <span
+                key={i}
+                className="rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-medium text-white"
+              >
+                {badge.label}
+              </span>
+            )
+          )}
         </div>
       ) : null}
     </>

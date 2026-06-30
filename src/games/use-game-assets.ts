@@ -1,79 +1,23 @@
 import * as React from "react";
 
-import { mapNameFromPath, useValorantAssets } from "@/hooks/use-valorant-assets";
-import { friendlyLolMap, useLolAssets } from "@/hooks/use-lol-assets";
-import type { ClipRecord } from "@/lib/api";
-import { clipGame } from "./registry";
-
-/** The game context a clip carries, resolved to renderable artwork + names. */
-export interface ResolvedClipArt {
-  /** Champion (League) / agent (Valorant) portrait URL, if known. */
-  icon?: string;
-  /** Champion / agent display name, if known. */
-  primaryName: string | null;
-  /** Readable map name ("" when the clip has no map). */
-  mapName: string;
-  /**
-   * The single secondary pill shown on the clip card. The map for games where it
-   * varies meaningfully (Valorant, Rematch stadiums), but the *mode* for League —
-   * where the map is all but fixed by the queue, so "ARAM" reads better than
-   * "Howling Abyss". The details panel shows the fuller `mapName · mode` line.
-   */
-  secondaryLabel: string;
-}
+import { useValorantAssets } from "@/hooks/use-valorant-assets";
+import { useLolAssets } from "@/hooks/use-lol-assets";
 
 /**
- * One place that turns a clip's stored game context into artwork + labels,
- * branching on its source game. Valorant resolves agent + map art from
- * valorant-api; League resolves champion icons from Data Dragon (its champion
- * name lives in `agent`, and `map` is already a readable name).
+ * The per-game artwork providers, called once and bundled so every per-clip
+ * surface shares one set of (cached) asset lookups. Both hooks run
+ * unconditionally to satisfy the rules of hooks; a clip's source game decides
+ * which provider to read.
  *
- * Both asset hooks are called unconditionally (hook rules) and merged here, so
- * every per-clip surface — the card badge, the details panel — shares one
- * resolver instead of duplicating the per-game `if (isLol)` branching. Adding a
- * game = add its asset hook + one branch in `resolve`.
+ * This hook only *fetches* art. Turning a clip into card pills / detail fields
+ * lives in the per-game presenters (`clip-presenter.ts`), which take this bundle
+ * — so adding a game is one asset hook here plus one presenter entry there.
  */
 export function useGameAssets() {
   const valorant = useValorantAssets();
   const lol = useLolAssets();
 
-  return React.useMemo(() => {
-    const resolve = (clip: ClipRecord): ResolvedClipArt => {
-      const game = clipGame(clip.game);
-      if (game === "lol") {
-        // The live feed stores the internal map id ("Map12"); prettify it.
-        // Idempotent, so already-readable values pass through unchanged.
-        const mapName = friendlyLolMap(clip.map);
-        return {
-          icon: lol.champFor(clip.agent)?.icon,
-          primaryName: clip.agent,
-          mapName,
-          // League's map is fixed by the queue, so the mode ("ARAM") is the more
-          // useful pill; fall back to the map when the mode is unknown.
-          secondaryLabel: clip.mode || mapName,
-        };
-      }
-      if (game === "rematch") {
-        // Rematch has no agent/champion art; the stadium is already a readable
-        // name and lives in `map`.
-        const mapName = clip.map ?? "";
-        return {
-          icon: undefined,
-          primaryName: clip.agent ?? null,
-          mapName,
-          secondaryLabel: mapName,
-        };
-      }
-      const mapName = valorant.mapFor(clip.map)?.name ?? mapNameFromPath(clip.map);
-      return {
-        icon: valorant.agentFor(clip)?.icon,
-        primaryName: valorant.agentFor(clip)?.name ?? clip.agent ?? null,
-        mapName,
-        secondaryLabel: mapName,
-      };
-    };
-    return { resolve, valorant, lol };
-  }, [valorant, lol]);
+  return React.useMemo(() => ({ valorant, lol }), [valorant, lol]);
 }
 
 /** Merged game-asset bundle threaded through the clips grid + toolbar. */
