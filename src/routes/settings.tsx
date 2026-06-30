@@ -233,6 +233,14 @@ function SettingsPage() {
         games: { ...d.games, lol: { ...d.games.lol, auto_capture_mode: mode } },
       });
   };
+  const setLolDisabled = (disabled: boolean) => {
+    const d = draftRef.current;
+    if (d)
+      persist({
+        ...d,
+        games: { ...d.games, lol: { ...d.games.lol, disabled } },
+      });
+  };
   const toggleLolEvent = (key: keyof LolEventToggles) => {
     const d = draftRef.current;
     if (d)
@@ -289,6 +297,14 @@ function SettingsPage() {
       persist({
         ...d,
         games: { ...d.games, rematch: { ...d.games.rematch, auto_capture_mode: mode } },
+      });
+  };
+  const setRematchDisabled = (disabled: boolean) => {
+    const d = draftRef.current;
+    if (d)
+      persist({
+        ...d,
+        games: { ...d.games, rematch: { ...d.games.rematch, disabled } },
       });
   };
   const toggleRematchEvent = (key: keyof RematchEventToggles) => {
@@ -421,10 +437,12 @@ function SettingsPage() {
               setTimingLocal={setTimingLocal}
               commitTiming={commitTiming}
               setLolMode={setLolMode}
+              setLolDisabled={setLolDisabled}
               toggleLolEvent={toggleLolEvent}
               setLolTimingLocal={setLolTimingLocal}
               commitLolTiming={commitLolTiming}
               setRematchMode={setRematchMode}
+              setRematchDisabled={setRematchDisabled}
               toggleRematchEvent={toggleRematchEvent}
               setRematchTimingLocal={setRematchTimingLocal}
               commitRematchTiming={commitRematchTiming}

@@ -121,12 +121,19 @@ async fn run(ctx: GameCtx) {
         tokio::time::sleep(POLL_INTERVAL).await;
 
         // Medal-style game detection (auto start/stop capture via the shared arbiter).
-        ctx.auto_manage_capture(&mut autocap);
+        // When the game is "disabled", we never auto-attach and force Manual below
+        // so any in-flight auto-recording is torn down by the existing paths.
+        let disabled = current_capture_disabled(&app);
+        ctx.auto_manage_capture(&mut autocap, disabled);
 
         // Retry pending (details-fetch-failed) matches when the client is back.
         maybe_reconcile_pending(&app, &mut next_reconcile, &mut reconcile_task);
 
-        let mode = current_auto_mode(&app);
+        let mode = if disabled {
+            AutoCaptureMode::Manual
+        } else {
+            current_auto_mode(&app)
+        };
         manage_full_session(&ctx, mode, &mut full_session);
 
         // Global auto-clip toggle flipped off mid-match → discard.
@@ -413,6 +420,14 @@ fn current_auto_mode(app: &AppHandle) -> AutoCaptureMode {
     app.try_state::<SettingsState>()
         .and_then(|s| s.0.lock().ok().map(|g| g.auto_mode()))
         .unwrap_or(AutoCaptureMode::Highlights)
+}
+
+/// Whether the user has fully disabled Hako for Valorant ("don't capture this
+/// game at all"). Defaults to enabled when settings are unavailable.
+fn current_capture_disabled(app: &AppHandle) -> bool {
+    app.try_state::<SettingsState>()
+        .and_then(|s| s.0.lock().ok().map(|g| g.auto_capture_disabled))
+        .unwrap_or(false)
 }
 
 /// The user's per-game-mode auto-clip gate (defaults to all-on).

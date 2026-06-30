@@ -96,9 +96,17 @@ async fn run(ctx: GameCtx) {
     loop {
         tokio::time::sleep(POLL_INTERVAL).await;
 
-        ctx.auto_manage_capture(&mut autocap);
+        // "Disabled" fully ignores Rematch: no buffer auto-attach, and forcing
+        // Manual below tears down any in-flight auto-recording via the paths that
+        // already handle a mid-match mode change.
+        let disabled = current_capture_disabled(&app);
+        ctx.auto_manage_capture(&mut autocap, disabled);
 
-        let mode = current_auto_mode(&app);
+        let mode = if disabled {
+            AutoCaptureMode::Manual
+        } else {
+            current_auto_mode(&app)
+        };
         let (toggles, timings) = current_rematch_config(&app);
         manage_full_session(&ctx, mode, &mut full_session);
 
@@ -372,6 +380,14 @@ fn current_auto_mode(app: &AppHandle) -> AutoCaptureMode {
     app.try_state::<SettingsState>()
         .and_then(|s| s.0.lock().ok().map(|g| g.rematch_auto_mode()))
         .unwrap_or(AutoCaptureMode::Highlights)
+}
+
+/// Whether the user has fully disabled Hako for Rematch ("don't capture this
+/// game at all"). Defaults to enabled when settings are unavailable.
+fn current_capture_disabled(app: &AppHandle) -> bool {
+    app.try_state::<SettingsState>()
+        .and_then(|s| s.0.lock().ok().map(|g| g.games.rematch.disabled))
+        .unwrap_or(false)
 }
 
 /// The user's Rematch event toggles + timings (defaults when unavailable).

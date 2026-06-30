@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import {
   Crosshair,
   GameController,
@@ -64,6 +64,10 @@ interface GameAutoModel {
   meta: GameMeta;
   mode: AutoCaptureMode;
   setMode: (mode: AutoCaptureMode) => void;
+  /** Master "capture this game at all" flag. When true, Hako never attaches to
+   * the game — no buffer, no auto-record (independent of `mode`). */
+  disabled: boolean;
+  setDisabled: (disabled: boolean) => void;
   events: EventDef[];
   enabled: (key: string) => boolean;
   toggleEvent: (key: string) => void;
@@ -224,29 +228,22 @@ function EventCheck({
 /**
  * One game's auto-capture card (Medal "Auto Clipping Games" layout): logo + name
  * + a master ON/OFF switch in the header, with the full config (mode, per-mode
- * gating, events, advanced timing) in the expandable body. The master switch
- * maps to `auto_capture_mode`: OFF ⇒ "manual"; ON ⇒ the last non-manual mode
- * (defaulting to "highlights").
+ * gating, events, advanced timing) in the expandable body. The master switch is
+ * the per-game `disabled` flag: OFF ⇒ Hako ignores the game entirely (no buffer,
+ * no auto-record); ON ⇒ Hako manages it per the selected mode. "Manual only"
+ * (buffer + save-hotkey, no auto-clips) is just the first mode card — distinct
+ * from the master switch being off.
  */
 function GameAutoCard({ model }: { model: GameAutoModel }) {
   const { meta } = model;
-  const on = model.mode !== "manual";
-  const [open, setOpen] = useState(on);
+  const enabled = !model.disabled;
+  const [open, setOpen] = useState(enabled);
   const [showTiming, setShowTiming] = useState(false);
-  // Remember the last non-manual mode so flipping the master switch back on
-  // restores Highlights/Full match/Session rather than always Highlights.
-  const lastMode = useRef<AutoCaptureMode>(on ? model.mode : "highlights");
-  useEffect(() => {
-    if (model.mode !== "manual") lastMode.current = model.mode;
-  }, [model.mode]);
 
-  const toggleOn = () => {
-    if (on) {
-      model.setMode("manual");
-    } else {
-      model.setMode(lastMode.current);
-      setOpen(true);
-    }
+  const toggleEnabled = () => {
+    const next = !enabled;
+    model.setDisabled(!next);
+    if (next) setOpen(true);
   };
 
   const showGameModes =
@@ -257,7 +254,7 @@ function GameAutoCard({ model }: { model: GameAutoModel }) {
     <section
       className={cn(
         "overflow-hidden rounded-xl border transition-colors",
-        on ? "border-border/70 bg-card/40" : "border-border/50 bg-card/20"
+        enabled ? "border-border/70 bg-card/40" : "border-border/50 bg-card/20"
       )}
     >
       {/* Header — always visible. */}
@@ -273,24 +270,26 @@ function GameAutoCard({ model }: { model: GameAutoModel }) {
           <span className="min-w-0">
             <span className="block truncate text-sm font-semibold">{meta.label}</span>
             <span className="block truncate text-xs text-muted-foreground">
-              {on
+              {enabled
                 ? CAPTURE_MODES.find((m) => m.key === model.mode)?.label ?? "On"
-                : "Off"}
+                : "Off — not captured"}
             </span>
           </span>
-          <CaretDown
-            weight="bold"
-            className={cn(
-              "ml-1 size-4 text-muted-foreground transition-transform",
-              open ? "rotate-0" : "-rotate-90"
-            )}
-          />
+          {enabled && (
+            <CaretDown
+              weight="bold"
+              className={cn(
+                "ml-1 size-4 text-muted-foreground transition-transform",
+                open ? "rotate-0" : "-rotate-90"
+              )}
+            />
+          )}
         </button>
-        <Switch checked={on} onCheckedChange={toggleOn} />
+        <Switch checked={enabled} onCheckedChange={toggleEnabled} />
       </div>
 
-      {/* Body — config, shown when expanded. */}
-      {open && (
+      {/* Body — config, shown when expanded and the game is enabled. */}
+      {open && enabled && (
         <div className="flex flex-col gap-4 border-t border-border/60 p-4">
           <ModeCards value={model.mode} onSelect={model.setMode} />
 
@@ -419,10 +418,12 @@ export function AutoSection({
   setTimingLocal,
   commitTiming,
   setLolMode,
+  setLolDisabled,
   toggleLolEvent,
   setLolTimingLocal,
   commitLolTiming,
   setRematchMode,
+  setRematchDisabled,
   toggleRematchEvent,
   setRematchTimingLocal,
   commitRematchTiming,
@@ -434,10 +435,12 @@ export function AutoSection({
   setTimingLocal: (key: keyof EventToggles, field: "before" | "after", value: number) => void;
   commitTiming: (key: keyof EventToggles, field: "before" | "after", value: number) => void;
   setLolMode: (mode: AutoCaptureMode) => void;
+  setLolDisabled: (disabled: boolean) => void;
   toggleLolEvent: (key: keyof LolEventToggles) => void;
   setLolTimingLocal: (key: keyof LolEventToggles, field: "before" | "after", value: number) => void;
   commitLolTiming: (key: keyof LolEventToggles, field: "before" | "after", value: number) => void;
   setRematchMode: (mode: AutoCaptureMode) => void;
+  setRematchDisabled: (disabled: boolean) => void;
   toggleRematchEvent: (key: keyof RematchEventToggles) => void;
   setRematchTimingLocal: (
     key: keyof RematchEventToggles,
@@ -462,6 +465,8 @@ export function AutoSection({
       meta: gameMeta("valorant"),
       mode: draft.auto_capture_mode,
       setMode: (m) => set("auto_capture_mode", m),
+      disabled: draft.auto_capture_disabled,
+      setDisabled: (v) => set("auto_capture_disabled", v),
       events: EVENT_LABELS,
       enabled: (k) => draft.events[k as keyof EventToggles],
       toggleEvent: (k) => toggleEvent(k as keyof EventToggles),
@@ -479,6 +484,8 @@ export function AutoSection({
       meta: gameMeta("lol"),
       mode: lol.auto_capture_mode,
       setMode: setLolMode,
+      disabled: lol.disabled,
+      setDisabled: setLolDisabled,
       events: LOL_EVENT_LABELS,
       enabled: (k) => lol.events[k as keyof LolEventToggles],
       toggleEvent: (k) => toggleLolEvent(k as keyof LolEventToggles),
@@ -490,6 +497,8 @@ export function AutoSection({
       meta: gameMeta("rematch"),
       mode: rematch.auto_capture_mode,
       setMode: setRematchMode,
+      disabled: rematch.disabled,
+      setDisabled: setRematchDisabled,
       events: REMATCH_EVENT_LABELS,
       enabled: (k) => rematch.events[k as keyof RematchEventToggles],
       toggleEvent: (k) => toggleRematchEvent(k as keyof RematchEventToggles),

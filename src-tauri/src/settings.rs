@@ -82,6 +82,13 @@ pub struct Settings {
     /// - `full_match` — keep the whole match as a single clip (no cutting),
     /// - `session` — record continuously while the game is open as one clip.
     pub auto_capture_mode: String,
+    /// When true, Hako completely ignores Valorant: it never auto-attaches the
+    /// capture buffer and never auto-records matches, regardless of
+    /// `auto_capture_mode`. Distinct from `auto_capture_mode = "manual"`, which
+    /// keeps the buffer warm so the save-hotkey works; "disabled" is the
+    /// "don't touch this game at all" switch. A user's manual capture from the
+    /// UI is still allowed. Defaults off.
+    pub auto_capture_disabled: bool,
     /// Per-game-mode auto-clip gate, keyed on the live presence `queueId`. A
     /// match whose queue is toggled off is not recorded in the per-match modes
     /// (Highlights / Full match); Session mode is continuous and unaffected.
@@ -180,6 +187,7 @@ impl Default for Settings {
             events: EventToggles::default(),
             event_timings: EventTimings::default(),
             auto_capture_mode: "highlights".into(),
+            auto_capture_disabled: false,
             auto_clip_modes: GameModeToggles::default(),
             games: GamesSettings::default(),
             storage_dir: None,
@@ -252,6 +260,10 @@ pub struct GamesSettings {
 pub struct LolGameSettings {
     /// `manual` | `highlights` | `full_match` | `session` (see [`AutoCaptureMode`]).
     pub auto_capture_mode: String,
+    /// When true, Hako completely ignores League (no buffer auto-attach, no
+    /// auto-record). See [`Settings::auto_capture_disabled`] for the Valorant
+    /// equivalent and the manual/disabled distinction. Defaults off.
+    pub disabled: bool,
     /// Per-event auto-clip toggles.
     pub events: LolEventToggles,
     /// Per-event clip windows (before/after seconds).
@@ -262,6 +274,7 @@ impl Default for LolGameSettings {
     fn default() -> Self {
         LolGameSettings {
             auto_capture_mode: "highlights".into(),
+            disabled: false,
             events: LolEventToggles::default(),
             event_timings: LolEventTimings::default(),
         }
@@ -274,6 +287,10 @@ impl Default for LolGameSettings {
 pub struct RematchGameSettings {
     /// `manual` | `highlights` | `full_match` | `session` (see [`AutoCaptureMode`]).
     pub auto_capture_mode: String,
+    /// When true, Hako completely ignores Rematch (no buffer auto-attach, no
+    /// auto-record). See [`Settings::auto_capture_disabled`] for the Valorant
+    /// equivalent and the manual/disabled distinction. Defaults off.
+    pub disabled: bool,
     /// Per-event auto-clip toggles.
     pub events: RematchEventToggles,
     /// Per-event clip windows (before/after seconds).
@@ -284,6 +301,7 @@ impl Default for RematchGameSettings {
     fn default() -> Self {
         RematchGameSettings {
             auto_capture_mode: "highlights".into(),
+            disabled: false,
             events: RematchEventToggles::default(),
             event_timings: RematchEventTimings::default(),
         }
@@ -293,8 +311,9 @@ impl Default for RematchGameSettings {
 /// The literal device id meaning "the system default render endpoint" (Medal's
 /// `"Auto"`). Resolved to the real default loopback device at capture time.
 pub const AUTO_DEVICE: &str = "auto";
-/// The synthetic source id for the game itself ("Game Audio" — the Valorant
-/// process) in `specific_apps` mode. Medal uses `"game-audio"`.
+/// The synthetic source id for the game itself ("Game Audio" — the detected
+/// game process, whichever it is) in `specific_apps` mode. Medal uses
+/// `"game-audio"`.
 pub const GAME_SOURCE_ID: &str = "game";
 
 /// Medal-style "Recording Audio" config (mirrors `MedalEncoder/AudioModeConfig`).

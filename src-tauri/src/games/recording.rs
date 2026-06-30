@@ -131,8 +131,12 @@ impl GameCtx {
     /// exits. Only ever touches a capture *we* started (tracked in `st` +
     /// [`CaptureOwner`]), so a user's manual capture is never auto-stopped, and two
     /// games never fight over the single global capture (first to detect wins).
-    pub fn auto_manage_capture(&self, st: &mut AutoCaptureState) {
-        let game = self.find_window();
+    pub fn auto_manage_capture(&self, st: &mut AutoCaptureState, disabled: bool) {
+        // A disabled game is treated as "not present" for *our* auto-capture: we
+        // never start, and if we'd previously auto-started, the `None` arm below
+        // stops it and releases the arbiter. A user's manual capture is untouched
+        // (the `None` arm only stops captures we started, tracked in `st`).
+        let game = if disabled { None } else { self.find_window() };
         let capturing = self.is_capturing();
         match game {
             // Game up but nothing recording → claim ownership + start.

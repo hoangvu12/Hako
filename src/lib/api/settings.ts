@@ -116,6 +116,10 @@ export interface LolEventTimings {
 /** League auto-capture config (mirrors Rust `LolGameSettings`). */
 export interface LolGameSettings {
   auto_capture_mode: AutoCaptureMode;
+  /** When true, Hako completely ignores League (no buffer, no auto-record).
+   * Distinct from `auto_capture_mode = "manual"`, which keeps the buffer + save
+   * hotkey working. */
+  disabled: boolean;
   events: LolEventToggles;
   event_timings: LolEventTimings;
 }
@@ -133,6 +137,10 @@ export interface RematchEventTimings {
 /** Rematch auto-capture config (mirrors Rust `RematchGameSettings`). */
 export interface RematchGameSettings {
   auto_capture_mode: AutoCaptureMode;
+  /** When true, Hako completely ignores Rematch (no buffer, no auto-record).
+   * Distinct from `auto_capture_mode = "manual"`, which keeps the buffer + save
+   * hotkey working. */
+  disabled: boolean;
   events: RematchEventToggles;
   event_timings: RematchEventTimings;
 }
@@ -198,6 +206,13 @@ export interface Settings {
    * whole match as one clip), or "session" (record continuously while in-game).
    */
   auto_capture_mode: AutoCaptureMode;
+  /**
+   * When true, Hako completely ignores Valorant (no buffer auto-attach, no
+   * auto-record), regardless of `auto_capture_mode`. Distinct from
+   * `auto_capture_mode = "manual"`, which keeps the buffer warm for the save
+   * hotkey. The "don't capture this game at all" switch.
+   */
+  auto_capture_disabled: boolean;
   /**
    * Per-game-mode auto-clip gate, keyed on the live `queueId`. A match in a
    * mode that's toggled off is skipped in Highlights / Full match (Session is
