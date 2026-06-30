@@ -1,18 +1,18 @@
 # Hako
 
-A performance-first clip recorder for Valorant and League of Legends. It runs
-quietly in the background, keeps the last couple of minutes of gameplay in a
-buffer, and cuts your kills into clips on its own. Think of it as a lighter
+A performance-first clip recorder for Valorant, League of Legends, and Rematch. It
+runs quietly in the background, keeps the last couple of minutes of gameplay in a
+buffer, and cuts your highlights into clips on its own. Think of it as a lighter
 Medal.tv that does less, but does it without eating your frames.
 
 Game integrations are modular: each game lives behind a `GameIntegration` in
 `src-tauri/src/games/` and plugs into one shared capture/record/cut pipeline, so a
 new title is a self-contained module rather than a rewrite. Valorant follows a
 match by Riot's local/remote API and reconciles kills post-match; League reads the
-local **Live Client Data API** event feed in real time. Both produce the same
-highlight clips.
+local **Live Client Data API** event feed in real time; Rematch tails its Unreal
+log for goals. They all produce the same highlight clips.
 
-![Hako — performance-first Valorant clipper](.github/assets/og-image.png)
+![Hako — performance-first game clipper](.github/assets/og-image.png)
 
 **Stack:** Tauri v2 + Rust for the core, React 19 with TanStack Router/Query for the
 UI, TailwindCSS v4 and shadcn/ui for the styling. Windows only.

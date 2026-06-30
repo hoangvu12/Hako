@@ -1,7 +1,7 @@
 [package]
 name = "hako"
-version = "1.3.1"
-description = "Performance-first Valorant clip recorder"
+version = "1.4.0"
+description = "Performance-first game clip recorder"
 authors = ["Hako"]
 edition = "2021"
 rust-version = "1.77"

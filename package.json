@@ -1,9 +1,9 @@
 {
   "name": "hako",
   "private": true,
-  "version": "1.3.1",
+  "version": "1.4.0",
   "type": "module",
-  "description": "Performance-first Valorant clip recorder",
+  "description": "Performance-first game clip recorder",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
