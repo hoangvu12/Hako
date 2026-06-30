@@ -21,10 +21,10 @@ export function ClipBadges({
   clip: ClipRecord;
   assets: GameAssets;
 }) {
-  const { icon, primaryName, mapName } = assets.resolve(clip);
+  const { icon, primaryName, secondaryLabel } = assets.resolve(clip);
   const hasResult = clip.won != null;
 
-  if (!primaryName && !mapName && !hasResult) return null;
+  if (!primaryName && !secondaryLabel && !hasResult) return null;
 
   return (
     <>
@@ -39,7 +39,7 @@ export function ClipBadges({
         </span>
       ) : null}
 
-      {primaryName || mapName ? (
+      {primaryName || secondaryLabel ? (
         <div className="pointer-events-none absolute inset-x-2 bottom-2 z-10 flex max-w-[75%] flex-wrap items-center gap-1.5 transition-opacity group-hover/media:opacity-0">
           {primaryName ? (
             <span className="flex items-center gap-1 rounded-full bg-black/70 py-0.5 pr-2 pl-0.5 text-[10px] font-semibold text-white">
@@ -55,9 +55,9 @@ export function ClipBadges({
               {primaryName}
             </span>
           ) : null}
-          {mapName ? (
+          {secondaryLabel ? (
             <span className="rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-medium text-white">
-              {mapName}
+              {secondaryLabel}
             </span>
           ) : null}
         </div>

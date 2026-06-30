@@ -13,6 +13,13 @@ export interface ResolvedClipArt {
   primaryName: string | null;
   /** Readable map name ("" when the clip has no map). */
   mapName: string;
+  /**
+   * The single secondary pill shown on the clip card. The map for games where it
+   * varies meaningfully (Valorant, Rematch stadiums), but the *mode* for League —
+   * where the map is all but fixed by the queue, so "ARAM" reads better than
+   * "Howling Abyss". The details panel shows the fuller `mapName · mode` line.
+   */
+  secondaryLabel: string;
 }
 
 /**
@@ -34,27 +41,35 @@ export function useGameAssets() {
     const resolve = (clip: ClipRecord): ResolvedClipArt => {
       const game = clipGame(clip.game);
       if (game === "lol") {
+        // The live feed stores the internal map id ("Map12"); prettify it.
+        // Idempotent, so already-readable values pass through unchanged.
+        const mapName = friendlyLolMap(clip.map);
         return {
           icon: lol.champFor(clip.agent)?.icon,
           primaryName: clip.agent,
-          // The live feed stores the internal map id ("Map12"); prettify it.
-          // Idempotent, so already-readable values pass through unchanged.
-          mapName: friendlyLolMap(clip.map),
+          mapName,
+          // League's map is fixed by the queue, so the mode ("ARAM") is the more
+          // useful pill; fall back to the map when the mode is unknown.
+          secondaryLabel: clip.mode || mapName,
         };
       }
       if (game === "rematch") {
         // Rematch has no agent/champion art; the stadium is already a readable
         // name and lives in `map`.
+        const mapName = clip.map ?? "";
         return {
           icon: undefined,
           primaryName: clip.agent ?? null,
-          mapName: clip.map ?? "",
+          mapName,
+          secondaryLabel: mapName,
         };
       }
+      const mapName = valorant.mapFor(clip.map)?.name ?? mapNameFromPath(clip.map);
       return {
         icon: valorant.agentFor(clip)?.icon,
         primaryName: valorant.agentFor(clip)?.name ?? clip.agent ?? null,
-        mapName: valorant.mapFor(clip.map)?.name ?? mapNameFromPath(clip.map),
+        mapName,
+        secondaryLabel: mapName,
       };
     };
     return { resolve, valorant, lol };
