@@ -454,7 +454,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     let menu = Menu::with_items(app, &[&show, &hide, &quit])?;
 
     TrayIconBuilder::with_id("hako-tray")
-        .tooltip("Hako — Valorant clip recorder")
+        .tooltip("Hako")
         .icon(app.default_window_icon().unwrap().clone())
         .menu(&menu)
         .show_menu_on_left_click(false)
