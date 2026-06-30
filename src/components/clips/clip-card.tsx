@@ -10,7 +10,7 @@ import {
 } from "@/components/clips/use-clip-selection";
 import { ClipUploadBadge } from "./clip-upload-badge";
 import { ClipPreview } from "./clip-card/clip-preview";
-import { ClipBadges } from "./clip-card/clip-badges";
+import { ClipBadges, ClipResultBadge } from "./clip-card/clip-badges";
 import { ClipActionsMenu } from "./clip-card/clip-actions-menu";
 import { SelectCheckbox } from "./clip-card/select-checkbox";
 import { fmtSize, timeAgo } from "./clip-card/format";
@@ -65,8 +65,14 @@ export const ClipCard = React.memo(function ClipCard({
       {/* Thumbnail / hover-preview, with the game-context overlay on top */}
       <div className="relative">
         <ClipPreview clip={clip} />
-        <ClipBadges clip={clip} assets={assets} />
-        <ClipUploadBadge clipId={clip.id} />
+        <ClipResultBadge clip={clip} />
+        {/* Bottom-left status row: game pills + upload icon, side by side so the
+            upload status sits next to the pills instead of on top of them. Fades
+            on hover like the duration badge so it never fights the controls. */}
+        <div className="pointer-events-none absolute inset-x-2 bottom-2 z-10 flex max-w-[85%] flex-wrap items-center gap-1.5 transition-opacity group-hover/media:opacity-0">
+          <ClipBadges clip={clip} assets={assets} />
+          <ClipUploadBadge clipId={clip.id} />
+        </div>
         <SelectCheckbox id={clip.id} selected={selected} />
       </div>
 
