@@ -76,7 +76,6 @@ export function AppAudioPanel({
       <SourceRow
         icon={GameController}
         label="Game Audio"
-        hint="Valorant"
         checked={game.enabled}
         onCheckedChange={(v) =>
           patch({

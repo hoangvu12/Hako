@@ -80,7 +80,7 @@ export function RecorderStatusPopover() {
   // missing binaries) while the game window still exists. Gate the "Now Clipping"
   // indicator on `capturing` so it can't claim to be recording when it isn't —
   // otherwise the buffer is empty and "Save last 30s" fails with "no capture".
-  const detected = status?.valorant_detected ?? false;
+  const detected = status?.detected_game != null;
   const capturing = status?.capturing ?? false;
   // A capture can be running but frozen — the game is minimized (or otherwise not
   // presenting), so the hook re-copies one stale frame. `capturing_live` is false

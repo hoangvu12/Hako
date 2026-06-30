@@ -32,6 +32,13 @@ export interface GameMeta {
   Icon: Icon;
   /** Brand accent (hex), for subtle card/chip tinting. */
   accent: string;
+  /**
+   * The game's own executable name(s), lowercased. Mirrors the backend
+   * detection process names (src-tauri/src/{valorant,games/lol,games/rematch}).
+   * The audio panel uses these to keep a game's own process out of the
+   * "additional apps" list — it's already the dedicated "Game Audio" source.
+   */
+  processNames: string[];
 }
 
 /** Registry order = display order across the app. */
@@ -42,6 +49,7 @@ export const GAMES: GameMeta[] = [
     logo: "/games/valorant.svg",
     Icon: Crosshair,
     accent: "#FF4655",
+    processNames: ["valorant-win64-shipping.exe"],
   },
   {
     id: "lol",
@@ -49,6 +57,7 @@ export const GAMES: GameMeta[] = [
     logo: "/games/lol.svg",
     Icon: Sword,
     accent: "#C89B3C",
+    processNames: ["league of legends.exe"],
   },
   {
     id: "rematch",
@@ -56,6 +65,10 @@ export const GAMES: GameMeta[] = [
     logo: "/games/rematch.svg",
     Icon: SoccerBall,
     accent: "#4F9D5B",
+    processNames: [
+      "runtimeclient-win64-shipping.exe",
+      "runtimeclient-wingdk-shipping.exe",
+    ],
   },
 ];
 
@@ -68,6 +81,7 @@ const FALLBACK: GameMeta = {
   logo: "/games/_default.svg",
   Icon: GameController,
   accent: "#8b8b8b",
+  processNames: [],
 };
 
 /** Registry entry for an id (fallback for ids not in the registry). */

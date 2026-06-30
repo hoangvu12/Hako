@@ -50,12 +50,14 @@ export function RecordingStatus() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Valorant</CardTitle>
+            <CardTitle className="text-base">
+              {data?.detected_game ?? "Game"}
+            </CardTitle>
             <CardDescription>Process / window detection</CardDescription>
           </CardHeader>
           <CardContent>
-            <Badge variant={data?.valorant_detected ? "default" : "outline"}>
-              {data?.valorant_detected ? "Detected" : "Not running"}
+            <Badge variant={data?.detected_game ? "default" : "outline"}>
+              {data?.detected_game ? "Detected" : "Not running"}
             </Badge>
           </CardContent>
         </Card>

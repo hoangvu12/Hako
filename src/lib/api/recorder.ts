@@ -10,6 +10,8 @@ export interface RecorderStatus {
    * (frozen): the recorder is alive but footage is stale, so the UI shows an
    * honest "paused" state instead of "recording". */
   capturing_live: boolean;
+  /** @deprecated Use `detected_game !== null`. Kept only for back-compat with
+   * the serialized Rust struct; no longer read by the UI. */
   valorant_detected: boolean;
   /** Display name of the detected game ("Valorant", "League of Legends",
    * "Rematch"), or null when none is present. Drives the "Now Clipping <game>"

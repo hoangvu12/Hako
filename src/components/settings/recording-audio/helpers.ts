@@ -1,15 +1,18 @@
 import type { AudioAppSel } from "@/lib/api";
+import { GAMES } from "@/games/registry";
 
 /**
  * Processes never offered as a generic app source: system mixers + Hako, plus
- * the Valorant game process itself — it's already represented by the dedicated
- * "Game Audio" row, so listing it here would duplicate the game.
+ * every supported game's own process — each is already represented by the
+ * dedicated "Game Audio" row, so listing it here would duplicate the game. The
+ * game processes are sourced from the game registry (lowercased there) so this
+ * stays correct as games are added, rather than hard-coding Valorant.
  */
 export const SESSION_BLACKLIST = new Set([
   "svchost.exe",
   "audiodg.exe",
   "hako.exe",
-  "valorant-win64-shipping.exe",
+  ...GAMES.flatMap((g) => g.processNames),
 ]);
 
 /** Upsert an app source by id, merging `patch` (creating it enabled if absent). */
