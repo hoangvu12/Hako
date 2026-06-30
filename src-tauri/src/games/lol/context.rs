@@ -93,8 +93,19 @@ fn friendly_mode(code: &str) -> String {
     .to_string()
 }
 
-/// Normalize the map name (the feed already gives a readable name like "Summoner's
-/// Rift"; pass through, trimming).
+/// Readable map name from the Live Client feed's `mapName`.
+///
+/// The feed returns the map's *internal asset id* (`"Map11"`, `"Map12"`, …), not a
+/// readable name — so we translate the known ones. Anything else (a future map, or
+/// a value that's already readable) passes through trimmed.
 fn friendly_map(name: &str) -> String {
-    name.trim().to_string()
+    match name.trim() {
+        "Map11" => "Summoner's Rift",
+        "Map12" => "Howling Abyss",
+        "Map21" => "Nexus Blitz",
+        "Map22" => "Convergence",
+        "Map30" => "Rings of Wrath",
+        other => other,
+    }
+    .to_string()
 }

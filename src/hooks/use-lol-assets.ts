@@ -16,6 +16,8 @@ const VERSIONS_URL = "https://ddragon.leagueoflegends.com/api/versions.json";
 export interface LolChampion {
   /** Display name as it appears in the live feed (e.g. "Miss Fortune"). */
   name: string;
+  /** Data Dragon id / asset key (e.g. "MissFortune", "Wukong"→"MonkeyKing"). */
+  id: string;
   /** Square champion icon URL. */
   icon: string;
 }
@@ -25,6 +27,26 @@ interface ChampionApi {
     string,
     { id: string; key: string; name: string; image: { full: string } }
   >;
+}
+
+/** Internal map ids → readable map ids, mirroring Rust's `friendly_map`. */
+const LOL_MAP_NAMES: Record<string, string> = {
+  Map11: "Summoner's Rift",
+  Map12: "Howling Abyss",
+  Map21: "Nexus Blitz",
+  Map22: "Convergence",
+  Map30: "Rings of Wrath",
+};
+
+/**
+ * Readable map name from a clip's stored `map`. The Live Client feed gives the
+ * internal asset id (`"Map12"`), so translate the known ones; anything else (a
+ * future map, or an already-readable value from the patched backend) passes
+ * through. Idempotent, so it's safe over both old and new clips.
+ */
+export function friendlyLolMap(map: string | null | undefined): string {
+  if (!map) return "";
+  return LOL_MAP_NAMES[map] ?? map;
 }
 
 async function fetchChampions(): Promise<LolChampion[]> {
@@ -40,6 +62,7 @@ async function fetchChampions(): Promise<LolChampion[]> {
   const json = (await champRes.json()) as ChampionApi;
   return Object.values(json.data).map((c) => ({
     name: c.name,
+    id: c.id,
     icon: `https://ddragon.leagueoflegends.com/cdn/${ver}/img/champion/${c.image.full}`,
   }));
 }
@@ -54,16 +77,26 @@ export function useLolAssets(): LolAssets {
   const q = useQuery({
     queryKey: ["lol-assets"],
     queryFn: fetchChampions,
+    // Champion data only changes on a patch, so once it loads we never refetch.
+    // But don't let a transient CDN failure stick for the whole session — a
+    // failed fetch would otherwise blank every League icon until restart.
     staleTime: Infinity,
     gcTime: Infinity,
-    retry: 1,
+    retry: 3,
+    retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 8000),
   });
 
   return React.useMemo<LolAssets>(() => {
-    const byName = new Map((q.data ?? []).map((c) => [c.name.toLowerCase(), c]));
+    // Index by both display name (what the live feed / clip stores) and Data
+    // Dragon id, so a champion whose id differs from its name still resolves.
+    const byKey = new Map<string, LolChampion>();
+    for (const c of q.data ?? []) {
+      byKey.set(c.name.toLowerCase(), c);
+      byKey.set(c.id.toLowerCase(), c);
+    }
     return {
       isLoading: q.isLoading,
-      champFor: (name) => (name ? byName.get(name.toLowerCase()) : undefined),
+      champFor: (name) => (name ? byKey.get(name.toLowerCase()) : undefined),
     };
   }, [q.data, q.isLoading]);
 }

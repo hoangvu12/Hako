@@ -1,7 +1,7 @@
 import * as React from "react";
 
 import { mapNameFromPath, useValorantAssets } from "@/hooks/use-valorant-assets";
-import { useLolAssets } from "@/hooks/use-lol-assets";
+import { friendlyLolMap, useLolAssets } from "@/hooks/use-lol-assets";
 import type { ClipRecord } from "@/lib/api";
 import { clipGame } from "./registry";
 
@@ -37,7 +37,9 @@ export function useGameAssets() {
         return {
           icon: lol.champFor(clip.agent)?.icon,
           primaryName: clip.agent,
-          mapName: clip.map ?? "",
+          // The live feed stores the internal map id ("Map12"); prettify it.
+          // Idempotent, so already-readable values pass through unchanged.
+          mapName: friendlyLolMap(clip.map),
         };
       }
       if (game === "rematch") {
