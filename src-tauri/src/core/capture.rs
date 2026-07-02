@@ -1034,6 +1034,13 @@ fn hook_source_loop(
     // the per-frame shared-backbuffer copy (and the static-frame watchdog), so it
     // must stay on a performance core throughout a match.
     crate::core::protect_thread_high_qos("hook-source");
+    // Raise this process's GPU scheduling priority once, so our capture/convert/
+    // encode GPU work isn't starved behind the game's render queue. Process-wide
+    // and idempotent, but guarded by a `Once` so a pipeline restart (resolution
+    // change re-enters this loop, see the resize-restart path below) doesn't re-run
+    // it and spam the log. Best-effort — never affects capture on failure.
+    static GPU_PRIORITY_ONCE: std::sync::Once = std::sync::Once::new();
+    GPU_PRIORITY_ONCE.call_once(|| crate::core::gpu_priority::raise_gpu_priority(&device));
     let mut warned_copy = false;
     // One-time WARN when the session first goes frozen, so the log isn't silent
     // while the game is minimized (it would otherwise keep logging healthy-looking

@@ -190,6 +190,9 @@ features = [
     # Graphics-hook (game-capture) host orchestration: open the DLL's events /
     # mutexes / file mappings, hold the keepalive mutex, run the log pipe.
     "Win32_System_Threading",
+    # GPU scheduling-priority boost: resolve D3DKMT* + gdi32 exports dynamically
+    # (GetModuleHandleW / GetProcAddress) — see core::gpu_priority.
+    "Win32_System_LibraryLoader",
     "Win32_System_Memory",
     "Win32_System_Pipes",
     "Win32_System_IO",

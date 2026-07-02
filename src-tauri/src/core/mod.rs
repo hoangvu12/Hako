@@ -87,6 +87,7 @@ pub(crate) fn set_process_eco_qos(enabled: bool) {
 }
 
 pub mod device; // shared D3D11 device + DXGI adapter enumeration
+pub mod gpu_priority; // best-effort GPU scheduling-priority boost (D3DKMT + DXGI)
 pub mod capture; // capture pipeline: hook source loop → channel → encode thread
 pub mod hook; // OBS-style graphics-hook (Game Capture) — the capture backend
 pub mod wgc; // Windows.Graphics.Capture source — robustness fallback (Part D)
