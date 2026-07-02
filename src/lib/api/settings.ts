@@ -171,6 +171,13 @@ export interface Settings {
    * instead of a silently-held frame. On by default.
    */
   freeze_overlay: boolean;
+  /**
+   * Skip copy/convert/encode when a captured frame is byte-identical to the
+   * previous tick (game presenting slower than target_fps). Cuts redundant GPU
+   * work; CFR gap-fill keeps output smooth. On by default — kill-switch only, no
+   * dedicated UI control.
+   */
+  dirty_frame_skip: boolean;
   capture_audio: boolean;
   /** Microphone to mix in: "off", "auto" (system default), or a device id. */
   mic_source: string;

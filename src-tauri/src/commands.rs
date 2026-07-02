@@ -271,7 +271,7 @@ pub fn start_capture_with(
     // Defaults (fps, buffer length, audio config, backend) come from saved
     // settings. `effective_audio()` yields the Medal-style per-source config,
     // synthesizing one from the legacy fields for pre-feature configs.
-    let (cfg_fps, buffer_secs, to_disk, audio_cfg, enc_cfg, cfg_adapter) = {
+    let (cfg_fps, buffer_secs, to_disk, audio_cfg, enc_cfg, cfg_adapter, dirty_frame_skip) = {
         let s = settings.0.lock().map_err(|_| "settings poisoned")?;
         (
             s.target_fps,
@@ -285,6 +285,7 @@ pub fn start_capture_with(
                 freeze_overlay: s.freeze_overlay,
             },
             s.gpu_adapter_index(),
+            s.dirty_frame_skip,
         )
     };
     // Disk buffer (Medal's "Recording buffer: Disk"): spool the instant-replay
@@ -313,6 +314,7 @@ pub fn start_capture_with(
     // `core::hook`.
     let running = capture::start_hook(
         app.clone(), hwnd, fps, adapter_index, buffer_secs, disk_buffer_dir, audio_cfg, enc_cfg,
+        dirty_frame_skip,
     )?;
     *guard = Some(running);
     drop(guard);

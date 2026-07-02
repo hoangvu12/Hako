@@ -94,6 +94,8 @@ export interface CaptureStats {
   fps: number;
   frames: number;
   arrived: number;
+  /** Frames skipped as byte-identical duplicates (Part B dirty-frame check). */
+  skipped_dup: number;
   width: number;
   height: number;
   target_fps: number;

@@ -26,8 +26,8 @@ use windows::core::{BOOL, Interface, Result as WinResult};
 use windows::Win32::Foundation::{HWND, LPARAM};
 use windows::Win32::Graphics::Direct3D11::{
     ID3D11Device, ID3D11DeviceContext, ID3D11Resource, ID3D11Texture2D, D3D11_BIND_RENDER_TARGET,
-    D3D11_BOX, D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
-    D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING,
+    D3D11_BOX, D3D11_CPU_ACCESS_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, D3D11_MAP_READ,
+    D3D11_MAPPED_SUBRESOURCE, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_TYPELESS, DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -81,6 +81,8 @@ pub struct CaptureStats {
     pub frames: u64,
     /// Total frames the hook delivered (before pacing) since start.
     pub arrived: u64,
+    /// Total frames skipped as byte-identical duplicates (Part B dirty check).
+    pub skipped_dup: u64,
     pub width: u32,
     pub height: u32,
     pub target_fps: u32,
@@ -96,6 +98,10 @@ pub struct CaptureStats {
 struct Shared {
     arrived: AtomicU64,
     handed: AtomicU64,
+    /// Frames skipped by the Part B dirty-frame check (byte-identical to the
+    /// previous tick — the game presented slower than `target_fps`). The encode
+    /// thread's CFR gap-fill duplicates the last frame, so output stays smooth.
+    skipped_dup: AtomicU64,
     width: AtomicU32,
     height: AtomicU32,
     /// SystemRelativeTime (100 ns units) of the last handed frame, for the cap.
@@ -695,6 +701,7 @@ const HOOK_FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(12);
 /// [`RunningCapture`] handle that the save path and capture state use.
 ///
 /// This is the app's only capture backend; it injects into the target process.
+#[allow(clippy::too_many_arguments)]
 pub fn start_hook(
     app: AppHandle,
     hwnd_raw: i64,
@@ -704,6 +711,7 @@ pub fn start_hook(
     disk_buffer_dir: Option<PathBuf>,
     audio: AudioConfig,
     enc_cfg: EncodeSettings,
+    dirty_frame_skip: bool,
 ) -> std::result::Result<RunningCapture, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let shared = Arc::new(Shared::default());
@@ -726,7 +734,7 @@ pub fn start_hook(
             .spawn(move || {
                 hook_capture_thread(
                     app, hwnd_raw, target_fps, adapter_index, audio_control, game_pid, stop,
-                    shared, clip, enc_cfg, ready_tx,
+                    shared, clip, enc_cfg, dirty_frame_skip, ready_tx,
                 )
             })
             .map_err(|e| format!("failed to spawn hook capture thread: {e}"))?
@@ -749,6 +757,7 @@ pub fn start_hook(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn hook_capture_thread(
     app: AppHandle,
     hwnd_raw: i64,
@@ -760,6 +769,7 @@ fn hook_capture_thread(
     shared: Arc<Shared>,
     clip: Arc<ClipBuffer>,
     enc_cfg: EncodeSettings,
+    dirty_frame_skip: bool,
     ready_tx: std::sync::mpsc::Sender<std::result::Result<(), String>>,
 ) {
     match run_hook_pipeline(
@@ -772,6 +782,7 @@ fn hook_capture_thread(
         &shared,
         clip,
         enc_cfg,
+        dirty_frame_skip,
     ) {
         Err(e) => {
             let _ = ready_tx.send(Err(e));
@@ -830,6 +841,7 @@ impl RunningHookPipeline {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_hook_pipeline(
     hwnd_raw: i64,
     target_fps: u32,
@@ -840,6 +852,7 @@ fn run_hook_pipeline(
     shared: &Arc<Shared>,
     clip: Arc<ClipBuffer>,
     enc_cfg: EncodeSettings,
+    dirty_frame_skip: bool,
 ) -> std::result::Result<RunningHookPipeline, String> {
     // The hook copies the game's backbuffer into a *legacy* shared texture on the
     // GPU the game RENDERS on (the dGPU on a hybrid/Optimus laptop), and a legacy
@@ -987,8 +1000,8 @@ fn run_hook_pipeline(
             .name("hako-hook-source".into())
             .spawn(move || {
                 hook_source_loop(
-                    hook, hwnd_raw, device, context, width, height, target_fps, filled_tx,
-                    free_pool, shared, source_stop,
+                    hook, hwnd_raw, device, context, width, height, target_fps, dirty_frame_skip,
+                    filled_tx, free_pool, shared, source_stop,
                 )
             })
             .map_err(|e| format!("spawn hook source thread: {e}"))?
@@ -1017,6 +1030,7 @@ fn run_hook_pipeline(
 /// The hook frame-source loop: pull a shared backbuffer, copy its even sub-rect
 /// into a free staging texture, and send it on. Owns the `RunningHook` so
 /// dropping at loop-end tears the hook down.
+#[allow(clippy::too_many_arguments)]
 fn hook_source_loop(
     mut hook: RunningHook,
     hwnd_raw: i64,
@@ -1025,6 +1039,7 @@ fn hook_source_loop(
     width: u32,
     height: u32,
     fps: u32,
+    dirty_frame_skip: bool,
     filled_tx: SyncSender<(ID3D11Texture2D, i64)>,
     free_pool: Arc<Mutex<Vec<ID3D11Texture2D>>>,
     shared: Arc<Shared>,
@@ -1053,21 +1068,36 @@ fn hook_source_loop(
     let frame_interval = Duration::from_secs_f64(1.0 / fps.max(1) as f64);
     let mut next_tick = Instant::now();
 
-    // ── Part B: static-frame watchdog state ─────────────────────────────────
-    // A non-minimized freeze (e.g. capturing a stale swapchain after a
-    // fullscreen↔borderless switch) is invisible on the shtex path — there's no
-    // liveness signal. So ~once a second we hash a small center patch of the
-    // freshly-copied frame; if it stops changing while the window is visible and
-    // not minimized, we flag `frozen` and (after a longer window, debounced) ask
-    // the hook to re-hook the swapchain. Mirrors Medal's numSameFrames + regen.
-    // Skipped for tiny windows (<probe), which aren't the freeze case.
-    const PROBE: u32 = 64;
+    // ── Part B: dirty-frame probe + static-frame watchdog state ──────────────
+    // Both are driven by one non-blocking per-tick content hash (see `DirtyProbe`)
+    // of the live shared texture:
+    //  • Dirty-frame skip: if this tick's frame is byte-identical to the previous
+    //    one (the game presented slower than `target_fps`), skip the copy/convert/
+    //    encode entirely — the encoder's CFR gap-fill duplicates the last frame so
+    //    output stays smooth. Cuts redundant GPU work when the GPU is most
+    //    contended. Gated by the `dirty_frame_skip` setting.
+    //  • Static-frame watchdog: a non-minimized freeze (e.g. a stale swapchain
+    //    after a fullscreen↔borderless switch) is invisible on the shtex path.
+    //    ~Once a second we compare the hash; if it stops changing while the window
+    //    is visible and not minimized we flag `frozen` and (after a longer window,
+    //    debounced) re-hook the swapchain. Mirrors Medal's numSameFrames + regen.
+    // Both are skipped for tiny windows (<probe), which aren't the freeze case.
     const STATIC_SAMPLE: Duration = Duration::from_secs(1);
     const STATIC_FLAG_AFTER: Duration = Duration::from_secs(3);
     const STATIC_RESTART_AFTER: Duration = Duration::from_secs(5);
     const RESTART_DEBOUNCE: Duration = Duration::from_secs(10);
-    let watchdog_ok = width >= PROBE && height >= PROBE;
-    let mut readback: Option<ID3D11Texture2D> = None;
+    let watchdog_ok = width >= DirtyProbe::PROBE && height >= DirtyProbe::PROBE;
+    // Run the per-tick dirty probe whenever the window is big enough to hash; the
+    // skip *action* is additionally gated on the `dirty_frame_skip` setting.
+    let mut probe = watchdog_ok.then(|| DirtyProbe::new(width, height));
+    // Cap consecutive skips so a pathological all-static scene (or a hash
+    // collision) still forces a real frame through every ~2s.
+    let max_skips: u64 = (fps.max(1) as u64) * 2;
+    let mut consecutive_skips: u64 = 0;
+    // Skip state: hash of the previous tick's frame (one-tick latency; see
+    // `DirtyProbe`). Distinct from the watchdog's 1 Hz `last_hash`.
+    let mut last_dirty_hash: Option<u64> = None;
+    // Static watchdog state (sampled at STATIC_SAMPLE cadence).
     let mut last_hash: Option<u64> = None;
     let mut last_change = Instant::now();
     let mut last_static_sample = Instant::now();
@@ -1248,6 +1278,105 @@ fn hook_source_loop(
             resize_frames = 0;
         }
 
+        // ── Part B: per-tick dirty probe → static watchdog + duplicate skip ──
+        // One non-blocking content hash of the live `shared_tex` drives both. It
+        // reflects the *previous* tick's frame (one-tick latency; see DirtyProbe),
+        // which is exactly right for skipping the second copy of a held frame.
+        let cur_hash = probe
+            .as_mut()
+            .and_then(|p| p.sample(&device, &context, &shared_tex));
+
+        // Static-freeze watchdog: sample the hash ~once a second. Runs *before* any
+        // duplicate-skip `continue` below, so a genuine multi-second freeze is still
+        // detected while frames are being skipped. `last_fresh_time`/`frozen` are
+        // driven by content change, not mere handoff.
+        if watchdog_ok && last_static_sample.elapsed() >= STATIC_SAMPLE {
+            if let Some(hash) = cur_hash {
+                last_static_sample = Instant::now();
+                if last_hash != Some(hash) {
+                    // Content moved — capture is genuinely live.
+                    last_hash = Some(hash);
+                    last_change = Instant::now();
+                    same_frames = 0;
+                    shared.last_fresh_time.store(ts, Ordering::Relaxed);
+                    // Clear a watchdog-set freeze. Don't override the minimize gate,
+                    // which owns `frozen` while the window is iconic.
+                    if !shared.minimized.load(Ordering::Relaxed) {
+                        if warned_static {
+                            tracing::info!("capture: content moving again — freeze cleared");
+                        }
+                        shared.frozen.store(false, Ordering::Relaxed);
+                        warned_static = false;
+                    }
+                } else {
+                    // All patches byte-identical — gameplay/menus always animate, so
+                    // a static frame strongly implies a frozen capture.
+                    same_frames += 1;
+                    let stuck = last_change.elapsed();
+                    let visible =
+                        unsafe { IsWindowVisible(HWND(hwnd_raw as *mut c_void)).as_bool() };
+                    if stuck >= STATIC_FLAG_AFTER
+                        && visible
+                        && !shared.minimized.load(Ordering::Relaxed)
+                    {
+                        shared.frozen.store(true, Ordering::Relaxed);
+                        if !warned_static {
+                            tracing::warn!(
+                                stuck_secs = stuck.as_secs(),
+                                same_frames,
+                                "capture: content static while window visible — \
+                                 capture appears frozen (stale swapchain?)"
+                            );
+                            warned_static = true;
+                        }
+                        // Escalate to a hook re-hook after a longer window, debounced
+                        // so we don't spam restarts. The hook re-runs capture_init →
+                        // re-signals HookReady → acquire() reopens the texture.
+                        if stuck >= STATIC_RESTART_AFTER
+                            && last_restart.map_or(true, |t| t.elapsed() >= RESTART_DEBOUNCE)
+                        {
+                            tracing::warn!(
+                                "capture: requesting hook restart to recover frozen swapchain"
+                            );
+                            hook.request_restart();
+                            last_restart = Some(Instant::now());
+                            // Re-arm the change clock so we give the re-init a beat
+                            // before re-evaluating (avoids back-to-back restarts).
+                            last_change = Instant::now();
+                        }
+                    }
+                }
+            }
+            // `cur_hash == None` (map still-drawing / probe not yet primed) → leave
+            // the 1 Hz clock un-advanced and retry next tick, so a real freeze isn't
+            // masked by a missed sample.
+        }
+
+        // Duplicate-frame skip (Part B): when the setting is on and this frame is
+        // byte-identical to the previous tick, skip the copy/convert/encode — the
+        // encode thread's CFR gap-fill duplicates the last frame so output stays
+        // smooth. Skipping here (before the pool pop) means a skipped tick never
+        // touches the staging pool. The cap forces a real frame through every
+        // ~2 s as insurance against a hash collision or an all-static scene.
+        if dirty_frame_skip {
+            match cur_hash {
+                Some(hash) if last_dirty_hash == Some(hash) && consecutive_skips < max_skips => {
+                    consecutive_skips += 1;
+                    shared.skipped_dup.fetch_add(1, Ordering::Relaxed);
+                    // `last_dirty_hash` stays put (same content); loop back.
+                    continue;
+                }
+                Some(hash) => {
+                    consecutive_skips = 0;
+                    last_dirty_hash = Some(hash);
+                }
+                None => {
+                    // Unknown (still-drawing / not primed) → treat as changed.
+                    consecutive_skips = 0;
+                }
+            }
+        }
+
         // Grab a free staging texture; none → encoder backpressure, drop.
         let staging = match free_pool.lock() {
             Ok(mut p) => p.pop(),
@@ -1290,71 +1419,6 @@ fn hook_source_loop(
                 p.push(staging);
             }
             continue;
-        }
-
-        // Part B static-frame watchdog: ~once a second, hash a center patch of
-        // the freshly-copied `staging` (we still own it here, before handoff).
-        // `last_fresh_time`/`frozen` are driven by *content change*, not mere
-        // handoff, so a non-minimized stale stretch is detected and recovered.
-        if watchdog_ok && last_static_sample.elapsed() >= STATIC_SAMPLE {
-            last_static_sample = Instant::now();
-            if let Some(hash) =
-                probe_center_hash(&device, &context, &staging, &mut readback, width, height, PROBE)
-            {
-                if last_hash != Some(hash) {
-                    // Content moved — capture is genuinely live.
-                    last_hash = Some(hash);
-                    last_change = Instant::now();
-                    same_frames = 0;
-                    shared.last_fresh_time.store(ts, Ordering::Relaxed);
-                    // Clear a watchdog-set freeze. Don't override the minimize gate,
-                    // which owns `frozen` while the window is iconic.
-                    if !shared.minimized.load(Ordering::Relaxed) {
-                        if warned_static {
-                            tracing::info!("capture: content moving again — freeze cleared");
-                        }
-                        shared.frozen.store(false, Ordering::Relaxed);
-                        warned_static = false;
-                    }
-                } else {
-                    // Byte-identical center patch — Valorant gameplay/menus always
-                    // animate, so a static patch strongly implies a frozen capture.
-                    same_frames += 1;
-                    let stuck = last_change.elapsed();
-                    let visible =
-                        unsafe { IsWindowVisible(HWND(hwnd_raw as *mut c_void)).as_bool() };
-                    if stuck >= STATIC_FLAG_AFTER
-                        && visible
-                        && !shared.minimized.load(Ordering::Relaxed)
-                    {
-                        shared.frozen.store(true, Ordering::Relaxed);
-                        if !warned_static {
-                            tracing::warn!(
-                                stuck_secs = stuck.as_secs(),
-                                same_frames,
-                                "capture: center patch static while window visible — \
-                                 capture appears frozen (stale swapchain?)"
-                            );
-                            warned_static = true;
-                        }
-                        // Escalate to a hook re-hook after a longer window, debounced
-                        // so we don't spam restarts. The hook re-runs capture_init →
-                        // re-signals HookReady → acquire() reopens the texture.
-                        if stuck >= STATIC_RESTART_AFTER
-                            && last_restart.map_or(true, |t| t.elapsed() >= RESTART_DEBOUNCE)
-                        {
-                            tracing::warn!(
-                                "capture: requesting hook restart to recover frozen swapchain"
-                            );
-                            hook.request_restart();
-                            last_restart = Some(Instant::now());
-                            // Re-arm the change clock so we give the re-init a beat
-                            // before re-evaluating (avoids back-to-back restarts).
-                            last_change = Instant::now();
-                        }
-                    }
-                }
-            }
         }
 
         // Anchor for synthesizing minimized keep-alive timestamps, and a throttled
@@ -1454,86 +1518,166 @@ fn create_staging_like(
     Ok(tex.expect("CreateTexture2D returned null staging texture"))
 }
 
-/// Part B static-frame watchdog primitive: hash a `probe`×`probe` patch from the
-/// center of `src` (a freshly-copied frame). Lazily creates a CPU-readable
-/// staging texture in `readback` (same format as `src`), GPU-copies the center
-/// sub-rect into it, maps it, and FNV-1a hashes the rows. Returns `None` (and
-/// leaves capture untouched) on any D3D failure — the watchdog is best-effort and
-/// must never break the frame loop. Assumes a 4-byte BGRA/RGBA pixel (all formats
-/// the hook path supports); `RowPitch` handles any padding.
-fn probe_center_hash(
-    device: &ID3D11Device,
-    context: &ID3D11DeviceContext,
-    src: &ID3D11Texture2D,
-    readback: &mut Option<ID3D11Texture2D>,
-    width: u32,
-    height: u32,
-    probe: u32,
-) -> Option<u64> {
-    // Lazily build the readback texture, matching `src`'s exact format so the
-    // copy is a same-format blit.
-    if readback.is_none() {
-        let mut src_desc = D3D11_TEXTURE2D_DESC::default();
-        unsafe { src.GetDesc(&mut src_desc) };
-        let desc = D3D11_TEXTURE2D_DESC {
-            Width: probe,
-            Height: probe,
-            MipLevels: 1,
-            ArraySize: 1,
-            Format: src_desc.Format,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            Usage: D3D11_USAGE_STAGING,
-            BindFlags: 0,
-            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
-            MiscFlags: 0,
-        };
-        let mut tex: Option<ID3D11Texture2D> = None;
-        if unsafe { device.CreateTexture2D(&desc, None, Some(&mut tex)) }.is_err() {
-            return None;
+/// Part B dirty-frame probe: a non-blocking per-tick content hash of the live
+/// shared texture, used to both skip re-encoding byte-identical frames and drive
+/// the static-freeze watchdog.
+///
+/// It hashes **3** small patches (center + one at ¼ and one at ¾ of each axis) so
+/// a static center while the rest of the screen moves (loading screens, a menu
+/// with only a corner spinner) isn't mistaken for a duplicate. All three sit
+/// side-by-side in one `3·PROBE`-wide readback texture, so it's still one copy +
+/// one map.
+///
+/// To avoid the GPU sync a blocking `Map`-after-copy would cost every tick, it
+/// keeps a **ping-pong pair** of CPU-readable staging textures: each tick it
+/// copies the patches into one buffer and maps the *other* (the copy issued last
+/// tick) with `MAP_DO_NOT_WAIT`. That yields a hash with one tick of latency and
+/// zero pipeline stalls. `WAS_STILL_DRAWING` (or any error / an un-primed buffer)
+/// returns `None`, which callers treat as "changed" — never stall, never skip on
+/// uncertainty.
+struct DirtyProbe {
+    /// Two `(PATCHES·PROBE)×PROBE` readback textures, ping-ponged.
+    bufs: [Option<ID3D11Texture2D>; 2],
+    /// Which buffer to write this tick; the other is mapped/read.
+    idx: usize,
+    /// Whether each buffer holds a valid prior copy yet.
+    written: [bool; 2],
+    /// Patch top-left source coords, clamped to fit inside the frame.
+    patches: [(u32, u32); Self::PATCHES as usize],
+}
+
+impl DirtyProbe {
+    const PROBE: u32 = 64;
+    const PATCHES: u32 = 3;
+
+    /// Precompute the patch layout for a `width`×`height` frame. Only valid when
+    /// both dimensions are ≥ [`Self::PROBE`] (callers gate on `watchdog_ok`).
+    fn new(width: u32, height: u32) -> Self {
+        let p = Self::PROBE;
+        let cx = |x: u32| x.min(width - p);
+        let cy = |y: u32| y.min(height - p);
+        let patches = [
+            (cx((width - p) / 2), cy((height - p) / 2)), // center
+            (cx(width / 4), cy(height / 4)),             // upper-left quadrant
+            (cx(width * 3 / 4), cy(height * 3 / 4)),     // lower-right quadrant
+        ];
+        Self {
+            bufs: [None, None],
+            idx: 0,
+            written: [false, false],
+            patches,
         }
-        *readback = tex;
-    }
-    let dst = readback.as_ref()?;
-
-    // Copy the center sub-rect (src → readback).
-    let cx = (width - probe) / 2;
-    let cy = (height - probe) / 2;
-    let box_ = D3D11_BOX {
-        left: cx,
-        top: cy,
-        front: 0,
-        right: cx + probe,
-        bottom: cy + probe,
-        back: 1,
-    };
-    let dst_res: ID3D11Resource = dst.cast().ok()?;
-    let src_res: ID3D11Resource = src.cast().ok()?;
-    unsafe {
-        context.CopySubresourceRegion(&dst_res, 0, 0, 0, 0, &src_res, 0, Some(&box_));
     }
 
-    // Map and FNV-1a hash the patch rows, then unmap.
-    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-    if unsafe { context.Map(&dst_res, 0, D3D11_MAP_READ, 0, Some(&mut mapped)) }.is_err() {
-        return None;
-    }
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
-    let row_bytes = (probe * 4) as usize;
-    unsafe {
-        let base = mapped.pData as *const u8;
-        for row in 0..probe as usize {
-            let row_ptr = base.add(row * mapped.RowPitch as usize);
-            for &b in std::slice::from_raw_parts(row_ptr, row_bytes) {
-                hash ^= b as u64;
-                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    /// Copy this tick's patches into the write buffer, then read back the *other*
+    /// buffer (last tick's copy) non-blockingly and FNV-1a hash it. Returns the
+    /// hash of the previous tick's frame, or `None` if it isn't readable yet
+    /// (still-drawing / not primed / any D3D failure) — best-effort, never breaks
+    /// the loop.
+    fn sample(
+        &mut self,
+        device: &ID3D11Device,
+        context: &ID3D11DeviceContext,
+        src: &ID3D11Texture2D,
+    ) -> Option<u64> {
+        let probe = Self::PROBE;
+        let stride = probe * Self::PATCHES;
+        // Lazily build both readback textures, matching `src`'s exact format so the
+        // copies are same-format blits.
+        if self.bufs[0].is_none() {
+            let mut src_desc = D3D11_TEXTURE2D_DESC::default();
+            unsafe { src.GetDesc(&mut src_desc) };
+            let desc = D3D11_TEXTURE2D_DESC {
+                Width: stride,
+                Height: probe,
+                MipLevels: 1,
+                ArraySize: 1,
+                Format: src_desc.Format,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Usage: D3D11_USAGE_STAGING,
+                BindFlags: 0,
+                CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+                MiscFlags: 0,
+            };
+            for b in self.bufs.iter_mut() {
+                let mut tex: Option<ID3D11Texture2D> = None;
+                if unsafe { device.CreateTexture2D(&desc, None, Some(&mut tex)) }.is_err() {
+                    return None;
+                }
+                *b = tex;
             }
         }
-        context.Unmap(&dst_res, 0);
+
+        let write = self.idx;
+        let read = 1 - self.idx;
+
+        // Copy the 3 patches side-by-side into the write buffer.
+        let write_res: ID3D11Resource = self.bufs[write].as_ref()?.cast().ok()?;
+        let src_res: ID3D11Resource = src.cast().ok()?;
+        for (i, &(px, py)) in self.patches.iter().enumerate() {
+            let box_ = D3D11_BOX {
+                left: px,
+                top: py,
+                front: 0,
+                right: px + probe,
+                bottom: py + probe,
+                back: 1,
+            };
+            unsafe {
+                context.CopySubresourceRegion(
+                    &write_res,
+                    0,
+                    i as u32 * probe,
+                    0,
+                    0,
+                    &src_res,
+                    0,
+                    Some(&box_),
+                );
+            }
+        }
+        self.written[write] = true;
+        self.idx = read;
+
+        // Read back the other buffer (last tick's copy). Not primed yet → None.
+        if !self.written[read] {
+            return None;
+        }
+        let read_res: ID3D11Resource = self.bufs[read].as_ref()?.cast().ok()?;
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        // Non-blocking: never stall the source loop on the GPU copy.
+        let hr = unsafe {
+            context.Map(
+                &read_res,
+                0,
+                D3D11_MAP_READ,
+                D3D11_MAP_FLAG_DO_NOT_WAIT.0 as u32,
+                Some(&mut mapped),
+            )
+        };
+        if hr.is_err() {
+            // WAS_STILL_DRAWING (or any error) → "changed" (None). Never wait.
+            return None;
+        }
+
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        let row_bytes = (stride * 4) as usize;
+        unsafe {
+            let base = mapped.pData as *const u8;
+            for row in 0..probe as usize {
+                let row_ptr = base.add(row * mapped.RowPitch as usize);
+                for &b in std::slice::from_raw_parts(row_ptr, row_bytes) {
+                    hash ^= b as u64;
+                    hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+                }
+            }
+            context.Unmap(&read_res, 0);
+        }
+        Some(hash)
     }
-    Some(hash)
 }
 
 /// Output (encode) dimensions for a captured `src_w`x`src_h` frame given an
@@ -1846,6 +1990,7 @@ fn emit_loop(app: &AppHandle, target_fps: u32, stop: &Arc<AtomicBool>, shared: &
             fps,
             frames: count,
             arrived: shared.arrived.load(Ordering::Relaxed),
+            skipped_dup: shared.skipped_dup.load(Ordering::Relaxed),
             width: shared.width.load(Ordering::Relaxed),
             height: shared.height.load(Ordering::Relaxed),
             target_fps,

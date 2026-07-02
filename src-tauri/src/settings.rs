@@ -39,6 +39,13 @@ pub struct Settings {
     /// alt-tabbed / stale swapchain) so a clip viewer sees an intentional notice
     /// instead of a silently-held frame. On by default.
     pub freeze_overlay: bool,
+    /// Skip the copy/convert/encode of a captured frame when it is byte-identical
+    /// to the previous tick (the game presented slower than `target_fps`, so the
+    /// shared backbuffer hasn't changed). Cuts redundant GPU work exactly when the
+    /// GPU is most contended; the encode thread's CFR gap-fill duplicates the last
+    /// frame so output stays smooth. On by default; kill-switch for diagnosing
+    /// capture issues. See the dirty-frame check in `core::capture::hook_source_loop`.
+    pub dirty_frame_skip: bool,
     /// Capture desktop (loopback) audio into clips ("Audio Source": All PC
     /// audio vs Off).
     pub capture_audio: bool,
@@ -178,6 +185,7 @@ impl Default for Settings {
             codec: "h264".into(),
             bitrate_mbps: 20,
             freeze_overlay: true,
+            dirty_frame_skip: true,
             capture_audio: true,
             mic_source: "auto".into(),
             audio: None,
@@ -653,12 +661,14 @@ mod tests {
         s.target_fps = 120;
         s.codec = "hevc".into();
         s.events.kill = true;
+        s.dirty_frame_skip = false;
         s.save(&path).unwrap();
 
         let loaded = Settings::load(&path);
         assert_eq!(loaded.target_fps, 120);
         assert_eq!(loaded.codec, "hevc");
         assert!(loaded.events.kill);
+        assert!(!loaded.dirty_frame_skip);
         let _ = std::fs::remove_file(&path);
     }
 
