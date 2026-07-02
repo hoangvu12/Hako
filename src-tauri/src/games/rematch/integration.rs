@@ -31,8 +31,13 @@ use crate::games::{GameId, GameIntegration};
 use crate::settings::AutoCaptureMode;
 use crate::valorant::log_watch::{line_event_ticks, LogTail};
 
-/// Tail poll cadence. The log appends sub-second; 1 s + the ±pad absorbs jitter.
+/// Tail poll cadence while Rematch is running. The log appends sub-second; 1 s +
+/// the ±pad absorbs jitter.
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// Relaxed cadence while the game isn't running — nothing to tail, so poll (and
+/// hit the shared process table) far less often. Tightens back the first tick the
+/// process is seen, before the game window appears, so auto-capture is unaffected.
+const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// Grace for audio-track metadata before opening the session writer.
 const AUDIO_READY_GRACE: Duration = Duration::from_secs(8);
 /// Clamp each merged window to this many seconds.
@@ -91,10 +96,13 @@ async fn run(ctx: GameCtx) {
     let mut ctx_acc = RematchContext::default();
     let mut want_match = false;
     let mut want_since: Option<Instant> = None;
+    // Idle back-off: fast while the game runs, relaxed otherwise (set at the tick
+    // where game presence is checked).
+    let mut poll = POLL_INTERVAL;
     tracing::info!("rematch integration started");
 
     loop {
-        tokio::time::sleep(POLL_INTERVAL).await;
+        tokio::time::sleep(poll).await;
 
         // "Disabled" fully ignores Rematch: no buffer auto-attach, and forcing
         // Manual below tears down any in-flight auto-recording via the paths that
@@ -141,7 +149,8 @@ async fn run(ctx: GameCtx) {
 
         // Keep a tail open while the game runs; drop it (and finalize any active
         // match) when the game exits.
-        if ctx.game_running() {
+        let running = ctx.game_running();
+        if running {
             if tail.is_none() {
                 tail = open_tail();
             }
@@ -154,6 +163,8 @@ async fn run(ctx: GameCtx) {
             want_match = false;
             want_since = None;
         }
+        // Relax the cadence while the game isn't running.
+        poll = if running { POLL_INTERVAL } else { IDLE_POLL_INTERVAL };
 
         // Drain new log lines: update context + react to match / goal markers.
         if let Some(t) = tail.as_mut() {

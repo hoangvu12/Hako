@@ -36,9 +36,14 @@ use crate::games::recording::{
 use crate::games::{GameId, GameIntegration};
 use crate::settings::AutoCaptureMode;
 
-/// Live-feed poll cadence (the feed updates sub-second; 1 s is plenty and clip
-/// padding absorbs the jitter).
+/// Live-feed poll cadence while League's in-game process is running (the feed
+/// updates sub-second; 1 s is plenty and clip padding absorbs the jitter).
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// Relaxed cadence while the in-game process isn't running — no match can be
+/// starting, so poll (and hit the shared process table) far less often. Tightens
+/// back to [`POLL_INTERVAL`] the first tick the process is seen, well before the
+/// in-game window appears, so auto-capture latency is unaffected.
+const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// Grace for audio-track metadata before opening the session writer.
 const AUDIO_READY_GRACE: Duration = Duration::from_secs(8);
 /// Clamp each merged window to this many seconds.
@@ -105,10 +110,13 @@ async fn run(ctx: GameCtx) {
     let mut full_session: Option<RecordingSession> = None;
     let mut want_match = false;
     let mut want_since: Option<Instant> = None;
+    // Idle back-off: start fast so first detection is prompt, then relax whenever
+    // the in-game process isn't running (set at each loop tail).
+    let mut poll = POLL_INTERVAL;
     tracing::info!("league integration started");
 
     loop {
-        tokio::time::sleep(POLL_INTERVAL).await;
+        tokio::time::sleep(poll).await;
 
         // "Disabled" fully ignores League: no buffer auto-attach, and forcing
         // Manual below tears down any in-flight auto-recording via the paths that
@@ -163,8 +171,14 @@ async fn run(ctx: GameCtx) {
                 }
                 want_match = false;
                 want_since = None;
+                // No live match — relax the cadence until one starts. Capture still
+                // auto-starts within one idle tick of the in-game window appearing,
+                // during the loading screen (no gameplay missed).
+                poll = IDLE_POLL_INTERVAL;
             }
             Some(data) => {
+                // A match is live — poll at the fast cadence for event latency.
+                poll = POLL_INTERVAL;
                 if mode.records_match() {
                     want_match = true;
                     want_since.get_or_insert_with(Instant::now);

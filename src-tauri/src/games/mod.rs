@@ -25,6 +25,7 @@ pub mod lol;
 pub mod lockfile;
 pub mod net;
 pub mod orchestrator;
+pub mod process_snapshot;
 pub mod recording;
 pub mod rematch;
 pub mod timeline;

@@ -19,8 +19,8 @@
 use std::time::Duration;
 
 use serde::Serialize;
-use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 
+use crate::games::process_snapshot;
 use crate::valorant::local_api::LocalClient;
 use crate::valorant::log_watch;
 use crate::valorant::model::LoopState;
@@ -235,24 +235,11 @@ async fn attempt_client_version() -> Result<String, String> {
     Err("could not determine client version (log + API both failed)".into())
 }
 
-/// Is the Valorant game process running? Refreshes only the process list with
-/// no per-process detail (`ProcessRefreshKind::nothing()` — names come from the
-/// base enumeration), instead of `System::new_all()` which also snapshots CPU,
-/// memory, disks and networks. Called on the orchestrator's 2 s poll, so the
-/// cheaper refresh matters while a game is running.
+/// Is the Valorant game process running? Reads the shared, rate-limited process
+/// snapshot (process-name only), so the orchestrator's 2 s poll coalesces onto
+/// the same table the other game loops use instead of walking its own.
 pub fn valorant_running() -> bool {
-    let mut sys = System::new();
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        ProcessRefreshKind::nothing(),
-    );
-    sys.processes().values().any(|p| {
-        p.name()
-            .to_str()
-            .map(|n| n.eq_ignore_ascii_case(VALORANT_PROCESS))
-            .unwrap_or(false)
-    })
+    process_snapshot::any_running(&[VALORANT_PROCESS], process_snapshot::DEFAULT_MAX_AGE)
 }
 
 /// Snapshot for the `/valorant` panel. Mirrors `ValorantStatus` in api.ts.

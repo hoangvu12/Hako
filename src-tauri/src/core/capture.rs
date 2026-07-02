@@ -596,20 +596,8 @@ struct TitleSearch<'a> {
 /// (Rematch → "RuntimeClient-Win64-Shipping.exe"). Two passes: resolve the target
 /// PIDs via `sysinfo`, then enumerate windows and match the owning PID.
 pub fn find_window_by_process(process_names: &[&str]) -> Option<i64> {
-    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
-    let mut sys = System::new();
-    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
-    let pids: std::collections::HashSet<u32> = sys
-        .processes()
-        .iter()
-        .filter(|(_, p)| {
-            p.name()
-                .to_str()
-                .map(|n| process_names.iter().any(|w| n.eq_ignore_ascii_case(w)))
-                .unwrap_or(false)
-        })
-        .map(|(pid, _)| pid.as_u32())
-        .collect();
+    use crate::games::process_snapshot;
+    let pids = process_snapshot::pids_for(process_names, process_snapshot::DEFAULT_MAX_AGE);
     if pids.is_empty() {
         return None;
     }

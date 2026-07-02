@@ -36,9 +36,14 @@ use crate::valorant::model::{self, LoopState, PrivatePresence};
 use crate::valorant::remote_api;
 use crate::valorant::service::{self, Action, StateMachine};
 
-/// Presence poll cadence. The log tail is drained on the same tick; ±10 s clip
-/// padding absorbs the latency.
+/// Presence poll cadence while Valorant is running. The log tail is drained on the
+/// same tick; ±10 s clip padding absorbs the latency.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Relaxed cadence while Valorant isn't running — skip the local-API connect +
+/// process scan far more often. Tightens back the first tick the process is seen,
+/// before a match can start, so auto-capture latency is unaffected.
+const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// How long to wait for the audio encoders to publish all planned track metadata
 /// before opening the session writer anyway.
@@ -115,10 +120,22 @@ async fn run(ctx: GameCtx) {
     let mut want_match_since: Option<Instant> = None;
     let mut next_reconcile = Instant::now();
     let mut reconcile_task: Option<JoinHandle<()>> = None;
+    // Idle back-off: fast while Valorant runs, relaxed otherwise. Recomputed each
+    // tick below (before any early `continue`).
+    let mut poll = POLL_INTERVAL;
     tracing::info!("valorant integration started");
 
     loop {
-        tokio::time::sleep(POLL_INTERVAL).await;
+        tokio::time::sleep(poll).await;
+
+        // Idle back-off: relax presence/API polling when the game isn't running.
+        // Cheap (shared, rate-limited process snapshot) and covers the early
+        // `continue` on a failed presence poll below.
+        poll = if ctx.game_running() {
+            POLL_INTERVAL
+        } else {
+            IDLE_POLL_INTERVAL
+        };
 
         // Medal-style game detection (auto start/stop capture via the shared arbiter).
         // When the game is "disabled", we never auto-attach and force Manual below
