@@ -29,7 +29,8 @@ pub mod recording;
 pub mod rematch;
 pub mod timeline;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -110,17 +111,46 @@ pub trait GameIntegration: Send + Sync + 'static {
 }
 
 /// All registered game integrations. Adding a game = add it here.
-pub fn registry() -> Vec<std::sync::Arc<dyn GameIntegration>> {
-    vec![
-        std::sync::Arc::new(valorant::Integration),
-        std::sync::Arc::new(lol::Integration),
-        std::sync::Arc::new(rematch::Integration),
-    ]
+///
+/// Built once and cached — the returned slice is borrowed for the process
+/// lifetime, so hot callers (the per-game loops, [`detected_game`]) don't
+/// reallocate three `Arc`s on every call.
+pub fn registry() -> &'static [Arc<dyn GameIntegration>] {
+    static REGISTRY: OnceLock<Vec<Arc<dyn GameIntegration>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        vec![
+            Arc::new(valorant::Integration) as Arc<dyn GameIntegration>,
+            Arc::new(lol::Integration),
+            Arc::new(rematch::Integration),
+        ]
+    })
 }
 
 /// The game whose window is currently present, preferring the registry order
 /// (Valorant first). Used by `recorder_status` to label the detected game without
 /// hard-coding Valorant.
+///
+/// This is polled from the status snapshot on every tick of all three game loops
+/// (~2–5 Hz combined), and each miss costs up to three `EnumWindows` sweeps + a
+/// full process-table refresh (Rematch's `find_window_by_process`). A status
+/// label doesn't need sub-second freshness, so the result is cached with a short
+/// TTL. (Cleaner long-term design: each game loop publishes its own detection
+/// result to a shared atomic every tick and this just reads it — deferred; the TTL
+/// cache captures most of the win with far less plumbing.)
 pub fn detected_game() -> Option<GameId> {
-    registry().iter().find_map(|g| g.find_window().map(|_| g.id()))
+    const TTL: Duration = Duration::from_secs(2);
+    static DETECTED: Mutex<Option<(Instant, Option<GameId>)>> = Mutex::new(None);
+
+    let scan = || registry().iter().find_map(|g| g.find_window().map(|_| g.id()));
+    let Ok(mut cache) = DETECTED.lock() else {
+        return scan();
+    };
+    if let Some((at, val)) = *cache {
+        if at.elapsed() < TTL {
+            return val;
+        }
+    }
+    let val = scan();
+    *cache = Some((Instant::now(), val));
+    val
 }

@@ -17,7 +17,7 @@ pub fn spawn(app: AppHandle) {
     for game in registry() {
         let name = game.id().display_name();
         let ctx = GameCtx::new(app.clone(), game.clone());
-        tauri::async_runtime::spawn(game.run(ctx));
+        tauri::async_runtime::spawn(game.clone().run(ctx));
         tracing::info!("games: spawned {name} integration");
     }
 }
