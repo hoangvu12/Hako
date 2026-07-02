@@ -17,12 +17,12 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::commands::{self, CaptureState};
+use crate::commands::{self, CaptureState, RecorderStatus};
 use crate::core::capture::{self, ClipBuffer};
 use crate::core::session::{SessionOutput, SessionWriter};
 use crate::events;
@@ -40,11 +40,18 @@ use crate::library::db::{EventMark, NewClip};
 pub struct GameCtx {
     pub app: AppHandle,
     game: Arc<dyn GameIntegration>,
+    /// Last recorder-status payload emitted from this loop, so identical
+    /// consecutive snapshots aren't re-emitted (see [`emit_recorder_status`]).
+    last_status: Mutex<Option<RecorderStatus>>,
 }
 
 impl GameCtx {
     pub fn new(app: AppHandle, game: Arc<dyn GameIntegration>) -> Self {
-        GameCtx { app, game }
+        GameCtx {
+            app,
+            game,
+            last_status: Mutex::new(None),
+        }
     }
 
     pub fn id(&self) -> GameId {
@@ -79,10 +86,29 @@ impl GameCtx {
     }
 
     /// Push the live recorder-status snapshot (drives the titlebar indicator).
+    ///
+    /// Gated two ways, since this fires on every game-loop tick (1–2 Hz × three
+    /// loops): skipped entirely while the main window is hidden to tray (nothing
+    /// consumes it and the renderer is suspended — the popover refetches on demand
+    /// when it reopens, mirroring the CAPTURE_STATS gate in `core::capture`), and
+    /// skipped when the payload is unchanged since the last emit.
     pub fn emit_recorder_status(&self) {
-        let _ = self
+        let visible = self
             .app
-            .emit(events::RECORDER_STATUS, &commands::recorder_status_snapshot(&self.app));
+            .get_webview_window("main")
+            .and_then(|w| w.is_visible().ok())
+            .unwrap_or(true);
+        if !visible {
+            return;
+        }
+        let status = commands::recorder_status_snapshot(&self.app);
+        if let Ok(mut last) = self.last_status.lock() {
+            if last.as_ref() == Some(&status) {
+                return;
+            }
+            *last = Some(status.clone());
+        }
+        let _ = self.app.emit(events::RECORDER_STATUS, &status);
     }
 
     /// The running capture's clip buffer, or `None` if nothing is capturing.

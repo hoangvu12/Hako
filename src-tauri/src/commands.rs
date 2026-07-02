@@ -42,7 +42,7 @@ pub fn take_config_restart_request(app: &AppHandle) -> bool {
 
 /// Snapshot of recorder state. Mirrors the `RecorderStatus` interface in
 /// `src/lib/api.ts`; serde serializes with these exact field names.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RecorderStatus {
     pub capturing: bool,
     /// True when a capture is running AND delivering fresh frames. False while the
