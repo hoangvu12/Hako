@@ -1079,8 +1079,12 @@ fn hook_source_loop(
     // skip *action* is additionally gated on the `dirty_frame_skip` setting.
     let mut probe = watchdog_ok.then(|| DirtyProbe::new(width, height));
     // Cap consecutive skips so a pathological all-static scene (or a hash
-    // collision) still forces a real frame through every ~2s.
-    let max_skips: u64 = (fps.max(1) as u64) * 2;
+    // collision) still forces a real frame through. Matched to the encode thread's
+    // gap-fill cap (`max_gap_fill = fps`, ~1s): after this many skips the next real
+    // frame's PTS is exactly `fps` slots ahead, which the gap-fill fully back-fills
+    // with duplicates — so the output stays gap-free CFR. A larger cap (e.g. 2·fps)
+    // would outrun the gap-fill and leave a PTS hole.
+    let max_skips: u64 = fps.max(1) as u64;
     let mut consecutive_skips: u64 = 0;
     // Skip state: hash of the previous tick's frame (one-tick latency; see
     // `DirtyProbe`). Distinct from the watchdog's 1 Hz `last_hash`.
