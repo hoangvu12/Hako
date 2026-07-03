@@ -133,8 +133,7 @@ unsafe fn read_label(metadata: *mut ffi::AVDictionary) -> Option<String> {
         }
     };
     read("title").or_else(|| {
-        read("handler_name")
-            .filter(|h| h != "SoundHandler" && h != "VideoHandler" && !h.is_empty())
+        read("handler_name").filter(|h| h != "SoundHandler" && h != "VideoHandler" && !h.is_empty())
     })
 }
 
@@ -276,8 +275,7 @@ fn remux_mix(
 
             // --- slice the mix to the same window + encode an AAC master ------
             let mixed_frames = (mixed.len() / 2) as i64;
-            let start_frame =
-                (offset_us as i128 * MIX_RATE as i128 / AV_TIME_BASE as i128) as i64;
+            let start_frame = (offset_us as i128 * MIX_RATE as i128 / AV_TIME_BASE as i128) as i64;
             let end_us = (end * AV_TIME_BASE as f64) as i64;
             let end_frame = (end_us as i128 * MIX_RATE as i128 / AV_TIME_BASE as i128) as i64;
             let from = start_frame.clamp(0, mixed_frames);
@@ -476,11 +474,8 @@ unsafe fn collect_video_ops(
     out: &mut Vec<BufOp>,
 ) -> Result<(i64, i64, i64), String> {
     let vst = *(*ic).streams.offset(video_idx as isize);
-    let start_ts_v = ffi::av_rescale_q(
-        (start * AV_TIME_BASE as f64) as i64,
-        TB_Q,
-        (*vst).time_base,
-    );
+    let start_ts_v =
+        ffi::av_rescale_q((start * AV_TIME_BASE as f64) as i64, TB_Q, (*vst).time_base);
     ffi::av_seek_frame(ic, video_idx, start_ts_v, AVSEEK_FLAG_BACKWARD);
 
     let start_global = (start * AV_TIME_BASE as f64) as i64;
@@ -535,7 +530,11 @@ unsafe fn collect_video_ops(
             } else {
                 AV_NOPTS_VALUE
             };
-            let order = if dts_g != AV_NOPTS_VALUE { dts_g } else { pts_g };
+            let order = if dts_g != AV_NOPTS_VALUE {
+                dts_g
+            } else {
+                pts_g
+            };
             if order < 0 {
                 ffi::av_packet_unref(pkt);
                 continue;
@@ -544,8 +543,16 @@ unsafe fn collect_video_ops(
             out.push(BufOp {
                 order_us: order,
                 is_video: true,
-                pts: if pts_g != AV_NOPTS_VALUE { pts_g } else { order },
-                dts: if dts_g != AV_NOPTS_VALUE { dts_g } else { order },
+                pts: if pts_g != AV_NOPTS_VALUE {
+                    pts_g
+                } else {
+                    order
+                },
+                dts: if dts_g != AV_NOPTS_VALUE {
+                    dts_g
+                } else {
+                    order
+                },
                 src_tb: TB_Q,
                 keyframe: key,
                 data,
@@ -749,7 +756,9 @@ unsafe fn resample_into(d: &mut StemDecoder, frame: *mut ffi::AVFrame) {
 }
 
 /// Build a resampler from a decoder context's format → 48 kHz stereo packed f32.
-unsafe fn build_decode_resampler(ctx: *mut ffi::AVCodecContext) -> Result<*mut ffi::SwrContext, String> {
+unsafe fn build_decode_resampler(
+    ctx: *mut ffi::AVCodecContext,
+) -> Result<*mut ffi::SwrContext, String> {
     let mut out_layout: ffi::AVChannelLayout = std::mem::zeroed();
     let mut in_layout: ffi::AVChannelLayout = std::mem::zeroed();
     ffi::av_channel_layout_default(&mut out_layout, MIX_CHANNELS);
@@ -844,7 +853,10 @@ mod tests {
             MipLevels: 1,
             ArraySize: 1,
             Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
             Usage: D3D11_USAGE_DEFAULT,
             BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
             CPUAccessFlags: 0,
@@ -928,7 +940,11 @@ mod tests {
         make_two_track_clip(&src);
 
         // Track index 1 = the "Microphone" stem.
-        let sel = [TrackSel { index: 1, gain: 1.0, denoise: false }];
+        let sel = [TrackSel {
+            index: 1,
+            gain: 1.0,
+            denoise: false,
+        }];
         let res = remux_with_tracks(&src, &out, 0.0, 1.4, &sel).expect("remux copy");
         assert!(res.width > 0 && res.height > 0, "video lost in export");
         assert!(res.duration_secs > 0.0);
@@ -949,8 +965,16 @@ mod tests {
         make_two_track_clip(&src);
 
         let sel = [
-            TrackSel { index: 0, gain: 0.5, denoise: false },
-            TrackSel { index: 1, gain: 0.8, denoise: false },
+            TrackSel {
+                index: 0,
+                gain: 0.5,
+                denoise: false,
+            },
+            TrackSel {
+                index: 1,
+                gain: 0.8,
+                denoise: false,
+            },
         ];
         let res = remux_with_tracks(&src, &out, 0.0, 1.4, &sel).expect("remux mix");
         assert!(res.width > 0 && res.height > 0, "video lost in export");
@@ -974,13 +998,21 @@ mod tests {
 
         // Mic stem (index 1) at unity gain but with noise suppression on — must
         // decode → denoise → re-encode, not stream-copy.
-        let sel = [TrackSel { index: 1, gain: 1.0, denoise: true }];
+        let sel = [TrackSel {
+            index: 1,
+            gain: 1.0,
+            denoise: true,
+        }];
         let res = remux_with_tracks(&src, &out, 0.0, 1.4, &sel).expect("remux denoise");
         assert!(res.width > 0 && res.height > 0, "video lost in export");
         assert!(res.duration_secs > 0.0, "no duration");
 
         let tracks = probe_audio_tracks(&out).expect("probe out");
-        assert_eq!(tracks.len(), 1, "expected one denoised master, got {tracks:?}");
+        assert_eq!(
+            tracks.len(),
+            1,
+            "expected one denoised master, got {tracks:?}"
+        );
 
         let _ = std::fs::remove_file(&src);
         let _ = std::fs::remove_file(&out);

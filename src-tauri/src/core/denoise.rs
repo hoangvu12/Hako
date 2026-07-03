@@ -66,7 +66,11 @@ fn denoise_mono_48k(mono: &mut [f32]) {
         // Fill a full frame (zero-pad the tail) and scale to the int16 range
         // RNNoise expects.
         for i in 0..N {
-            in_buf[i] = if i < n { mono[off + i] * INT16_SCALE } else { 0.0 };
+            in_buf[i] = if i < n {
+                mono[off + i] * INT16_SCALE
+            } else {
+                0.0
+            };
         }
         denoise.process_frame(&mut out_buf, &in_buf);
         for i in 0..n {

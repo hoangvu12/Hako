@@ -165,11 +165,17 @@ pub fn gpu_info(settings: State<SettingsState>) -> GpuReport {
 
     // Validate the shared device opens on the chosen adapter.
     let (device_ok, feature_level, error) = match preferred {
-        Some(g) => match device::adapter_at(g.index).and_then(|a| device::create_device(Some(&a))) {
-            Ok((_dev, _ctx, fl)) => (true, Some(feature_level_label(fl)), None),
-            Err(e) => (false, None, Some(format!("D3D11CreateDevice failed: {e}"))),
-        },
-        None => (false, None, Some("no hardware encoder-capable adapter found".into())),
+        Some(g) => {
+            match device::adapter_at(g.index).and_then(|a| device::create_device(Some(&a))) {
+                Ok((_dev, _ctx, fl)) => (true, Some(feature_level_label(fl)), None),
+                Err(e) => (false, None, Some(format!("D3D11CreateDevice failed: {e}"))),
+            }
+        }
+        None => (
+            false,
+            None,
+            Some("no hardware encoder-capable adapter found".into()),
+        ),
     };
 
     // Resolve the (capture, encode) pair for the saved "Selected GPU" choice and
@@ -313,7 +319,14 @@ pub fn start_capture_with(
     // Capture via the injected graphics hook (the app's only backend). See
     // `core::hook`.
     let running = capture::start_hook(
-        app.clone(), hwnd, fps, adapter_index, buffer_secs, disk_buffer_dir, audio_cfg, enc_cfg,
+        app.clone(),
+        hwnd,
+        fps,
+        adapter_index,
+        buffer_secs,
+        disk_buffer_dir,
+        audio_cfg,
+        enc_cfg,
         dirty_frame_skip,
     )?;
     *guard = Some(running);
@@ -370,6 +383,62 @@ pub fn capture_status(state: State<CaptureState>) -> bool {
     state.0.lock().map(|g| g.is_some()).unwrap_or(false)
 }
 
+/// Whether non-essential background work should pause right now to protect game
+/// performance. Used by cloud uploads, automatic retention, and deferred media
+/// artifact generation. Manual user actions may still opt to run immediately.
+pub fn pause_background_work(app: &AppHandle) -> bool {
+    let enabled = app
+        .try_state::<SettingsState>()
+        .and_then(|s| s.0.lock().ok().map(|g| g.pause_background_while_gaming))
+        .unwrap_or(true);
+    if !enabled {
+        return false;
+    }
+    is_capturing(app) || crate::games::detected_game().is_some()
+}
+
+fn enqueue_artifact_generation(app: AppHandle, id: i64, path: PathBuf, duration_secs: f64) {
+    std::thread::Builder::new()
+        .name("hako-clip-artifacts".into())
+        .spawn(move || {
+            crate::core::throttle_current_thread_background("clip-artifacts");
+            let mut logged_pause = false;
+            while pause_background_work(&app) {
+                if !logged_pause {
+                    tracing::info!(clip_id = id, "clip artifacts: deferred while gaming");
+                    logged_pause = true;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(5));
+            }
+            let thumb = generate_thumbnail(&app, &path);
+            let filmstrip = generate_filmstrip(&app, &path, duration_secs);
+            let Some(record) = (|| -> Option<ClipRecord> {
+                let lib = app.state::<LibraryState>();
+                let guard = lib.0.lock().ok()?;
+                let rec = guard.get(id).ok().flatten()?;
+                guard
+                    .update_media(
+                        id,
+                        rec.duration_secs,
+                        rec.width,
+                        rec.height,
+                        rec.size_bytes,
+                        thumb.as_deref(),
+                        filmstrip.as_deref(),
+                    )
+                    .ok()?;
+                guard.get(id).ok().flatten()
+            })() else {
+                tracing::debug!(clip_id = id, "clip artifacts: row vanished before update");
+                return;
+            };
+            let _ = app.emit(crate::events::CLIP_CREATED, &record);
+            tracing::info!(clip_id = id, "clip artifacts generated");
+        })
+        .map_err(|e| tracing::warn!(clip_id = id, "spawn clip artifact worker failed: {e}"))
+        .ok();
+}
+
 // ---------------------------------------------------------------------------
 // Clip library + settings (managed state)
 // ---------------------------------------------------------------------------
@@ -421,10 +490,21 @@ pub fn save_clip_full(
     let saved = clip.save_last(seconds, &out)?;
 
     // Best-effort thumbnail + scrubber filmstrip — a clip without them is valid.
-    let thumb = generate_thumbnail(app, &saved.path);
-    let filmstrip = generate_filmstrip(app, &saved.path, saved.duration_secs);
+    // While gaming, insert the clip immediately and generate these artifacts later
+    // so a save hotkey never competes with the live capture/game.
+    let defer_artifacts = pause_background_work(app);
+    let (thumb, filmstrip) = if defer_artifacts {
+        (None, None)
+    } else {
+        (
+            generate_thumbnail(app, &saved.path),
+            generate_filmstrip(app, &saved.path, saved.duration_secs),
+        )
+    };
 
-    let size_bytes = std::fs::metadata(&saved.path).map(|m| m.len() as i64).unwrap_or(0);
+    let size_bytes = std::fs::metadata(&saved.path)
+        .map(|m| m.len() as i64)
+        .unwrap_or(0);
     let title = saved
         .path
         .file_stem()
@@ -460,6 +540,14 @@ pub fn save_clip_full(
     };
 
     let _ = app.emit(crate::events::CLIP_CREATED, &record);
+    if defer_artifacts {
+        enqueue_artifact_generation(
+            app.clone(),
+            record.id,
+            saved.path.clone(),
+            saved.duration_secs,
+        );
+    }
     // Opt-in auto-upload to the default cloud provider (no-op when disabled).
     crate::cloud::upload::maybe_auto_upload(app, record.id);
     // In-game overlay toast (manual F9 / UI saves only — auto-clips use the
@@ -516,9 +604,18 @@ pub fn finalize_auto_clip(
     // `NewClip::default()` when no match context is available).
     context: NewClip,
 ) -> Result<ClipRecord, String> {
-    let thumb = generate_thumbnail(app, &path);
-    let filmstrip = generate_filmstrip(app, &path, duration_secs);
-    let size_bytes = std::fs::metadata(&path).map(|m| m.len() as i64).unwrap_or(0);
+    let defer_artifacts = pause_background_work(app);
+    let (thumb, filmstrip) = if defer_artifacts {
+        (None, None)
+    } else {
+        (
+            generate_thumbnail(app, &path),
+            generate_filmstrip(app, &path, duration_secs),
+        )
+    };
+    let size_bytes = std::fs::metadata(&path)
+        .map(|m| m.len() as i64)
+        .unwrap_or(0);
     let new = NewClip {
         path: path.to_string_lossy().to_string(),
         title,
@@ -540,6 +637,9 @@ pub fn finalize_auto_clip(
         lib.get(id)?.ok_or("inserted clip vanished")?
     };
     let _ = app.emit(crate::events::CLIP_CREATED, &record);
+    if defer_artifacts {
+        enqueue_artifact_generation(app.clone(), record.id, path.clone(), duration_secs);
+    }
     // Opt-in auto-upload to the default cloud provider (no-op when disabled).
     crate::cloud::upload::maybe_auto_upload(app, record.id);
     tracing::info!("auto-clip saved ({event}) → {}", record.path);
@@ -553,7 +653,11 @@ pub fn events_summary(primary: &str, events: &[String]) -> String {
     if events.len() > 1 {
         events.join(" + ")
     } else {
-        events.first().map(String::as_str).unwrap_or(primary).to_string()
+        events
+            .first()
+            .map(String::as_str)
+            .unwrap_or(primary)
+            .to_string()
     }
 }
 
@@ -683,7 +787,10 @@ fn trim_clip_blocking(
                 title: format!("{} (trim)", rec.title),
                 event: rec.event.clone(),
                 events: rec.events.clone(),
-                event_marks: shift_marks(&rebase_marks(&rec.event_marks, start, end), res.start_shift_secs),
+                event_marks: shift_marks(
+                    &rebase_marks(&rec.event_marks, start, end),
+                    res.start_shift_secs,
+                ),
                 duration_secs: res.duration_secs,
                 width: res.width,
                 height: res.height,
@@ -710,7 +817,9 @@ fn trim_clip_blocking(
 
             let thumb = generate_thumbnail(&app, &input);
             let filmstrip = generate_filmstrip(&app, &input, res.duration_secs);
-            let size_bytes = std::fs::metadata(&input).map(|m| m.len() as i64).unwrap_or(0);
+            let size_bytes = std::fs::metadata(&input)
+                .map(|m| m.len() as i64)
+                .unwrap_or(0);
             let record = {
                 let lib = library.0.lock().map_err(|_| "library poisoned")?;
                 lib.update_media(
@@ -722,7 +831,13 @@ fn trim_clip_blocking(
                     thumb.as_deref(),
                     filmstrip.as_deref(),
                 )?;
-                lib.update_event_marks(id, &shift_marks(&rebase_marks(&rec.event_marks, start, end), res.start_shift_secs))?;
+                lib.update_event_marks(
+                    id,
+                    &shift_marks(
+                        &rebase_marks(&rec.event_marks, start, end),
+                        res.start_shift_secs,
+                    ),
+                )?;
                 lib.get(id)?.ok_or("clip vanished after trim")?
             };
             tracing::info!("trimmed clip {id} → overwrite {}", record.path);
@@ -779,7 +894,8 @@ pub async fn read_clip_range(
     let start = start.min(end);
     let mut buf = vec![0u8; (end - start) as usize];
     if !buf.is_empty() {
-        file.seek(SeekFrom::Start(start)).map_err(|e| e.to_string())?;
+        file.seek(SeekFrom::Start(start))
+            .map_err(|e| e.to_string())?;
         file.read_exact(&mut buf).map_err(|e| e.to_string())?;
     }
     Ok(tauri::ipc::Response::new(buf))
@@ -849,8 +965,7 @@ fn remux_with_tracks_blocking(
     match mode {
         TrimMode::Copy => {
             let out = clip_output_path(&app)?;
-            let res =
-                crate::library::remux::remux_with_tracks(&input, &out, start, end, &sel)?;
+            let res = crate::library::remux::remux_with_tracks(&input, &out, start, end, &sel)?;
             let thumb = generate_thumbnail(&app, &out);
             let filmstrip = generate_filmstrip(&app, &out, res.duration_secs);
             let size_bytes = std::fs::metadata(&out).map(|m| m.len() as i64).unwrap_or(0);
@@ -859,7 +974,10 @@ fn remux_with_tracks_blocking(
                 title: format!("{} (export)", rec.title),
                 event: rec.event.clone(),
                 events: rec.events.clone(),
-                event_marks: shift_marks(&rebase_marks(&rec.event_marks, start, end), res.start_shift_secs),
+                event_marks: shift_marks(
+                    &rebase_marks(&rec.event_marks, start, end),
+                    res.start_shift_secs,
+                ),
                 duration_secs: res.duration_secs,
                 width: res.width,
                 height: res.height,
@@ -879,12 +997,13 @@ fn remux_with_tracks_blocking(
         }
         TrimMode::Overwrite => {
             let tmp = clip_output_path(&app)?;
-            let res =
-                crate::library::remux::remux_with_tracks(&input, &tmp, start, end, &sel)?;
+            let res = crate::library::remux::remux_with_tracks(&input, &tmp, start, end, &sel)?;
             replace_file_retrying(&tmp, &input)?;
             let thumb = generate_thumbnail(&app, &input);
             let filmstrip = generate_filmstrip(&app, &input, res.duration_secs);
-            let size_bytes = std::fs::metadata(&input).map(|m| m.len() as i64).unwrap_or(0);
+            let size_bytes = std::fs::metadata(&input)
+                .map(|m| m.len() as i64)
+                .unwrap_or(0);
             let record = {
                 let lib = library.0.lock().map_err(|_| "library poisoned")?;
                 lib.update_media(
@@ -896,7 +1015,13 @@ fn remux_with_tracks_blocking(
                     thumb.as_deref(),
                     filmstrip.as_deref(),
                 )?;
-                lib.update_event_marks(id, &shift_marks(&rebase_marks(&rec.event_marks, start, end), res.start_shift_secs))?;
+                lib.update_event_marks(
+                    id,
+                    &shift_marks(
+                        &rebase_marks(&rec.event_marks, start, end),
+                        res.start_shift_secs,
+                    ),
+                )?;
                 lib.get(id)?.ok_or("clip vanished after remux")?
             };
             tracing::info!("remuxed clip {id} → overwrite {}", record.path);
@@ -924,7 +1049,9 @@ fn replace_file_retrying(src: &Path, dst: &Path) -> Result<(), String> {
         }
     }
     let _ = std::fs::remove_file(src);
-    Err(format!("could not replace original clip (file in use?): {last}"))
+    Err(format!(
+        "could not replace original clip (file in use?): {last}"
+    ))
 }
 
 /// Current user settings.
@@ -1128,9 +1255,8 @@ pub async fn valorant_status() -> crate::valorant::service::ValorantStatus {
 /// click-through can be verified without launching a match.
 #[tauri::command]
 pub fn overlay_test(app: AppHandle) {
-    use crate::overlay::{notify, show_overlay_over_game, OverlayKind, OverlayNotice, DEFAULT_TTL_MS};
-    show_overlay_over_game(&app);
-    notify(
+    use crate::overlay::{toast_over_game, OverlayKind, OverlayNotice, DEFAULT_TTL_MS};
+    toast_over_game(
         &app,
         OverlayNotice {
             kind: OverlayKind::ClipSaved,
@@ -1225,7 +1351,8 @@ fn move_file(src: &Path, dst: &Path) -> Result<(), String> {
         return Ok(());
     }
     // Cross-volume (or replacing an existing file): copy then drop the original.
-    std::fs::copy(src, dst).map_err(|e| format!("copy {} -> {}: {e}", src.display(), dst.display()))?;
+    std::fs::copy(src, dst)
+        .map_err(|e| format!("copy {} -> {}: {e}", src.display(), dst.display()))?;
     std::fs::remove_file(src).map_err(|e| format!("remove {}: {e}", src.display()))?;
     Ok(())
 }
@@ -1299,9 +1426,12 @@ fn migrate_clips(app: &AppHandle, old_root: &Path, new_root: &Path) -> u32 {
         let new_thumb = new_thumb.map(|p| p.to_string_lossy().to_string());
         let new_film = new_film.map(|p| p.to_string_lossy().to_string());
         if let Ok(lib) = library.0.lock() {
-            if let Err(e) =
-                lib.update_paths(clip.id, &new_path, new_thumb.as_deref(), new_film.as_deref())
-            {
+            if let Err(e) = lib.update_paths(
+                clip.id,
+                &new_path,
+                new_thumb.as_deref(),
+                new_film.as_deref(),
+            ) {
                 tracing::warn!("migrate db update for clip {}: {e}", clip.id);
             }
         }
@@ -1395,7 +1525,11 @@ const FILMSTRIP_TILE_WIDTH: u32 = 160;
 /// Extract a sprite-sheet filmstrip next to the clip
 /// (`<Videos>/Hako/thumbs/<stem>_strip.jpg`). Best-effort: a clip without one
 /// falls back to the poster in the editor.
-pub(crate) fn generate_filmstrip(app: &AppHandle, video: &Path, duration_secs: f64) -> Option<String> {
+pub(crate) fn generate_filmstrip(
+    app: &AppHandle,
+    video: &Path,
+    duration_secs: f64,
+) -> Option<String> {
     let dir = clip_dir(app).ok()?.join("thumbs");
     std::fs::create_dir_all(&dir).ok()?;
     let stem = video.file_stem()?.to_str()?;

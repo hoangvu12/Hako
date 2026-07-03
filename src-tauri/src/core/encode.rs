@@ -279,7 +279,7 @@ impl Backend {
                     ("async_depth", "1"),   // shallow async → immediate backpressure
                 ],
                 vec![("preset", "veryfast"), ("async_depth", "1")], // no low_power
-                vec![("async_depth", "1")],                          // bare (historical default)
+                vec![("async_depth", "1")],                         // bare (historical default)
             ],
         }
     }
@@ -380,12 +380,8 @@ impl Encoder {
             Vendor::Intel => Backend::Qsv,
             // AMD (AMF) is the remaining vendor; Other has no HW path.
             // Never silently fall back to software encoding.
-            Vendor::Amd => {
-                return Err("AMD (AMF) hardware encode is not implemented yet".into())
-            }
-            Vendor::Other => {
-                return Err("no hardware encoder for this adapter's vendor".into())
-            }
+            Vendor::Amd => return Err("AMD (AMF) hardware encode is not implemented yet".into()),
+            Vendor::Other => return Err("no hardware encoder for this adapter's vendor".into()),
         };
 
         // Try the requested codec, then graceful fallbacks toward H.264. Skip any
@@ -397,7 +393,16 @@ impl Encoder {
                 last_err = format!("{name} not available in this build");
                 continue;
             }
-            match Self::build(device, context, backend, cand, bitrate_mbps, width, height, fps) {
+            match Self::build(
+                device,
+                context,
+                backend,
+                cand,
+                bitrate_mbps,
+                width,
+                height,
+                fps,
+            ) {
                 Ok(enc) => {
                     if cand != codec {
                         tracing::warn!(
@@ -425,7 +430,16 @@ impl Encoder {
         height: u32,
         fps: u32,
     ) -> std::result::Result<Self, String> {
-        Self::build(device, context, Backend::Qsv, VideoCodec::H264, 20, width, height, fps)
+        Self::build(
+            device,
+            context,
+            Backend::Qsv,
+            VideoCodec::H264,
+            20,
+            width,
+            height,
+            fps,
+        )
     }
 
     /// Build an NVENC H.264 encoder explicitly (NVIDIA input).
@@ -436,7 +450,16 @@ impl Encoder {
         height: u32,
         fps: u32,
     ) -> std::result::Result<Self, String> {
-        Self::build(device, context, Backend::Nvenc, VideoCodec::H264, 20, width, height, fps)
+        Self::build(
+            device,
+            context,
+            Backend::Nvenc,
+            VideoCodec::H264,
+            20,
+            width,
+            height,
+            fps,
+        )
     }
 
     /// Build an encoder for `backend` × `codec` on `device` for `width`x`height`
@@ -533,7 +556,10 @@ impl Encoder {
                     0,
                 );
                 if r < 0 {
-                    return Err(format!("av_hwdevice_ctx_create_derived(QSV): {}", av_err(r)));
+                    return Err(format!(
+                        "av_hwdevice_ctx_create_derived(QSV): {}",
+                        av_err(r)
+                    ));
                 }
             }
 
@@ -599,7 +625,10 @@ impl Encoder {
             let cname = CString::new(self.backend.encoder_name(self.codec)).unwrap();
             let codec = ffi::avcodec_find_encoder_by_name(cname.as_ptr());
             if codec.is_null() {
-                return Err(format!("{} encoder not found", self.backend.encoder_name(self.codec)));
+                return Err(format!(
+                    "{} encoder not found",
+                    self.backend.encoder_name(self.codec)
+                ));
             }
 
             let attempts = self.backend.open_option_sets();
@@ -632,8 +661,8 @@ impl Encoder {
                 c.gop_size = self.fps as i32; // keyint = 1s (clip cut points)
                 c.max_b_frames = 0; // no B-frames: no reorder delay on the capture path
                 c.bit_rate = self.bitrate_bps; // from Settings::bitrate_mbps
-                // Emit SPS/PPS as avcC extradata (not in-band) so mux.rs can write
-                // them once into the MP4 header on stream-copy.
+                                               // Emit SPS/PPS as avcC extradata (not in-band) so mux.rs can write
+                                               // them once into the MP4 header on stream-copy.
                 c.flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
                 c.hw_frames_ctx = match self.backend {
                     Backend::Qsv => ffi::av_buffer_ref(self.qsv_frames),
@@ -810,8 +839,8 @@ impl Encoder {
         let tex_owned = nv12.clone().into_raw(); // AddRef; released by buf free
         (*d3d11_frame).data[0] = tex_owned as *mut u8;
         (*d3d11_frame).data[1] = ptr::null_mut(); // subresource index 0
-        // buf[0] keeps the texture alive while the encoder (and the QSV mapping
-        // derived from it) hold the frame.
+                                                  // buf[0] keeps the texture alive while the encoder (and the QSV mapping
+                                                  // derived from it) hold the frame.
         (*d3d11_frame).buf[0] =
             ffi::av_buffer_create(tex_owned as *mut u8, 0, Some(release_texture), tex_owned, 0);
         if (*d3d11_frame).buf[0].is_null() {
@@ -1076,13 +1105,15 @@ mod tests {
         use crate::core::{convert::Converter, device};
 
         let gpus = device::enumerate_gpus().expect("enumerate gpus");
-        let Some(nv) = gpus.iter().find(|g| g.vendor == Vendor::Nvidia && !g.is_software) else {
+        let Some(nv) = gpus
+            .iter()
+            .find(|g| g.vendor == Vendor::Nvidia && !g.is_software)
+        else {
             eprintln!("no NVIDIA adapter present — skipping NVENC test");
             return;
         };
         let adapter = device::adapter_at(nv.index).expect("adapter_at");
-        let (d3d_device, ctx, _fl) =
-            device::create_device(Some(&adapter)).expect("create device");
+        let (d3d_device, ctx, _fl) = device::create_device(Some(&adapter)).expect("create device");
         let (w, h, fps) = (1280u32, 720u32, 60u32);
 
         // Synthetic BGRA "frame" → NV12 via the real converter.
@@ -1128,7 +1159,10 @@ mod tests {
             out_pts.push(p.pts);
         }
 
-        println!("h264_nvenc produced {} packet(s) from {w}x{h} NV12", out_pts.len());
+        println!(
+            "h264_nvenc produced {} packet(s) from {w}x{h} NV12",
+            out_pts.len()
+        );
         // PTS must be preserved (input was 0..29) — else clip duration/timing
         // breaks (clips would come out time-compressed).
         assert_eq!(out_pts.iter().copied().min(), Some(0));

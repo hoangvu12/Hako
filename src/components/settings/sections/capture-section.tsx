@@ -104,6 +104,19 @@ export function CaptureSection({
         />
       )}
 
+      <Panel title="Performance">
+        <Row
+          label="Pause background work while gaming"
+          hint="Defers cloud uploads, automatic cleanup, and clip filmstrips while Hako is recording or a supported game is open."
+        >
+          <Switch
+            checked={draft.pause_background_while_gaming}
+            onCheckedChange={(v) => set("pause_background_while_gaming", v)}
+          />
+        </Row>
+      </Panel>
+
+
       <Panel title="Tabbed out">
         <Row
           label='Show "tabbed out" card'

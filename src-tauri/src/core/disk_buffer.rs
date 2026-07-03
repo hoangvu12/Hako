@@ -198,7 +198,10 @@ impl DiskPacketRing {
         let mut out = Vec::new();
         for (path, _) in &metas[chosen..] {
             if let Err(e) = read_segment_into(path, &mut out) {
-                tracing::warn!("disk buffer: reading segment {} failed: {e}", path.display());
+                tracing::warn!(
+                    "disk buffer: reading segment {} failed: {e}",
+                    path.display()
+                );
             }
         }
         out
@@ -327,7 +330,9 @@ impl DiskPacketRing {
     /// buffer instead of crashing capture.
     fn fail(&mut self, what: &str, e: std::io::Error) {
         if !self.failed {
-            tracing::warn!("disk buffer disabled ({what} failed: {e}); clips will be empty until restart");
+            tracing::warn!(
+                "disk buffer disabled ({what} failed: {e}); clips will be empty until restart"
+            );
             self.failed = true;
         }
     }
@@ -449,9 +454,17 @@ mod tests {
         let s = r.slice_last(1_000_000);
         assert_eq!(s.first().unwrap().pts, 70);
         let stats = r.stats();
-        assert!((stats.duration_secs - 2.9).abs() < 1e-6, "got {}", stats.duration_secs);
+        assert!(
+            (stats.duration_secs - 2.9).abs() < 1e-6,
+            "got {}",
+            stats.duration_secs
+        );
         assert_eq!(stats.keyframes, 3); // kf at 70, 80, 90
-        assert!(stats.dropped >= 70, "expected ~70 evicted, got {}", stats.dropped);
+        assert!(
+            stats.dropped >= 70,
+            "expected ~70 evicted, got {}",
+            stats.dropped
+        );
     }
 
     #[test]

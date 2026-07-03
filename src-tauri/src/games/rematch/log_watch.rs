@@ -1,20 +1,27 @@
 //! `Runtime.log` parsing for Rematch — the source of every Rematch event.
 //!
 //! Rematch has no local API and no goal feed; Medal and Overwolf both reverse-
-//! engineer it (Medal server-side, Overwolf via a native memory-reading plugin).
-//! But the game's Unreal log carries everything we need for *highlights* in plain
-//! text, so — exactly like Valorant's `ShooterGame.log` tail — we follow it:
+//! engineer it (Medal server-side, Overwolf via a native memory-reading plugin
+//! plus on-screen score-overlay vision models). But the game's Unreal log carries
+//! everything we need for *highlights* in plain text, so — exactly like Valorant's
+//! `ShooterGame.log` tail — we follow it:
 //!
-//! - **Goal scored** → `… RuntimeMatchSound: GoalScored …` (the goal-sound cue;
-//!   fires once per goal). This is our lone highlight event, matching Medal's
-//!   "Goal Scored".
+//! - **Goal scored** → `… GameFlow.States.Celebration.FreeRun PostGoal …` (the
+//!   post-goal celebration transition; fires exactly once per goal). This is our
+//!   lone highlight event, matching Medal's "Goal Scored". Note: the game *also*
+//!   logs a `RuntimeMatchSound: GoalScored` audio cue, but it is unreliable — it
+//!   fires for only a small fraction of goals (~1 in 15 observed), so we key on
+//!   the celebration state instead, which is 1:1 with goals (as is the paired
+//!   `RuntimeGoalReplay` demo playback).
 //! - **Match start** → `GameFlow.States.Match CountdownOver` (kickoff).
 //! - **Match end** → `GameFlow.States.EndMatchWhistle` / `…MatchEnd…`.
 //! - **Context** → `localPlayerNickname:`, the menu mode lines, and the loaded
 //!   stadium map (purely for clip tagging).
 //!
-//! The goal cue is enough timing-wise: we tail on a ~1 s poll and clips pad ±8 s,
-//! so memory-precise timing (why Overwolf reads memory for its overlay) buys us
+//! `PostGoal` fires at the celebration, a few seconds *after* the ball crosses,
+//! but that is fine timing-wise: we tail on a ~1 s poll and the goal clip pads
+//! well back (`before` ≫ that lag), so the shot itself lands inside the window.
+//! Memory-precise timing (why Overwolf reads memory for its overlay) buys us
 //! nothing. The actual IO tail + read-time→event backdating is shared with
 //! Valorant ([`crate::valorant::log_watch::LogTail`] / `line_event_ticks`); this
 //! module is the pure, unit-tested parsing layer.
@@ -36,10 +43,12 @@ pub fn log_path() -> Option<PathBuf> {
     p.exists().then_some(p)
 }
 
-/// The goal-sound cue Rematch logs once per goal scored in the match.
-const GOAL_MARKER: &str = "RuntimeMatchSound: GoalScored";
+/// The post-goal celebration transition Rematch logs exactly once per goal. We
+/// key on this rather than the `RuntimeMatchSound: GoalScored` audio cue, which
+/// fires for only a fraction of goals (see the module docs).
+const GOAL_MARKER: &str = "GameFlow.States.Celebration.FreeRun PostGoal";
 
-/// Whether `line` is a goal-scored cue.
+/// Whether `line` is a goal-scored cue (the post-goal celebration transition).
 pub fn is_goal_scored(line: &str) -> bool {
     line.contains(GOAL_MARKER)
 }
@@ -54,8 +63,7 @@ pub fn is_match_start(line: &str) -> bool {
 /// Several end-class lines fire in quick succession; the caller finalizes on the
 /// first and ignores the rest (the active match is already taken).
 pub fn is_match_end(line: &str) -> bool {
-    line.contains("GameFlow.States.EndMatchWhistle")
-        || line.contains("GameFlow.States.MatchEnd")
+    line.contains("GameFlow.States.EndMatchWhistle") || line.contains("GameFlow.States.MatchEnd")
 }
 
 /// The local player's display name from a `… localPlayerNickname: <name> …` line
@@ -165,11 +173,20 @@ mod tests {
 
     #[test]
     fn detects_goal_cue() {
-        let line = "[2026.06.28-23.44.23:049][483]LogBlueprintUserMessages: \
-                    [BP_RuntimeMatchSound_C_2147440802] Ebb: RuntimeMatchSound: GoalScored \
-                    -> Branch Failed: false true true";
+        let line = "[2026.06.30-20.20.37:501][211]LogSCGameFlow: Display: GameFlow : \
+                    GameFlow.States.Match, GameFlow.States.Celebration.FreeRun PostGoal";
         assert!(is_goal_scored(line));
-        assert!(!is_goal_scored("LogBlueprintUserMessages: RuntimeMatchSound: WhistleBlown"));
+        // The unreliable audio cue is intentionally NOT treated as a goal — it
+        // fires for only a fraction of goals, so we key on the celebration state.
+        assert!(!is_goal_scored(
+            "[2026.06.28-23.44.23:049][483]LogBlueprintUserMessages: \
+             [BP_RuntimeMatchSound_C_2147440802] Ebb: RuntimeMatchSound: GoalScored \
+             -> Branch Failed: false true true"
+        ));
+        // A pre-goal / other celebration state must not match.
+        assert!(!is_goal_scored(
+            "GameFlow.States.Celebration.FreeRun PreKickoff"
+        ));
     }
 
     #[test]
@@ -195,7 +212,10 @@ mod tests {
                     localPlayerNickname: katou, easAuthenticationMethod: DevTool, steamId: 7656119 }";
         assert_eq!(parse_player_name(line).as_deref(), Some("katou"));
         // The pre-sign-in placeholder is empty → None.
-        assert_eq!(parse_player_name("{ localPlayerNickname: , foo: bar }"), None);
+        assert_eq!(
+            parse_player_name("{ localPlayerNickname: , foo: bar }"),
+            None
+        );
         // steamNickname fallback.
         assert_eq!(
             parse_player_name("{ steamNickname: katou, isSteamEnabled: true }").as_deref(),
@@ -206,9 +226,14 @@ mod tests {
 
     #[test]
     fn parses_game_mode() {
-        assert_eq!(parse_game_mode("LogTemp: Display: StartCustomMatch begin"), Some("Custom"));
         assert_eq!(
-            parse_game_mode("LogUIActionRouter: Display: [User 0] Focused desired target Btn_RankedMatch"),
+            parse_game_mode("LogTemp: Display: StartCustomMatch begin"),
+            Some("Custom")
+        );
+        assert_eq!(
+            parse_game_mode(
+                "LogUIActionRouter: Display: [User 0] Focused desired target Btn_RankedMatch"
+            ),
             Some("Ranked")
         );
         assert_eq!(

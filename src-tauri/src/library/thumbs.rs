@@ -17,15 +17,18 @@ const SWS_BILINEAR: i32 = 2;
 const AVMEDIA_TYPE_VIDEO: i32 = 0;
 const AVSEEK_FLAG_BACKWARD: i32 = 1;
 const AV_TIME_BASE: i64 = 1_000_000;
-// Decoder multithreading (ABI-stable values from avcodec.h). `thread_count = 0`
-// lets FFmpeg pick (~logical cores); frame+slice threading speeds the filmstrip's
-// many-frame decode on multicore. Off the live hot path (runs after a clip saves).
+// Decoder multithreading (ABI-stable values from avcodec.h). Keep software
+// decode deliberately small: FFmpeg's `thread_count = 0` uses all logical cores,
+// which can spike CPU during a match when clips are saved in quick succession.
+// Two decode threads are enough for posters/filmstrips and yield to the game.
 const FF_THREAD_FRAME: i32 = 1;
 const FF_THREAD_SLICE: i32 = 2;
 
+const MAX_DECODE_THREADS: i32 = 2;
+
 /// Enable multithreaded software decode on `dctx` before `avcodec_open2`.
 unsafe fn enable_threaded_decode(dctx: *mut ffi::AVCodecContext) {
-    (*dctx).thread_count = 0;
+    (*dctx).thread_count = MAX_DECODE_THREADS;
     (*dctx).thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
 }
 
@@ -134,7 +137,18 @@ pub fn extract_filmstrip(
                 return Err("alloc decoder ctx failed".into());
             }
             let run = compose_filmstrip(
-                ic, dctx, dec, codecpar, vidx, st, out_jpg, count, tile_w, tile_h, src_w, src_h,
+                ic,
+                dctx,
+                dec,
+                codecpar,
+                vidx,
+                st,
+                out_jpg,
+                count,
+                tile_w,
+                tile_h,
+                src_w,
+                src_h,
                 duration_secs,
             );
             let mut d = dctx;
@@ -204,22 +218,37 @@ unsafe fn compose_filmstrip(
 
         // One swscale context (src dims/fmt are constant) reused for every tile.
         let sws = ffi::sws_getContext(
-            src_w, src_h, (*dctx).pix_fmt, tile_w, tile_h, rgb, SWS_BILINEAR,
-            ptr::null_mut(), ptr::null_mut(), ptr::null(),
+            src_w,
+            src_h,
+            (*dctx).pix_fmt,
+            tile_w,
+            tile_h,
+            rgb,
+            SWS_BILINEAR,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null(),
         );
         if sws.is_null() {
             return Err("sws_getContext(tile) failed".into());
         }
 
         let tb = (*stream).time_base;
-        let dur = if duration_secs > 0.05 { duration_secs } else { 1.0 };
+        let dur = if duration_secs > 0.05 {
+            duration_secs
+        } else {
+            1.0
+        };
         let composit = (|| -> Result<(), String> {
             for i in 0..count {
                 // Sample at the middle of each of `count` equal slices.
                 let t = dur * (i as f64 + 0.5) / count as f64;
                 let ts = ffi::av_rescale_q(
                     (t * AV_TIME_BASE as f64) as i64,
-                    ffi::AVRational { num: 1, den: AV_TIME_BASE as i32 },
+                    ffi::AVRational {
+                        num: 1,
+                        den: AV_TIME_BASE as i32,
+                    },
                     tb,
                 );
                 ffi::av_seek_frame(ic, vidx, ts, AVSEEK_FLAG_BACKWARD);
@@ -293,8 +322,16 @@ unsafe fn rgb_canvas_to_jpeg(
 ) -> Result<(), String> {
     let yuvj420p = ffi::AV_PIX_FMT_YUVJ420P;
     let sws = ffi::sws_getContext(
-        w, h, ffi::AV_PIX_FMT_RGB24, w, h, yuvj420p, SWS_BILINEAR,
-        ptr::null_mut(), ptr::null_mut(), ptr::null(),
+        w,
+        h,
+        ffi::AV_PIX_FMT_RGB24,
+        w,
+        h,
+        yuvj420p,
+        SWS_BILINEAR,
+        ptr::null_mut(),
+        ptr::null_mut(),
+        ptr::null(),
     );
     if sws.is_null() {
         return Err("sws_getContext(jpeg) failed".into());
@@ -523,14 +560,20 @@ mod tests {
             MipLevels: 1,
             ArraySize: 1,
             Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
             Usage: D3D11_USAGE_DEFAULT,
             BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
             CPUAccessFlags: 0,
             MiscFlags: 0,
         };
         let mut bgra: Option<ID3D11Texture2D> = None;
-        unsafe { dev.CreateTexture2D(&desc, None, Some(&mut bgra)).expect("bgra") };
+        unsafe {
+            dev.CreateTexture2D(&desc, None, Some(&mut bgra))
+                .expect("bgra")
+        };
         let bgra = bgra.unwrap();
         let conv = Converter::new(&dev, &ctx, w, h, w, h).expect("conv");
         let mut enc = Encoder::new_qsv(&dev, &ctx, w, h, fps).expect("enc");
@@ -586,14 +629,20 @@ mod tests {
             MipLevels: 1,
             ArraySize: 1,
             Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
             Usage: D3D11_USAGE_DEFAULT,
             BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
             CPUAccessFlags: 0,
             MiscFlags: 0,
         };
         let mut bgra: Option<ID3D11Texture2D> = None;
-        unsafe { dev.CreateTexture2D(&desc, None, Some(&mut bgra)).expect("bgra") };
+        unsafe {
+            dev.CreateTexture2D(&desc, None, Some(&mut bgra))
+                .expect("bgra")
+        };
         let bgra = bgra.unwrap();
         let conv = Converter::new(&dev, &ctx, w, h, w, h).expect("conv");
         let mut enc = Encoder::new_qsv(&dev, &ctx, w, h, fps).expect("enc");
@@ -635,12 +684,17 @@ mod tests {
             let c = std::ffi::CString::new(jpg.to_str().unwrap()).unwrap();
             let mut ic: *mut ffi::AVFormatContext = ptr::null_mut();
             assert!(
-                ffi::avformat_open_input(&mut ic, c.as_ptr(), ptr::null_mut(), ptr::null_mut()) >= 0
+                ffi::avformat_open_input(&mut ic, c.as_ptr(), ptr::null_mut(), ptr::null_mut())
+                    >= 0
             );
             assert!(ffi::avformat_find_stream_info(ic, ptr::null_mut()) >= 0);
             let st = *(*ic).streams;
             let par = (*st).codecpar;
-            assert_eq!((*par).width, (tiles * tile_w) as i32, "sprite width mismatch");
+            assert_eq!(
+                (*par).width,
+                (tiles * tile_w) as i32,
+                "sprite width mismatch"
+            );
             ffi::avformat_close_input(&mut ic);
         }
 

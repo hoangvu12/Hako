@@ -29,8 +29,12 @@ pub fn default_path() -> Option<PathBuf> {
 /// isn't running (file absent) or the contents are malformed.
 pub fn read() -> Result<Lockfile, String> {
     let path = default_path().ok_or("LOCALAPPDATA not set")?;
-    let contents = std::fs::read_to_string(&path)
-        .map_err(|e| format!("lockfile not found at {} ({e}) — is Riot running?", path.display()))?;
+    let contents = std::fs::read_to_string(&path).map_err(|e| {
+        format!(
+            "lockfile not found at {} ({e}) — is Riot running?",
+            path.display()
+        )
+    })?;
     Lockfile::parse(&contents)
 }
 

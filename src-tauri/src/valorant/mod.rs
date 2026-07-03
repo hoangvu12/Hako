@@ -7,17 +7,17 @@
 
 #![allow(dead_code)]
 
-pub mod lockfile; // parse lockfile, local auth
-pub mod local_api; // presences, websocket, session loop state
-pub mod log_watch; // ShooterGame.log tailer → round-start anchors
-pub mod remote_api; // glz/pd: current game, match-details
-pub mod model; // match/round/kill structs (serde)
-pub mod reconcile; // kill time → buffer position; event derivation
-pub mod summary; // post-match K/D/A, headshot %, agent, win/loss, title
-pub mod service; // state machine + session bootstrap
 pub mod cut; // post-match: derive → reconcile → cut clips → library
-pub mod pending; // durable retry-later store for matches whose details fetch failed
 pub mod integration; // GameIntegration impl: live presence loop driving Mode-B recording
-pub mod live; // shared live-match context for tagging manual clips
+pub mod live;
+pub mod local_api; // presences, websocket, session loop state
+pub mod lockfile; // parse lockfile, local auth
+pub mod log_watch; // ShooterGame.log tailer → round-start anchors
+pub mod model; // match/round/kill structs (serde)
+pub mod pending; // durable retry-later store for matches whose details fetch failed
+pub mod reconcile; // kill time → buffer position; event derivation
+pub mod remote_api; // glz/pd: current game, match-details
+pub mod service; // state machine + session bootstrap
+pub mod summary; // post-match K/D/A, headshot %, agent, win/loss, title // shared live-match context for tagging manual clips
 
 pub use integration::Integration;

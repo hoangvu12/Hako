@@ -601,13 +601,15 @@ pub(crate) fn set_clip_hotkey(app: &tauri::AppHandle, accel: &str) {
             .map(|s| s.clip_capture_seconds())
             .unwrap_or(30);
         // save_clip_full emits `clip-created` itself; we just log/surface errors.
-        std::thread::spawn(move || match commands::save_clip_full(&handle, seconds, None) {
-            Ok(rec) => tracing::info!("hotkey saved clip → {}", rec.path),
-            Err(e) => {
-                tracing::warn!("clip save failed: {e}");
-                let _ = handle.emit(events::RECORDER_ERROR, e);
-            }
-        });
+        std::thread::spawn(
+            move || match commands::save_clip_full(&handle, seconds, None) {
+                Ok(rec) => tracing::info!("hotkey saved clip → {}", rec.path),
+                Err(e) => {
+                    tracing::warn!("clip save failed: {e}");
+                    let _ = handle.emit(events::RECORDER_ERROR, e);
+                }
+            },
+        );
     });
     if let Err(e) = res {
         tracing::error!("could not register clip hotkey ({accel}): {e}");
@@ -642,4 +644,3 @@ fn show_main(app: &tauri::AppHandle) {
     // Resume the renderer now that the UI is visible again.
     set_webview_suspended(app, false);
 }
-

@@ -25,13 +25,11 @@ use crate::core::clock::{now_ticks, TICKS_PER_SECOND};
 use crate::games::event::EventKind;
 use crate::games::lol::context::LolContext;
 use crate::games::lol::detect;
-use crate::games::lol::events::{
-    classify, is_owned_combat, LolEventTimings, LolEventToggles,
-};
+use crate::games::lol::events::{classify, is_owned_combat, LolEventTimings, LolEventToggles};
 use crate::games::lol::live_client::LiveClient;
 use crate::games::recording::{
-    clip_window_span, cut_placed_windows, save_whole_session, AutoCaptureState, CutWindows, GameCtx,
-    RecordingSession,
+    clip_window_span, cut_placed_windows, save_whole_session, AutoCaptureState, CutWindows,
+    GameCtx, RecordingSession,
 };
 use crate::games::{GameId, GameIntegration};
 use crate::settings::AutoCaptureMode;
@@ -231,7 +229,11 @@ async fn run(ctx: GameCtx) {
                         if let Some(kind) = classify(ev, &am.ctx.me, &am.ctx.team) {
                             if toggles.enabled(kind) {
                                 am.events.push((kind, now_ticks()));
-                                tracing::debug!("lol: event {} at {:.1}s", kind.label(), ev.event_time);
+                                tracing::debug!(
+                                    "lol: event {} at {:.1}s",
+                                    kind.label(),
+                                    ev.event_time
+                                );
                             }
                         }
                     }

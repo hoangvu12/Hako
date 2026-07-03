@@ -153,7 +153,8 @@ mod tests {
             "def": { "productId": "valorant", "launchConfiguration": {
                 "arguments": ["--launch-product=valorant", "-ares-deployment=eu", "--other"] } }
         }"#;
-        let sessions: crate::valorant::model::ExternalSessions = serde_json::from_str(json).unwrap();
+        let sessions: crate::valorant::model::ExternalSessions =
+            serde_json::from_str(json).unwrap();
         assert_eq!(parse_valorant_deployment(&sessions).as_deref(), Some("eu"));
     }
 

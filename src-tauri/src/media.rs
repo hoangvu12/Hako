@@ -136,7 +136,11 @@ fn parse_range(value: &str, size: u64) -> Option<Option<(u64, u64)>> {
 /// custom folder must stay playable, so the boundary tracks the setting rather
 /// than the hardcoded default.
 fn is_allowed<R: Runtime>(ctx: &UriSchemeContext<'_, R>, path: &Path) -> bool {
-    if path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("mp4")) != Some(true)
+    if path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("mp4"))
+        != Some(true)
     {
         return false;
     }

@@ -317,7 +317,8 @@ impl RoundTracker {
         }
         self.ends.insert(round, end_ticks);
         if !self.precise.contains(&(round + 1)) {
-            self.starts.insert(round + 1, end_ticks + self.buy_phase_ticks);
+            self.starts
+                .insert(round + 1, end_ticks + self.buy_phase_ticks);
         }
         self.next_round = Some(round + 1);
     }
@@ -429,7 +430,10 @@ mod tests {
     #[test]
     fn ignores_unrelated_lines() {
         assert_eq!(parse_round_ended("LogTemp: something for round '9'"), None);
-        assert_eq!(parse_round_ended("AShooterGameState::OnRoundEnded no number"), None);
+        assert_eq!(
+            parse_round_ended("AShooterGameState::OnRoundEnded no number"),
+            None
+        );
     }
 
     #[test]
@@ -509,7 +513,7 @@ mod tests {
         t.on_round_live(live);
         let r1 = t.anchors().into_iter().find(|a| a.round == 1).unwrap();
         assert_eq!(r1.start_wallclock_ticks, live); // precise, not the 130 s guess
-        // A later duplicate round-ended must not clobber the precise start.
+                                                    // A later duplicate round-ended must not clobber the precise start.
         t.on_round_ended(0, round0_end);
         let r1b = t.anchors().into_iter().find(|a| a.round == 1).unwrap();
         assert_eq!(r1b.start_wallclock_ticks, live);
@@ -538,7 +542,10 @@ mod tests {
                     Loopstate changed from INGAME to MENUS";
         assert_eq!(parse_log_timestamp_unix_ms(line), Some(1_781_956_350_218));
         // Epoch sanity + a non-bracketed line.
-        assert_eq!(parse_log_timestamp_unix_ms("[1970.01.01-00.00.00:000]x"), Some(0));
+        assert_eq!(
+            parse_log_timestamp_unix_ms("[1970.01.01-00.00.00:000]x"),
+            Some(0)
+        );
         assert_eq!(parse_log_timestamp_unix_ms("no timestamp here"), None);
     }
 
@@ -553,7 +560,10 @@ mod tests {
         // A negative age (clock skew) or an implausibly old line degrades to read
         // time rather than yanking the anchor.
         assert_eq!(backdate_ticks(1_000_000_000, 10_000, 10_500), 1_000_000_000);
-        assert_eq!(backdate_ticks(1_000_000_000, 100_000, 10_000), 1_000_000_000);
+        assert_eq!(
+            backdate_ticks(1_000_000_000, 100_000, 10_000),
+            1_000_000_000
+        );
     }
 
     #[test]

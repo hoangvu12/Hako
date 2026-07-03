@@ -22,7 +22,8 @@ use std::ffi::c_void;
 
 use windows::core::Interface;
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_IGNORE, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
+    D2D1_ALPHA_MODE_IGNORE, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_PIXEL_FORMAT, D2D_RECT_F,
+    D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateDevice, ID2D1Bitmap1, ID2D1DeviceContext, D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
@@ -45,7 +46,10 @@ static CARD_PNG: &[u8] = include_bytes!("../../assets/freeze-card.png");
 /// or typeless backbuffer can't be a D2D target), so the caller skips the overlay
 /// — and the source loop's keep-alive emit — when the game renders in one of them.
 pub fn format_supported(format: DXGI_FORMAT) -> bool {
-    matches!(format, DXGI_FORMAT_B8G8R8A8_UNORM | DXGI_FORMAT_R8G8B8A8_UNORM)
+    matches!(
+        format,
+        DXGI_FORMAT_B8G8R8A8_UNORM | DXGI_FORMAT_R8G8B8A8_UNORM
+    )
 }
 
 /// Direct2D compositor for the freeze card. Lives on the encode thread.
@@ -63,9 +67,11 @@ impl FreezeOverlay {
     /// uploads the card up front so `draw` is allocation-free. Returns the reason
     /// on failure so the caller can log and proceed without an overlay.
     pub fn new(device: &ID3D11Device) -> Result<Self, String> {
-        let dxgi: IDXGIDevice = device.cast().map_err(|e| format!("cast IDXGIDevice: {e}"))?;
-        let d2d_device =
-            unsafe { D2D1CreateDevice(&dxgi, None) }.map_err(|e| format!("D2D1CreateDevice: {e}"))?;
+        let dxgi: IDXGIDevice = device
+            .cast()
+            .map_err(|e| format!("cast IDXGIDevice: {e}"))?;
+        let d2d_device = unsafe { D2D1CreateDevice(&dxgi, None) }
+            .map_err(|e| format!("D2D1CreateDevice: {e}"))?;
         let ctx = unsafe { d2d_device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE) }
             .map_err(|e| format!("CreateDeviceContext: {e}"))?;
         let card = decode_card(&ctx)?;
@@ -137,8 +143,11 @@ impl FreezeOverlay {
             bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
             ..Default::default()
         };
-        let target = unsafe { self.ctx.CreateBitmapFromDxgiSurface(&surface, Some(&props as *const _)) }
-            .map_err(|e| format!("CreateBitmapFromDxgiSurface: {e}"))?;
+        let target = unsafe {
+            self.ctx
+                .CreateBitmapFromDxgiSurface(&surface, Some(&props as *const _))
+        }
+        .map_err(|e| format!("CreateBitmapFromDxgiSurface: {e}"))?;
         self.targets.borrow_mut().insert(key, target.clone());
         Ok(target)
     }

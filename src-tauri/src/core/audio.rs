@@ -211,8 +211,7 @@ unsafe fn collect_endpoints(
     fallback_name: &str,
     out: &mut Vec<(String, String)>,
 ) -> windows::core::Result<()> {
-    let enumerator: IMMDeviceEnumerator =
-        CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+    let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
     let collection: IMMDeviceCollection =
         enumerator.EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE)?;
     let count = collection.GetCount()?;
@@ -263,8 +262,7 @@ pub fn enumerate_active_sessions() -> Vec<AudioSession> {
 }
 
 unsafe fn collect_active_sessions(out: &mut Vec<AudioSession>) -> windows::core::Result<()> {
-    let enumerator: IMMDeviceEnumerator =
-        CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+    let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
     let device: IMMDevice = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
     let manager: IAudioSessionManager2 = device.Activate(CLSCTX_ALL, None)?;
     let sessions = manager.GetSessionEnumerator()?;
@@ -279,8 +277,7 @@ unsafe fn collect_active_sessions(out: &mut Vec<AudioSession>) -> windows::core:
     sys.refresh_processes_specifics(
         sysinfo::ProcessesToUpdate::All,
         true,
-        sysinfo::ProcessRefreshKind::nothing()
-            .with_exe(sysinfo::UpdateKind::OnlyIfNotSet),
+        sysinfo::ProcessRefreshKind::nothing().with_exe(sysinfo::UpdateKind::OnlyIfNotSet),
     );
 
     let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
@@ -389,7 +386,11 @@ unsafe fn extract_exe_icon_png(exe: &std::path::Path) -> Option<String> {
     use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
     use windows::Win32::UI::WindowsAndMessaging::DestroyIcon;
 
-    let wide: Vec<u16> = exe.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let wide: Vec<u16> = exe
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
     let mut shfi = SHFILEINFOW::default();
     let ok = SHGetFileInfoW(
         PCWSTR(wide.as_ptr()),
@@ -696,8 +697,7 @@ fn resolve_app_pid(id: &str, game_pid: Option<u32>) -> u32 {
     if matching.is_empty() {
         return 0;
     }
-    let pids: std::collections::HashSet<sysinfo::Pid> =
-        matching.iter().map(|p| p.pid()).collect();
+    let pids: std::collections::HashSet<sysinfo::Pid> = matching.iter().map(|p| p.pid()).collect();
     // Capture the *root* of the same-named group: the matching process whose
     // parent is not itself in the group. `PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_
     // PROCESS_TREE` then sweeps in every descendant (including the audio-service
@@ -744,7 +744,10 @@ fn plan(cfg: &AudioConfig, game_pid: Option<u32>) -> AudioPlan {
         // toggled Game Audio still captures it. An explicit disabled "game" entry
         // (user turned it off) is respected.
         let mut apps: Vec<AudioAppSel> = cfg.apps.clone();
-        if !apps.iter().any(|a| a.id.eq_ignore_ascii_case(GAME_SOURCE_ID)) {
+        if !apps
+            .iter()
+            .any(|a| a.id.eq_ignore_ascii_case(GAME_SOURCE_ID))
+        {
             apps.insert(
                 0,
                 AudioAppSel {
@@ -1162,10 +1165,7 @@ impl Source {
 
     /// Open a specific capture endpoint by its WASAPI device id (the value the
     /// "Microphone Source" picker persists).
-    unsafe fn open_mic_by_id(
-        enumerator: &IMMDeviceEnumerator,
-        id: &str,
-    ) -> Result<Source, String> {
+    unsafe fn open_mic_by_id(enumerator: &IMMDeviceEnumerator, id: &str) -> Result<Source, String> {
         let wide: Vec<u16> = id.encode_utf16().chain(std::iter::once(0)).collect();
         let device: IMMDevice = enumerator
             .GetDevice(PCWSTR(wide.as_ptr()))
@@ -1195,14 +1195,7 @@ impl Source {
         // 0 buffer duration/periodicity → engine default. We poll rather than use
         // EVENTCALLBACK (simpler; event-driven loopback works on Win10 1703+ but
         // we don't need it).
-        let init = audio_client.Initialize(
-            AUDCLNT_SHAREMODE_SHARED,
-            stream_flags,
-            0,
-            0,
-            wf,
-            None,
-        );
+        let init = audio_client.Initialize(AUDCLNT_SHAREMODE_SHARED, stream_flags, 0, 0, wf, None);
         CoTaskMemFree(Some(wf as *const _));
         init.map_err(|e| format!("IAudioClient::Initialize ({label}): {e}"))?;
 
@@ -1210,8 +1203,7 @@ impl Source {
             .GetService()
             .map_err(|e| format!("GetService(IAudioCaptureClient) ({label}): {e}"))?;
 
-        let swr = build_resampler(&fmt)
-            .map_err(|e| format!("resampler ({label}): {e}"))?;
+        let swr = build_resampler(&fmt).map_err(|e| format!("resampler ({label}): {e}"))?;
 
         Ok(Source {
             audio_client,
@@ -1278,13 +1270,7 @@ impl Source {
             let mut qpc_pos: u64 = 0;
             if self
                 .capture
-                .GetBuffer(
-                    &mut data,
-                    &mut frames,
-                    &mut flags,
-                    None,
-                    Some(&mut qpc_pos),
-                )
+                .GetBuffer(&mut data, &mut frames, &mut flags, None, Some(&mut qpc_pos))
                 .is_err()
             {
                 break;
@@ -1293,8 +1279,7 @@ impl Source {
             if frames > 0 {
                 let tick = timeline.qpc_to_ticks(qpc_pos, qpc_freq);
                 let silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0;
-                let discontinuity =
-                    (flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32) != 0;
+                let discontinuity = (flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32) != 0;
 
                 // Resample this packet (or an equivalent run of silence) to
                 // 48 kHz stereo interleaved float.
@@ -1322,9 +1307,7 @@ impl Source {
                 // pops from sub-millisecond jitter). Each track's mixer trims
                 // anything that lands before what it has already drained.
                 let expected = timeline.tick_to_idx(tick);
-                if !self.started
-                    || discontinuity
-                    || (expected - self.next_idx).abs() > GAP_SAMPLES
+                if !self.started || discontinuity || (expected - self.next_idx).abs() > GAP_SAMPLES
                 {
                     self.next_idx = expected;
                 }
@@ -1479,7 +1462,7 @@ pub fn is_process_loopback_supported() -> bool {
 /// the all-PC loopback path.
 mod process_loopback {
     use super::{build_resampler, parse_format, Source, MIX_CHANNELS, MIX_RATE};
-    use windows::core::{implement, Interface, IUnknown, HRESULT, PCWSTR};
+    use windows::core::{implement, IUnknown, Interface, HRESULT, PCWSTR};
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::Media::Audio::{
         ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
@@ -1615,8 +1598,8 @@ mod process_loopback {
             .map_err(|e| format!("GetService(IAudioCaptureClient) ({name}): {e}"))?;
 
         let fmt = parse_format(&wfx);
-        let swr =
-            build_resampler(&fmt).map_err(|e| format!("resampler (process loopback {name}): {e}"))?;
+        let swr = build_resampler(&fmt)
+            .map_err(|e| format!("resampler (process loopback {name}): {e}"))?;
 
         Ok(Source {
             audio_client,
@@ -1769,8 +1752,8 @@ impl TrackMixer {
             for _ in 0..self.block * 2 {
                 chunk.push(self.mix.pop_front().unwrap_or(0.0));
             }
-            let pts_ticks =
-                epoch + (self.mix_base as i128 * TICKS_PER_SECOND as i128 / MIX_RATE as i128) as i64;
+            let pts_ticks = epoch
+                + (self.mix_base as i128 * TICKS_PER_SECOND as i128 / MIX_RATE as i128) as i64;
             out.push((chunk, pts_ticks));
             self.mix_base += self.block as i64;
         }
@@ -1906,7 +1889,11 @@ impl AacEncoder {
 
     /// Encode one block of `frame_size` interleaved-stereo samples whose first
     /// sample is at `pts_ticks` (100 ns). Returns packets the encoder produced.
-    fn encode_block(&mut self, block: &[f32], pts_ticks: i64) -> Result<Vec<EncodedPacket>, String> {
+    fn encode_block(
+        &mut self,
+        block: &[f32],
+        pts_ticks: i64,
+    ) -> Result<Vec<EncodedPacket>, String> {
         let n = self.frame_size();
         unsafe {
             let r = ffi::av_frame_make_writable(self.frame);
@@ -2153,9 +2140,10 @@ mod tests {
                 while start.elapsed().as_secs_f64() < 4.0 {
                     let mut any = false;
                     for src in &mut sources {
-                        any |= src.drain(&mut timeline, qpc_freq, &mut scratch, &mut zero, |at, s| {
-                            mixer.add_scaled(at, s, 1.0)
-                        });
+                        any |=
+                            src.drain(&mut timeline, qpc_freq, &mut scratch, &mut zero, |at, s| {
+                                mixer.add_scaled(at, s, 1.0)
+                            });
                     }
                     if let Some(epoch) = timeline.epoch() {
                         for (samples, pts) in mixer.drain_ready(false, epoch) {
@@ -2184,7 +2172,10 @@ mod tests {
                 if !packets.is_empty() {
                     let out = std::env::temp_dir().join("hako_audio_test.aac");
                     write_adts(&out, &meta, &packets);
-                    println!("WROTE PLAYABLE AUDIO → {} (play it to verify sound)", out.display());
+                    println!(
+                        "WROTE PLAYABLE AUDIO → {} (play it to verify sound)",
+                        out.display()
+                    );
                 } else {
                     println!("no audio captured (was anything playing?) — pipeline still OK");
                 }
@@ -2214,8 +2205,8 @@ mod tests {
                 let enumerator: IMMDeviceEnumerator =
                     CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
                         .map_err(|e| format!("enumerator: {e}"))?;
-                let mut mic = Source::open_mic(&enumerator)
-                    .map_err(|e| format!("open default mic: {e}"))?;
+                let mut mic =
+                    Source::open_mic(&enumerator).map_err(|e| format!("open default mic: {e}"))?;
                 println!(
                     "mic mix format: {} Hz, {} ch, block_align={}",
                     mic.fmt.rate, mic.fmt.channels, mic.fmt.block_align
@@ -2245,13 +2236,14 @@ mod tests {
 
                 let start = Instant::now();
                 while start.elapsed().as_secs_f64() < 5.0 {
-                    let any = mic.drain(&mut timeline, qpc_freq, &mut scratch, &mut zero, |at, s| {
-                        sink_runs += 1;
-                        for &v in s {
-                            peak = peak.max(v.abs());
-                        }
-                        mixer.add_scaled(at, s, 1.0);
-                    });
+                    let any =
+                        mic.drain(&mut timeline, qpc_freq, &mut scratch, &mut zero, |at, s| {
+                            sink_runs += 1;
+                            for &v in s {
+                                peak = peak.max(v.abs());
+                            }
+                            mixer.add_scaled(at, s, 1.0);
+                        });
                     if let Some(epoch) = timeline.epoch() {
                         for (samples, pts) in mixer.drain_ready(false, epoch) {
                             packets.extend(encoder.encode_block(&samples, pts)?);
@@ -2269,7 +2261,11 @@ mod tests {
                 }
                 packets.extend(encoder.flush()?);
 
-                let peak_db = if peak > 0.0 { 20.0 * peak.log10() } else { f32::NEG_INFINITY };
+                let peak_db = if peak > 0.0 {
+                    20.0 * peak.log10()
+                } else {
+                    f32::NEG_INFINITY
+                };
                 println!(
                     "MIC: {sink_runs} buffer(s) drained, {} AAC packet(s), peak amplitude {peak:.4} ({peak_db:.1} dBFS)",
                     packets.len()
@@ -2290,7 +2286,10 @@ mod tests {
                 }
                 let out = std::env::temp_dir().join("hako_mic_test.aac");
                 write_adts(&out, &meta, &packets);
-                println!("WROTE MIC AUDIO → {} (play it to verify your voice)", out.display());
+                println!(
+                    "WROTE MIC AUDIO → {} (play it to verify your voice)",
+                    out.display()
+                );
                 Ok(())
             }
         })();

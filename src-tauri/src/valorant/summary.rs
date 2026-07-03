@@ -69,7 +69,11 @@ impl MatchSummary {
     /// Medal's `BuildMatchTitle`: outcome + agent + KDA. Uses the resolved
     /// `agent`, or "Unknown" when it hasn't been looked up.
     pub fn build_title(&self) -> String {
-        let outcome = if self.won { "🟩 Victory" } else { "🟥 Defeat" };
+        let outcome = if self.won {
+            "🟩 Victory"
+        } else {
+            "🟥 Defeat"
+        };
         let agent = if self.agent.is_empty() {
             "Unknown"
         } else {

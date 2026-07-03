@@ -19,14 +19,14 @@ use tauri::{AppHandle, Manager};
 use crate::commands::SettingsState;
 use crate::core::clock::TICKS_PER_SECOND;
 use crate::games::event::EventKind;
+use crate::games::recording::{
+    clip_window_span, cut_placed_windows, save_whole_session, AutoCaptureState, CutWindows,
+    GameCtx, RecordingSession,
+};
 use crate::games::rematch::context::RematchContext;
 use crate::games::rematch::detect;
 use crate::games::rematch::events::{RematchEventTimings, RematchEventToggles};
 use crate::games::rematch::log_watch;
-use crate::games::recording::{
-    clip_window_span, cut_placed_windows, save_whole_session, AutoCaptureState, CutWindows, GameCtx,
-    RecordingSession,
-};
 use crate::games::{GameId, GameIntegration};
 use crate::settings::AutoCaptureMode;
 use crate::valorant::log_watch::{line_event_ticks, LogTail};
@@ -164,7 +164,11 @@ async fn run(ctx: GameCtx) {
             want_since = None;
         }
         // Relax the cadence while the game isn't running.
-        poll = if running { POLL_INTERVAL } else { IDLE_POLL_INTERVAL };
+        poll = if running {
+            POLL_INTERVAL
+        } else {
+            IDLE_POLL_INTERVAL
+        };
 
         // Drain new log lines: update context + react to match / goal markers.
         if let Some(t) = tail.as_mut() {

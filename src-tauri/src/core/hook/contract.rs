@@ -244,8 +244,14 @@ mod tests {
 
     #[test]
     fn names_are_pid_suffixed() {
-        assert_eq!(name_with_pid(EVENT_HOOK_READY, 4321), "CaptureHook_HookReady4321");
-        assert_eq!(texture_mapping_name(140298, 1), "CaptureHook_Texture_140298_1");
+        assert_eq!(
+            name_with_pid(EVENT_HOOK_READY, 4321),
+            "CaptureHook_HookReady4321"
+        );
+        assert_eq!(
+            texture_mapping_name(140298, 1),
+            "CaptureHook_Texture_140298_1"
+        );
         assert_eq!(pipe_path(4321), r"\\.\pipe\CaptureHook_Pipe4321");
     }
 }

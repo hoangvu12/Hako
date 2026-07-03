@@ -74,6 +74,11 @@ pub fn maybe_free_up_space(app: &AppHandle) {
     if !enabled {
         return;
     }
+    if crate::commands::pause_background_work(app) {
+        tracing::info!("cloud retention: deferred while gaming");
+        return;
+    }
+
     match run(app) {
         Ok(stats) if stats.evicted_count > 0 => tracing::info!(
             "cloud retention: evicted {} clip(s), freed {} bytes",

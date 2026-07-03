@@ -21,8 +21,8 @@
 //! placed clip windows handed to one cut routine.
 
 pub mod event;
-pub mod lol;
 pub mod lockfile;
+pub mod lol;
 pub mod net;
 pub mod orchestrator;
 pub mod process_snapshot;
@@ -142,7 +142,11 @@ pub fn detected_game() -> Option<GameId> {
     const TTL: Duration = Duration::from_secs(2);
     static DETECTED: Mutex<Option<(Instant, Option<GameId>)>> = Mutex::new(None);
 
-    let scan = || registry().iter().find_map(|g| g.find_window().map(|_| g.id()));
+    let scan = || {
+        registry()
+            .iter()
+            .find_map(|g| g.find_window().map(|_| g.id()))
+    };
     let Ok(mut cache) = DETECTED.lock() else {
         return scan();
     };

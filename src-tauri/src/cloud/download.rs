@@ -61,7 +61,11 @@ fn emit_status(app: &AppHandle, clip_id: i64, status: &str, error: Option<&str>)
 
 fn emit_progress(app: &AppHandle, clip_id: i64, received: u64, total: u64, started: Instant) {
     let secs = started.elapsed().as_secs_f64();
-    let bytes_per_sec = if secs > 0.0 { (received as f64 / secs) as u64 } else { 0 };
+    let bytes_per_sec = if secs > 0.0 {
+        (received as f64 / secs) as u64
+    } else {
+        0
+    };
     let _ = app.emit(
         events::CLOUD_DOWNLOAD_PROGRESS,
         DownloadProgress {
@@ -152,7 +156,8 @@ async fn download_and_finalize(
     tauri::async_runtime::spawn_blocking(move || -> Result<ClipRecord, String> {
         // Replace any stale file already at the destination, then move ours in.
         let _ = std::fs::remove_file(&dest);
-        std::fs::rename(&part, &dest).map_err(|e| format!("move downloaded file into place: {e}"))?;
+        std::fs::rename(&part, &dest)
+            .map_err(|e| format!("move downloaded file into place: {e}"))?;
 
         let thumb = generate_thumbnail(&app, &dest);
         let filmstrip = generate_filmstrip(&app, &dest, duration);
@@ -160,7 +165,9 @@ async fn download_and_finalize(
         let lib = app.state::<LibraryState>();
         let guard = lib.0.lock().map_err(|_| "library poisoned")?;
         guard.mark_rehydrated(clip_id, thumb.as_deref(), filmstrip.as_deref())?;
-        guard.get(clip_id)?.ok_or_else(|| "clip vanished after download".to_string())
+        guard
+            .get(clip_id)?
+            .ok_or_else(|| "clip vanished after download".to_string())
     })
     .await
     .map_err(|e| format!("download finalize task failed: {e}"))?
@@ -210,7 +217,9 @@ async fn stream_to_file(
         }
     }
 
-    file.flush().await.map_err(|e| format!("flush temp file: {e}"))?;
+    file.flush()
+        .await
+        .map_err(|e| format!("flush temp file: {e}"))?;
     // Final 100% tick so the UI lands exactly on total.
     emit_progress(app, clip_id, received, total, started);
     Ok(())

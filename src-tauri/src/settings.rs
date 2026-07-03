@@ -137,6 +137,10 @@ pub struct Settings {
     pub overlay_on_clip_saved: bool,
     /// "Storage almost full" toast when the clips drive runs low.
     pub overlay_on_disk_low: bool,
+    /// Pause non-essential background work (cloud uploads, automatic retention,
+    /// thumbnail/filmstrip generation) while a capture is running or a supported
+    /// game is present. Default-on so Hako favors game FPS over background tasks.
+    pub pause_background_while_gaming: bool,
     /// Corner the toast stack sits in over the game:
     /// `top_left` | `top_right` | `bottom_left` | `bottom_right`.
     pub overlay_position: String,
@@ -207,6 +211,7 @@ impl Default for Settings {
             overlay_on_capture_state: true,
             overlay_on_clip_saved: true,
             overlay_on_disk_low: true,
+            pause_background_while_gaming: true,
             overlay_position: "top_right".into(),
             cloud_auto_upload: false,
             cloud_default_provider: None,
@@ -247,7 +252,10 @@ impl AutoCaptureMode {
 
     /// Whether this mode records a per-match session (Highlights or FullMatch).
     pub fn records_match(self) -> bool {
-        matches!(self, AutoCaptureMode::Highlights | AutoCaptureMode::FullMatch)
+        matches!(
+            self,
+            AutoCaptureMode::Highlights | AutoCaptureMode::FullMatch
+        )
     }
 }
 
@@ -430,7 +438,10 @@ impl AudioConfig {
 /// in the same order — the device *name* is cosmetic and `volume` is the level
 /// we hot-apply, so neither affects the track layout.
 fn devices_structure_eq(a: &[AudioDeviceSel], b: &[AudioDeviceSel]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.id == y.id && x.enabled == y.enabled)
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(x, y)| x.id == y.id && x.enabled == y.enabled)
 }
 
 /// Like [`devices_structure_eq`] but ignores the device `id` — only the count and
@@ -681,7 +692,7 @@ mod tests {
         let s: Settings = serde_json::from_str(legacy).unwrap();
         assert_eq!(s.lol_auto_mode(), AutoCaptureMode::Highlights);
         assert!(s.games.lol.events.pentakill); // a default-on League event
-        // And the nested bundle round-trips through disk.
+                                               // And the nested bundle round-trips through disk.
         let json = serde_json::to_string(&s).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(back.games.lol.auto_capture_mode, "highlights");

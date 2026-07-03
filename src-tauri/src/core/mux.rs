@@ -201,8 +201,18 @@ unsafe fn write_inner(
         // also set `title` (udta) for tools that read that instead.
         if !a.name.is_empty() {
             if let Ok(c_name) = CString::new(a.name) {
-                ffi::av_dict_set(&mut (*st_a).metadata, handler_key.as_ptr(), c_name.as_ptr(), 0);
-                ffi::av_dict_set(&mut (*st_a).metadata, title_key.as_ptr(), c_name.as_ptr(), 0);
+                ffi::av_dict_set(
+                    &mut (*st_a).metadata,
+                    handler_key.as_ptr(),
+                    c_name.as_ptr(),
+                    0,
+                );
+                ffi::av_dict_set(
+                    &mut (*st_a).metadata,
+                    title_key.as_ptr(),
+                    c_name.as_ptr(),
+                    0,
+                );
             }
         }
         audio_streams.push((st_a, a));
@@ -336,9 +346,7 @@ mod tests {
     use windows::Win32::Graphics::Direct3D11::{
         ID3D11Texture2D, D3D11_BIND_RENDER_TARGET, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
     };
-    use windows::Win32::Graphics::Dxgi::Common::{
-        DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
-    };
+    use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 
     /// Reopen an MP4 and return (stream count, codec_id, width, height, packet
     /// count) — proves the file we wrote is a valid, demuxable H.264 MP4.
@@ -384,7 +392,10 @@ mod tests {
             MipLevels: 1,
             ArraySize: 1,
             Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
             Usage: D3D11_USAGE_DEFAULT,
             BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
             CPUAccessFlags: 0,
@@ -441,9 +452,7 @@ mod tests {
 
         unsafe {
             let (nb, codec_id, pw, ph, count) = probe_mp4(&out);
-            println!(
-                "probe: {nb} stream(s), codec_id={codec_id}, {pw}x{ph}, {count} packets",
-            );
+            println!("probe: {nb} stream(s), codec_id={codec_id}, {pw}x{ph}, {count} packets",);
             assert_eq!(nb, 1, "expected exactly one stream");
             assert_eq!(codec_id, ffi::AV_CODEC_ID_H264, "stream is not H.264");
             assert_eq!(pw, w as i32);
@@ -464,11 +473,16 @@ mod tests {
             if e.is_null() {
                 None
             } else {
-                Some(std::ffi::CStr::from_ptr((*e).value).to_string_lossy().into_owned())
+                Some(
+                    std::ffi::CStr::from_ptr((*e).value)
+                        .to_string_lossy()
+                        .into_owned(),
+                )
             }
         };
         read("title").or_else(|| {
-            read("handler_name").filter(|h| h != "SoundHandler" && h != "VideoHandler" && !h.is_empty())
+            read("handler_name")
+                .filter(|h| h != "SoundHandler" && h != "VideoHandler" && !h.is_empty())
         })
     }
 
@@ -510,7 +524,10 @@ mod tests {
             MipLevels: 1,
             ArraySize: 1,
             Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
             Usage: D3D11_USAGE_DEFAULT,
             BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
             CPUAccessFlags: 0,
@@ -571,8 +588,9 @@ mod tests {
                 "missing H.264 video stream"
             );
             assert!(
-                streams.iter().any(|(t, id, _)| *t == ffi::AVMEDIA_TYPE_AUDIO
-                    && *id == ffi::AV_CODEC_ID_AAC),
+                streams
+                    .iter()
+                    .any(|(t, id, _)| *t == ffi::AVMEDIA_TYPE_AUDIO && *id == ffi::AV_CODEC_ID_AAC),
                 "missing AAC audio stream"
             );
         }
@@ -597,7 +615,10 @@ mod tests {
             MipLevels: 1,
             ArraySize: 1,
             Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
             Usage: D3D11_USAGE_DEFAULT,
             BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
             CPUAccessFlags: 0,

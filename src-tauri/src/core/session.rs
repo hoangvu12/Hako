@@ -311,8 +311,18 @@ impl SessionWriter {
             // most reliably; we also set `title` (udta) for tools reading that.
             if !name.is_empty() {
                 if let Ok(c_name) = CString::new(name.as_str()) {
-                    ffi::av_dict_set(&mut (*st_a).metadata, handler_key.as_ptr(), c_name.as_ptr(), 0);
-                    ffi::av_dict_set(&mut (*st_a).metadata, title_key.as_ptr(), c_name.as_ptr(), 0);
+                    ffi::av_dict_set(
+                        &mut (*st_a).metadata,
+                        handler_key.as_ptr(),
+                        c_name.as_ptr(),
+                        0,
+                    );
+                    ffi::av_dict_set(
+                        &mut (*st_a).metadata,
+                        title_key.as_ptr(),
+                        c_name.as_ptr(),
+                        0,
+                    );
                 }
             }
             audio.push((st_a, sr as i64));
@@ -342,7 +352,10 @@ impl SessionWriter {
             .map(|(st_a, sr)| AudioStream {
                 index: (*st_a).index,
                 sample_rate: sr,
-                src_tb: ffi::AVRational { num: 1, den: sr as i32 },
+                src_tb: ffi::AVRational {
+                    num: 1,
+                    den: sr as i32,
+                },
                 dst_tb: (*st_a).time_base,
                 last_pts: i64::MIN,
             })
@@ -600,7 +613,14 @@ impl SessionState {
         let (index, src_tb, dst_tb) = (audio.index, audio.src_tb, audio.dst_tb);
         let ok = unsafe {
             write_packet(
-                self.ofmt, self.pkt, index, pts_samples, src_tb, dst_tb, true, data,
+                self.ofmt,
+                self.pkt,
+                index,
+                pts_samples,
+                src_tb,
+                dst_tb,
+                true,
+                data,
             )
         };
         match ok {
@@ -632,8 +652,7 @@ impl SessionState {
                 if r < 0 {
                     result = Err(format!("av_write_trailer: {}", av_err(r)));
                 }
-                if !(*self.ofmt).pb.is_null()
-                    && ((*(*self.ofmt).oformat).flags & AVFMT_NOFILE) == 0
+                if !(*self.ofmt).pb.is_null() && ((*(*self.ofmt).oformat).flags & AVFMT_NOFILE) == 0
                 {
                     ffi::avio_closep(&mut (*self.ofmt).pb);
                 }
@@ -735,7 +754,11 @@ mod tests {
                 if e.is_null() {
                     None
                 } else {
-                    Some(std::ffi::CStr::from_ptr((*e).value).to_string_lossy().into_owned())
+                    Some(
+                        std::ffi::CStr::from_ptr((*e).value)
+                            .to_string_lossy()
+                            .into_owned(),
+                    )
                 }
             };
             read("title").or_else(|| {
@@ -776,7 +799,8 @@ mod tests {
         let gpus = device::enumerate_gpus().expect("enumerate gpus");
         let adapter = device::default_capture_index(&gpus)
             .map(|i| device::adapter_at(i).expect("adapter_at"));
-        let (d3d_device, ctx, _fl) = device::create_device(adapter.as_ref()).expect("create device");
+        let (d3d_device, ctx, _fl) =
+            device::create_device(adapter.as_ref()).expect("create device");
         let (w, h, fps) = (1280u32, 720u32, 60u32);
 
         let desc = D3D11_TEXTURE2D_DESC {
@@ -785,7 +809,10 @@ mod tests {
             MipLevels: 1,
             ArraySize: 1,
             Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
             Usage: D3D11_USAGE_DEFAULT,
             BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
             CPUAccessFlags: 0,
@@ -848,7 +875,9 @@ mod tests {
         assert_eq!(at_start, 0, "session must start at PTS 0");
 
         // One second in (1e7 ticks past base) maps near PTS = fps (1/fps units).
-        let one_sec = timeline.pts_at(base_ticks + TICKS_PER_SECOND).expect("pts at +1s");
+        let one_sec = timeline
+            .pts_at(base_ticks + TICKS_PER_SECOND)
+            .expect("pts at +1s");
         assert!(
             (one_sec - fps as i64).abs() <= 2,
             "expected ~{} PTS one second in, got {}",
@@ -882,7 +911,8 @@ mod tests {
         let gpus = device::enumerate_gpus().expect("enumerate gpus");
         let adapter = device::default_capture_index(&gpus)
             .map(|i| device::adapter_at(i).expect("adapter_at"));
-        let (d3d_device, ctx, _fl) = device::create_device(adapter.as_ref()).expect("create device");
+        let (d3d_device, ctx, _fl) =
+            device::create_device(adapter.as_ref()).expect("create device");
         let (w, h, fps) = (1280u32, 720u32, 60u32);
 
         let desc = D3D11_TEXTURE2D_DESC {
@@ -891,7 +921,10 @@ mod tests {
             MipLevels: 1,
             ArraySize: 1,
             Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
             Usage: D3D11_USAGE_DEFAULT,
             BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
             CPUAccessFlags: 0,
@@ -941,12 +974,20 @@ mod tests {
         // Push the first video packet to set the origin, then push all audio, then
         // the remaining video — a deliberately interleaved order.
         let first = &vpackets[0];
-        writer.push(first, base_ticks + first.pts * TICKS_PER_SECOND / fps as i64, false);
+        writer.push(
+            first,
+            base_ticks + first.pts * TICKS_PER_SECOND / fps as i64,
+            false,
+        );
         for ap in &apackets {
             writer.push_audio(0, ap);
         }
         for vp in &vpackets[1..] {
-            writer.push(vp, base_ticks + vp.pts * TICKS_PER_SECOND / fps as i64, false);
+            writer.push(
+                vp,
+                base_ticks + vp.pts * TICKS_PER_SECOND / fps as i64,
+                false,
+            );
         }
 
         let (_path, _output) = writer.finish().expect("finish");
@@ -984,7 +1025,8 @@ mod tests {
         let gpus = device::enumerate_gpus().expect("enumerate gpus");
         let adapter = device::default_capture_index(&gpus)
             .map(|i| device::adapter_at(i).expect("adapter_at"));
-        let (d3d_device, ctx, _fl) = device::create_device(adapter.as_ref()).expect("create device");
+        let (d3d_device, ctx, _fl) =
+            device::create_device(adapter.as_ref()).expect("create device");
         let (w, h, fps) = (1280u32, 720u32, 60u32);
 
         let desc = D3D11_TEXTURE2D_DESC {
@@ -993,7 +1035,10 @@ mod tests {
             MipLevels: 1,
             ArraySize: 1,
             Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
             Usage: D3D11_USAGE_DEFAULT,
             BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
             CPUAccessFlags: 0,
@@ -1041,7 +1086,11 @@ mod tests {
 
         // First video frame sets the origin, then interleave both audio tracks.
         let first = &vpackets[0];
-        writer.push(first, base_ticks + first.pts * TICKS_PER_SECOND / fps as i64, false);
+        writer.push(
+            first,
+            base_ticks + first.pts * TICKS_PER_SECOND / fps as i64,
+            false,
+        );
         for ap in &m_pkts {
             writer.push_audio(0, ap);
         }
@@ -1049,7 +1098,11 @@ mod tests {
             writer.push_audio(1, ap);
         }
         for vp in &vpackets[1..] {
-            writer.push(vp, base_ticks + vp.pts * TICKS_PER_SECOND / fps as i64, false);
+            writer.push(
+                vp,
+                base_ticks + vp.pts * TICKS_PER_SECOND / fps as i64,
+                false,
+            );
         }
 
         writer.finish().expect("finish");

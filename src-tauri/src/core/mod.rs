@@ -13,7 +13,7 @@ use windows::Win32::System::Threading::{
     PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
     PROCESS_POWER_THROTTLING_STATE, THREAD_POWER_THROTTLING_CURRENT_VERSION,
     THREAD_POWER_THROTTLING_EXECUTION_SPEED, THREAD_POWER_THROTTLING_STATE,
-    THREAD_PRIORITY_ABOVE_NORMAL,
+    THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_BELOW_NORMAL,
 };
 
 /// Raise the calling thread to ABOVE_NORMAL so a CPU-saturating game can't starve
@@ -55,6 +55,35 @@ pub(crate) fn protect_thread_high_qos(what: &str) {
     }
 }
 
+/// Demote a non-essential background worker (thumbnail/filmstrip generation,
+/// cleanup, etc.) so it yields CPU/cache resources to the game and the realtime
+/// capture threads. Best-effort; safe to call from any worker thread.
+pub(crate) fn throttle_current_thread_background(what: &str) {
+    // SAFETY: GetCurrentThread returns a pseudo-handle valid for this call only.
+    if let Err(e) = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL) } {
+        tracing::debug!("could not lower {what} thread priority: {e}");
+    }
+
+    let state = THREAD_POWER_THROTTLING_STATE {
+        Version: THREAD_POWER_THROTTLING_CURRENT_VERSION,
+        ControlMask: THREAD_POWER_THROTTLING_EXECUTION_SPEED,
+        // StateMask = EXECUTION_SPEED ON → EcoQoS for this thread.
+        StateMask: THREAD_POWER_THROTTLING_EXECUTION_SPEED,
+    };
+    // SAFETY: GetCurrentThread is a pseudo-handle valid for this call; `state`
+    // outlives the synchronous call and its size matches the struct.
+    if let Err(e) = unsafe {
+        SetThreadInformation(
+            GetCurrentThread(),
+            ThreadPowerThrottling,
+            &state as *const _ as *const c_void,
+            std::mem::size_of::<THREAD_POWER_THROTTLING_STATE>() as u32,
+        )
+    } {
+        tracing::debug!("could not tag {what} thread EcoQoS: {e}");
+    }
+}
+
 /// Toggle process-wide **EcoQoS**. When hidden to tray (`enabled = true`) we mark
 /// the whole process EcoQoS so the scheduler prefers efficiency cores / lower
 /// clocks for the UI, WebView2, and async threads during gameplay — Windows only
@@ -86,18 +115,18 @@ pub(crate) fn set_process_eco_qos(enabled: bool) {
     }
 }
 
-pub mod device; // shared D3D11 device + DXGI adapter enumeration
-pub mod gpu_priority; // best-effort GPU scheduling-priority boost (D3DKMT + DXGI)
-pub mod capture; // capture pipeline: hook source loop → channel → encode thread
-pub mod hook; // OBS-style graphics-hook (Game Capture) — the capture backend
-pub mod wgc; // Windows.Graphics.Capture source — robustness fallback (Part D)
-pub mod convert; // ID3D11VideoProcessor BGRA → NV12/P010
-pub mod overlay_card; // in-frame "tabbed out" freeze card (Direct2D composite)
-pub mod encode; // FFmpeg hw device/frames ctx, encoder, packet out
 pub mod audio; // WASAPI loopback + mic, resample, AAC
-pub mod denoise; // offline mic noise suppression (DeepFilterNet 3), editor export only
 pub mod buffer; // RAM ring + IDR index
+pub mod capture; // capture pipeline: hook source loop → channel → encode thread
+pub mod clock;
+pub mod convert; // ID3D11VideoProcessor BGRA → NV12/P010
+pub mod denoise; // offline mic noise suppression (DeepFilterNet 3), editor export only
+pub mod device; // shared D3D11 device + DXGI adapter enumeration
 pub mod disk_buffer; // disk-backed rolling segment ring (RAM-vs-disk buffer toggle)
-pub mod session; // Mode B full-match writer + timeline index
+pub mod encode; // FFmpeg hw device/frames ctx, encoder, packet out
+pub mod gpu_priority; // best-effort GPU scheduling-priority boost (D3DKMT + DXGI)
+pub mod hook; // OBS-style graphics-hook (Game Capture) — the capture backend
 pub mod mux; // MP4 stream-copy clip writer, padding/merge
-pub mod clock; // master clock (QPC), PTS mapping
+pub mod overlay_card; // in-frame "tabbed out" freeze card (Direct2D composite)
+pub mod session; // Mode B full-match writer + timeline index
+pub mod wgc; // Windows.Graphics.Capture source — robustness fallback (Part D) // master clock (QPC), PTS mapping

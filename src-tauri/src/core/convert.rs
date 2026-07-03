@@ -23,15 +23,14 @@ use std::ffi::c_void;
 use windows::core::{Interface, Result};
 use windows::Win32::Graphics::Direct3D11::{
     ID3D11Device, ID3D11DeviceContext, ID3D11Resource, ID3D11Texture2D, ID3D11VideoContext,
-    ID3D11VideoContext1, ID3D11VideoDevice, ID3D11VideoProcessor,
-    ID3D11VideoProcessorEnumerator, ID3D11VideoProcessorInputView,
-    ID3D11VideoProcessorOutputView, D3D11_BIND_RENDER_TARGET,
-    D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV, D3D11_TEXTURE2D_DESC,
+    ID3D11VideoContext1, ID3D11VideoDevice, ID3D11VideoProcessor, ID3D11VideoProcessorEnumerator,
+    ID3D11VideoProcessorInputView, ID3D11VideoProcessorOutputView, D3D11_BIND_RENDER_TARGET,
+    D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
     D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_CONTENT_DESC,
     D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0,
     D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0,
     D3D11_VIDEO_PROCESSOR_STREAM, D3D11_VIDEO_USAGE_OPTIMAL_SPEED, D3D11_VPIV_DIMENSION_TEXTURE2D,
-    D3D11_VPOV_DIMENSION_TEXTURE2D, D3D11_USAGE_DEFAULT,
+    D3D11_VPOV_DIMENSION_TEXTURE2D,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709,
@@ -95,10 +94,16 @@ impl Converter {
 
         let content_desc = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
             InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
-            InputFrameRate: DXGI_RATIONAL { Numerator: 0, Denominator: 0 },
+            InputFrameRate: DXGI_RATIONAL {
+                Numerator: 0,
+                Denominator: 0,
+            },
             InputWidth: in_width,
             InputHeight: in_height,
-            OutputFrameRate: DXGI_RATIONAL { Numerator: 0, Denominator: 0 },
+            OutputFrameRate: DXGI_RATIONAL {
+                Numerator: 0,
+                Denominator: 0,
+            },
             OutputWidth: width,
             OutputHeight: height,
             // Capture→encode wants throughput, not playback fidelity.
@@ -175,8 +180,7 @@ impl Converter {
         };
         let mut tex: Option<ID3D11Texture2D> = None;
         unsafe {
-            self.device
-                .CreateTexture2D(&desc, None, Some(&mut tex))?;
+            self.device.CreateTexture2D(&desc, None, Some(&mut tex))?;
         }
         Ok(tex.expect("CreateTexture2D returned null NV12 texture"))
     }
@@ -210,7 +214,9 @@ impl Converter {
             )?;
         }
         let input_view = input_view.expect("null input view");
-        self.input_views.borrow_mut().insert(key, input_view.clone());
+        self.input_views
+            .borrow_mut()
+            .insert(key, input_view.clone());
         Ok(input_view)
     }
 
@@ -299,7 +305,10 @@ mod tests {
             MipLevels: 1,
             ArraySize: 1,
             Format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
             Usage: D3D11_USAGE_DEFAULT,
             BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
             CPUAccessFlags: 0,
@@ -316,7 +325,11 @@ mod tests {
         let conv = Converter::new(&device, &context, w, h, w, h).expect("converter");
         let nv12 = conv.create_nv12_texture().expect("nv12 tex");
         conv.convert(&bgra, &nv12).expect("convert");
-        println!("converted {}x{} BGRA -> NV12 OK", conv.width(), conv.height());
+        println!(
+            "converted {}x{} BGRA -> NV12 OK",
+            conv.width(),
+            conv.height()
+        );
     }
 
     /// Downscale path: 1440p BGRA input → 720p NV12 output in one VideoProcessorBlt.
@@ -338,7 +351,10 @@ mod tests {
             MipLevels: 1,
             ArraySize: 1,
             Format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
             Usage: D3D11_USAGE_DEFAULT,
             BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
             CPUAccessFlags: 0,

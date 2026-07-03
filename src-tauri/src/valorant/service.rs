@@ -194,8 +194,9 @@ async fn resolve_region_shard(
     chat_region: &str,
 ) -> Result<(String, String), String> {
     let deployment = client.valorant_deployment().await.unwrap_or(None);
-    resolve_region_shard_values(deployment.as_deref(), chat_region)
-        .ok_or_else(|| "could not determine region/shard (no -ares-deployment and no chat region)".into())
+    resolve_region_shard_values(deployment.as_deref(), chat_region).ok_or_else(|| {
+        "could not determine region/shard (no -ares-deployment and no chat region)".into()
+    })
 }
 
 /// Pure region/shard decision (testable without a live client). Medal uses the
@@ -212,7 +213,10 @@ fn resolve_region_shard_values(
     if region.is_empty() {
         return None;
     }
-    Some((region.to_string(), remote_api::region_to_shard(region).to_string()))
+    Some((
+        region.to_string(),
+        remote_api::region_to_shard(region).to_string(),
+    ))
 }
 
 /// Determine the client release version: the log's `CI server version:` line
@@ -327,7 +331,7 @@ mod tests {
         let mut sm = StateMachine::new();
         sm.update(LoopState::InGame, 0);
         sm.update(LoopState::Menus, 24); // match ended
-        // A second match.
+                                         // A second match.
         assert_eq!(sm.update(LoopState::InGame, 0), vec![Action::MatchStarted]);
     }
 

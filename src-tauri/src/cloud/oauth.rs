@@ -84,7 +84,11 @@ const DROPBOX: OAuthProvider = OAuthProvider {
     display: "Dropbox",
     auth_url: "https://www.dropbox.com/oauth2/authorize",
     token_url: "https://api.dropboxapi.com/oauth2/token",
-    scopes: &["files.content.write", "files.content.read", "account_info.read"],
+    scopes: &[
+        "files.content.write",
+        "files.content.read",
+        "account_info.read",
+    ],
     extra_auth_params: &[("token_access_type", "offline")],
     client_id_env: "HAKO_DROPBOX_CLIENT_ID",
     client_id_builtin: option_env!("HAKO_DROPBOX_CLIENT_ID"),
@@ -231,7 +235,9 @@ async fn authorize(p: &OAuthProvider) -> Result<Connected, String> {
 
     let redirect = tokio::time::timeout(CONSENT_TIMEOUT, rx)
         .await
-        .map_err(|_| "timed out waiting for authorization (no consent within 5 minutes)".to_string())?
+        .map_err(|_| {
+            "timed out waiting for authorization (no consent within 5 minutes)".to_string()
+        })?
         .map_err(|_| "authorization was canceled".to_string())??;
 
     // CSRF: the returned state must match the token we generated.

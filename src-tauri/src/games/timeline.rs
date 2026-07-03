@@ -25,7 +25,9 @@ pub struct TimelineIndex {
 
 impl TimelineIndex {
     pub fn new() -> Self {
-        TimelineIndex { samples: Vec::new() }
+        TimelineIndex {
+            samples: Vec::new(),
+        }
     }
 
     /// Record a sample. Kept sorted; out-of-order pushes are inserted in place.
@@ -33,9 +35,7 @@ impl TimelineIndex {
         match self.samples.last() {
             Some(&(w, _)) if wallclock_ticks >= w => self.samples.push((wallclock_ticks, pts)),
             _ => {
-                let idx = self
-                    .samples
-                    .partition_point(|&(w, _)| w < wallclock_ticks);
+                let idx = self.samples.partition_point(|&(w, _)| w < wallclock_ticks);
                 self.samples.insert(idx, (wallclock_ticks, pts));
             }
         }
@@ -105,7 +105,7 @@ mod tests {
         t.push(0, 0);
         t.push(10_000_000, 60); // recorded wall 0..1 s → PTS 0..60
         let tol = 2_000_000; // 0.2 s
-        // Inside the recording: interpolated normally.
+                             // Inside the recording: interpolated normally.
         assert_eq!(t.pts_at_within(5_000_000, tol), Some(30));
         // Just outside but within tol: clamped to the near end.
         assert_eq!(t.pts_at_within(-1_000_000, tol), Some(0));

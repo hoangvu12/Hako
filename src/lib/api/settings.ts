@@ -253,6 +253,8 @@ export interface Settings {
   overlay_on_capture_state: boolean;
   overlay_on_clip_saved: boolean;
   overlay_on_disk_low: boolean;
+  /** Pause uploads/retention/media processing while a game or capture is active. */
+  pause_background_while_gaming: boolean;
   /** Corner the toast stack sits in over the game. */
   overlay_position: OverlayPosition;
 

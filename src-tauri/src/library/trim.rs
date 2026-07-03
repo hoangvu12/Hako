@@ -77,7 +77,11 @@ pub fn trim_clip(
         output,
         start,
         end,
-        if drop_audio { AudioKeep::None } else { AudioKeep::All },
+        if drop_audio {
+            AudioKeep::None
+        } else {
+            AudioKeep::All
+        },
     )
 }
 
@@ -211,11 +215,8 @@ fn trim_inner(
 
             // --- seek to the keyframe at/before start ----------------------------
             let vst = *(*ic).streams.offset(video_idx as isize);
-            let start_ts_v = ffi::av_rescale_q(
-                (start * AV_TIME_BASE as f64) as i64,
-                TB_Q,
-                (*vst).time_base,
-            );
+            let start_ts_v =
+                ffi::av_rescale_q((start * AV_TIME_BASE as f64) as i64, TB_Q, (*vst).time_base);
             ffi::av_seek_frame(ic, video_idx, start_ts_v, AVSEEK_FLAG_BACKWARD);
 
             let start_global = (start * AV_TIME_BASE as f64) as i64;
@@ -235,10 +236,7 @@ fn trim_inner(
             let copy = (|| -> Result<(), String> {
                 while ffi::av_read_frame(ic, pkt) >= 0 {
                     let in_idx = (*pkt).stream_index;
-                    let out_idx = mapping
-                        .get(in_idx as usize)
-                        .copied()
-                        .unwrap_or(-1);
+                    let out_idx = mapping.get(in_idx as usize).copied().unwrap_or(-1);
                     if out_idx < 0 {
                         ffi::av_packet_unref(pkt);
                         continue;
@@ -287,7 +285,11 @@ fn trim_inner(
                     } else {
                         AV_NOPTS_VALUE
                     };
-                    let order = if dts_g != AV_NOPTS_VALUE { dts_g } else { pts_g };
+                    let order = if dts_g != AV_NOPTS_VALUE {
+                        dts_g
+                    } else {
+                        pts_g
+                    };
                     if order < 0 {
                         ffi::av_packet_unref(pkt); // audio before the video start
                         continue;

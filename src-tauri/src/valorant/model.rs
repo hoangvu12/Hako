@@ -261,7 +261,11 @@ pub struct MatchInfo {
     pub match_id: String,
     #[serde(rename = "mapId", default)]
     pub map_id: String,
-    #[serde(rename = "gameLengthMillis", default, deserialize_with = "null_default")]
+    #[serde(
+        rename = "gameLengthMillis",
+        default,
+        deserialize_with = "null_default"
+    )]
     pub game_length_millis: i64,
     #[serde(rename = "gameStartMillis", default, deserialize_with = "null_default")]
     pub game_start_millis: i64,
@@ -487,10 +491,20 @@ pub struct DamageEvent {
 pub struct Kill {
     /// ms since game start. Riot's key is `gameTime` (NOT `timeSinceGameStartMillis`)
     /// — verified live 2026-06; the old name decoded to 0 and wrecked clip timing.
-    #[serde(rename = "gameTime", alias = "timeSinceGameStartMillis", default, deserialize_with = "null_default")]
+    #[serde(
+        rename = "gameTime",
+        alias = "timeSinceGameStartMillis",
+        default,
+        deserialize_with = "null_default"
+    )]
     pub time_since_game_start_millis: i64,
     /// ms since round start. Riot's key is `roundTime`.
-    #[serde(rename = "roundTime", alias = "timeSinceRoundStartMillis", default, deserialize_with = "null_default")]
+    #[serde(
+        rename = "roundTime",
+        alias = "timeSinceRoundStartMillis",
+        default,
+        deserialize_with = "null_default"
+    )]
     pub time_since_round_start_millis: i64,
     #[serde(default)]
     pub killer: String,
@@ -517,8 +531,13 @@ pub struct FinishingDamage {
 impl Kill {
     /// A knife/melee kill ("Knife Kill").
     pub fn is_knife(&self) -> bool {
-        self.finishing_damage.damage_type.eq_ignore_ascii_case("Melee")
-            || self.finishing_damage.damage_item.eq_ignore_ascii_case("Melee")
+        self.finishing_damage
+            .damage_type
+            .eq_ignore_ascii_case("Melee")
+            || self
+                .finishing_damage
+                .damage_item
+                .eq_ignore_ascii_case("Melee")
     }
 }
 

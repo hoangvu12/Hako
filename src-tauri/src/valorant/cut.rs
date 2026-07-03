@@ -29,9 +29,7 @@ use crate::settings::AutoCaptureMode;
 use crate::valorant::local_api::LocalClient;
 use crate::valorant::model::{EventKind, MatchDetails};
 use crate::valorant::pending::{self, PendingMatch};
-use crate::valorant::reconcile::{
-    self, EventTimings, EventToggles, RoundAnchor, TimelineIndex,
-};
+use crate::valorant::reconcile::{self, EventTimings, EventToggles, RoundAnchor, TimelineIndex};
 use crate::valorant::remote_api::{self, RemoteClient};
 use crate::valorant::service::{self, SessionData};
 use crate::valorant::summary;
@@ -113,7 +111,9 @@ pub async fn bootstrap_remote(puuid: String) -> Option<RemoteReady> {
     };
     let match_id = current_match_id_retry(&data.remote, &puuid).await;
     if match_id.is_none() {
-        tracing::warn!("auto-clip: could not resolve current match id; details fetch will be skipped");
+        tracing::warn!(
+            "auto-clip: could not resolve current match id; details fetch will be skipped"
+        );
     }
     Some(RemoteReady { data, match_id })
 }
@@ -215,7 +215,11 @@ struct CutParams<'a> {
 async fn save_full_match(input: &CutInput, details: Option<&MatchDetails>) -> Result<(), String> {
     let (title, context) = match details {
         Some(d) => {
-            let puuid = input.remote.as_ref().map(|r| r.data.puuid.as_str()).unwrap_or("");
+            let puuid = input
+                .remote
+                .as_ref()
+                .map(|r| r.data.puuid.as_str())
+                .unwrap_or("");
             let mut summary = summary::build_summary(d, puuid);
             if let Some(name) = remote_api::fetch_agent_name(&summary.agent_id).await {
                 summary.agent = name;
@@ -230,14 +234,22 @@ async fn save_full_match(input: &CutInput, details: Option<&MatchDetails>) -> Re
             (title, summary.clip_context())
         }
         None => {
-            tracing::warn!("auto-clip: match-details unavailable — saving whole match without summary");
+            tracing::warn!(
+                "auto-clip: match-details unavailable — saving whole match without summary"
+            );
             (
                 "Full Match".to_string(),
                 crate::library::db::NewClip::default(),
             )
         }
     };
-    save_whole_session(&input.app, &input.session_path, &title, "Full Match", context)
+    save_whole_session(
+        &input.app,
+        &input.session_path,
+        &title,
+        "Full Match",
+        context,
+    )
 }
 
 /// Persist a Highlights match whose details we couldn't fetch into the durable
@@ -426,7 +438,13 @@ fn pending_expired(entry: &PendingMatch) -> bool {
 /// against anything unexpected).
 fn sanitize_stem(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -567,7 +585,10 @@ async fn fetch_match_details_retry(
     for attempt in 0..MATCH_DETAILS_ATTEMPTS {
         if let Some(l) = local {
             if let Err(e) = remote.refresh_tokens(l).await {
-                tracing::warn!("auto-clip: token refresh failed (attempt {}): {e}", attempt + 1);
+                tracing::warn!(
+                    "auto-clip: token refresh failed (attempt {}): {e}",
+                    attempt + 1
+                );
             }
         }
         match remote.match_details(match_id).await {

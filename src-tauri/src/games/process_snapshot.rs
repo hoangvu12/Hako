@@ -29,7 +29,9 @@ static SNAPSHOT: Mutex<Option<(System, Instant)>> = Mutex::new(None);
 /// callers by the mutex, so concurrent pollers coalesce onto one refresh.
 fn with_processes<T>(max_age: Duration, f: impl FnOnce(&System) -> T) -> T {
     let mut guard = SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner());
-    let stale = guard.as_ref().map_or(true, |(_, at)| at.elapsed() >= max_age);
+    let stale = guard
+        .as_ref()
+        .map_or(true, |(_, at)| at.elapsed() >= max_age);
     if stale {
         match guard.as_mut() {
             Some((sys, at)) => {

@@ -35,7 +35,11 @@ pub fn build_operator(cfg: &ProviderConfig, secrets: &Secrets) -> Result<Operato
             ..
         } => {
             let mut builder = services::S3::default()
-                .region(if region.is_empty() { "auto" } else { region.as_str() })
+                .region(if region.is_empty() {
+                    "auto"
+                } else {
+                    region.as_str()
+                })
                 .bucket(bucket)
                 .access_key_id(&secrets.access_key_id)
                 .secret_access_key(&secrets.secret_access_key);
@@ -80,8 +84,8 @@ pub fn build_operator(cfg: &ProviderConfig, secrets: &Secrets) -> Result<Operato
             // the 0.54 service docs), so we encode the pasted JSON here and keep
             // the keyring copy as readable raw JSON.
             use base64::Engine;
-            let credential =
-                base64::engine::general_purpose::STANDARD.encode(secrets.gcs_credential_json.trim());
+            let credential = base64::engine::general_purpose::STANDARD
+                .encode(secrets.gcs_credential_json.trim());
             let builder = services::Gcs::default()
                 .bucket(bucket)
                 .credential(&credential);
@@ -274,9 +278,18 @@ mod tests {
 
     #[test]
     fn normalize_endpoint_adds_scheme() {
-        assert_eq!(normalize_endpoint("s3.example.com"), "https://s3.example.com");
-        assert_eq!(normalize_endpoint("https://s3.example.com/"), "https://s3.example.com");
-        assert_eq!(normalize_endpoint("http://localhost:9000"), "http://localhost:9000");
+        assert_eq!(
+            normalize_endpoint("s3.example.com"),
+            "https://s3.example.com"
+        );
+        assert_eq!(
+            normalize_endpoint("https://s3.example.com/"),
+            "https://s3.example.com"
+        );
+        assert_eq!(
+            normalize_endpoint("http://localhost:9000"),
+            "http://localhost:9000"
+        );
         assert_eq!(normalize_endpoint("  "), "");
         assert_eq!(normalize_endpoint(""), "");
     }

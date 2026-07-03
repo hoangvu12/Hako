@@ -40,11 +40,11 @@ use windows::Win32::System::Memory::{
     MEMORY_MAPPED_VIEW_ADDRESS,
 };
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
-use windows::Win32::System::IO::CancelSynchronousIo;
 use windows::Win32::System::Threading::{
     CreateMutexW, OpenEventW, OpenMutexW, ReleaseMutex, SetEvent, WaitForSingleObject,
     SYNCHRONIZATION_ACCESS_RIGHTS,
 };
+use windows::Win32::System::IO::CancelSynchronousIo;
 use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
 
 use super::contract::{
@@ -202,7 +202,11 @@ fn open_hook_info(pid: u32) -> Result<(OwnedHandle, MappedView), String> {
 
 /// Open a named texture-data mapping (`CaptureHook_Texture_<hwnd>_<map_id>`) and
 /// map `size` bytes of it read-only-enough for us to read `ShtexData`.
-fn open_texture_mapping(hwnd: u64, map_id: u32, size: usize) -> Result<(OwnedHandle, MappedView), String> {
+fn open_texture_mapping(
+    hwnd: u64,
+    map_id: u32,
+    size: usize,
+) -> Result<(OwnedHandle, MappedView), String> {
     let name = contract::texture_mapping_name(hwnd, map_id);
     let w = wide(&name);
     let mapping = unsafe { OpenFileMappingW(FILE_MAP_ALL_ACCESS.0, false, PCWSTR(w.as_ptr())) }
@@ -300,8 +304,7 @@ fn prepare_hook_dll_copy(dir: &Path, pid: u32) -> Result<PathBuf, String> {
     let dst_dir = hook_dll_root().join(format!("HakoHook_{pid}"));
     let dst = dst_dir.join("graphics-hook64.dll");
 
-    let up_to_date = src_len != 0
-        && std::fs::metadata(&dst).map(|m| m.len()).ok() == Some(src_len);
+    let up_to_date = src_len != 0 && std::fs::metadata(&dst).map(|m| m.len()).ok() == Some(src_len);
     if !up_to_date {
         std::fs::create_dir_all(&dst_dir)
             .map_err(|e| format!("create hook copy dir {}: {e}", dst_dir.display()))?;
@@ -469,7 +472,10 @@ impl HookCapture {
             // game holding the hook never locks the file the updater must replace.
             let hook_dll = prepare_hook_dll_copy(&dir, pid)?;
             inject(&hook_dll, &dir, thread_id)?;
-            tracing::info!(pid, "inject-helper returned OK; waiting for hook to create IPC objects");
+            tracing::info!(
+                pid,
+                "inject-helper returned OK; waiting for hook to create IPC objects"
+            );
         }
 
         // ── Step 6: open the objects the DLL creates (with retry) ───────────
@@ -507,7 +513,12 @@ impl HookCapture {
         // ── Step 8: tell the hook to initialize ─────────────────────────────
         objs.init.set_event();
 
-        tracing::info!(pid, thread_id, fps, "graphics-hook initialized; awaiting frames");
+        tracing::info!(
+            pid,
+            thread_id,
+            fps,
+            "graphics-hook initialized; awaiting frames"
+        );
 
         Ok(RunningHook {
             hwnd,
@@ -747,8 +758,11 @@ impl RunningHook {
         map_size: usize,
     ) -> Result<ID3D11Texture2D, String> {
         // Read the current shtex handle from the texture-data mapping.
-        let (_mapping, view) =
-            open_texture_mapping(self.hwnd.0 as u64, map_id, map_size.max(std::mem::size_of::<ShtexData>()))?;
+        let (_mapping, view) = open_texture_mapping(
+            self.hwnd.0 as u64,
+            map_id,
+            map_size.max(std::mem::size_of::<ShtexData>()),
+        )?;
         let shtex = unsafe { *(view.ptr() as *const ShtexData) };
         let handle = shtex.tex_handle;
         if handle == 0 {
@@ -773,7 +787,11 @@ impl RunningHook {
             tracing::info!(pid = self.pid, handle, "opened shared backbuffer texture");
         }
 
-        Ok(self.shared_tex.as_ref().expect("shared_tex set above").clone())
+        Ok(self
+            .shared_tex
+            .as_ref()
+            .expect("shared_tex set above")
+            .clone())
     }
 
     /// Step 12: stop the hook (drop keepalive happens via `Drop`).

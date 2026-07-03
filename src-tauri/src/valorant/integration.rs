@@ -180,12 +180,16 @@ async fn run(ctx: GameCtx) {
         if ctx.take_config_restart() {
             let mut resume_match = false;
             if let Some(am) = active.take() {
-                tracing::info!("auto-clip: config changed mid-match — splitting clip + restarting capture");
+                tracing::info!(
+                    "auto-clip: config changed mid-match — splitting clip + restarting capture"
+                );
                 end_match(&app, am, mode);
                 resume_match = mode.records_match();
             }
             if let Some(fs) = full_session.take() {
-                tracing::info!("session-record: config changed — splitting session + restarting capture");
+                tracing::info!(
+                    "session-record: config changed — splitting session + restarting capture"
+                );
                 finish_full_session(&app, fs);
             }
             ctx.restart_capture();
@@ -216,7 +220,13 @@ async fn run(ctx: GameCtx) {
         let loop_state = presence.loop_state();
         let rounds_played = presence.score_ally + presence.score_enemy;
 
-        update_live_match(&app, &presence, loop_state, &puuid, &mut live_resolver_spawned);
+        update_live_match(
+            &app,
+            &presence,
+            loop_state,
+            &puuid,
+            &mut live_resolver_spawned,
+        );
 
         for action in sm.update(loop_state, rounds_played) {
             match action {
@@ -256,10 +266,13 @@ async fn run(ctx: GameCtx) {
             && mode.records_match()
             && current_auto_clip_modes(&app).enabled(presence.queue_id())
         {
-            let audio_grace_expired = want_match_since
-                .map_or(true, |t| t.elapsed() >= AUDIO_READY_GRACE);
+            let audio_grace_expired =
+                want_match_since.map_or(true, |t| t.elapsed() >= AUDIO_READY_GRACE);
             if let Some(am) = start_match(&ctx, &puuid, &presence, audio_grace_expired) {
-                tracing::info!("auto-clip: recording match → {}", am.rec.session_path.display());
+                tracing::info!(
+                    "auto-clip: recording match → {}",
+                    am.rec.session_path.display()
+                );
                 active = Some(am);
                 want_match_record = false;
                 want_match_since = None;
@@ -322,7 +335,10 @@ fn end_match(app: &AppHandle, am: ActiveMatch, mode: AutoCaptureMode) {
     let timeline = output.timeline;
     let frozen_spans = output.frozen_spans;
     let app = app.clone();
-    tracing::info!("auto-clip: match ended, reconciling {} round anchor(s)", anchors.len());
+    tracing::info!(
+        "auto-clip: match ended, reconciling {} round anchor(s)",
+        anchors.len()
+    );
 
     tokio::spawn(async move {
         let remote = bootstrap.await.ok().flatten();
@@ -350,7 +366,8 @@ fn drain_log(am: &mut ActiveMatch) {
         Ok(lines) => {
             for line in lines {
                 if let Some(round) = log_watch::parse_round_ended(&line) {
-                    am.tracker.on_round_ended(round, log_watch::line_event_ticks(&line));
+                    am.tracker
+                        .on_round_ended(round, log_watch::line_event_ticks(&line));
                 } else if log_watch::is_round_live(&line) {
                     am.tracker.on_round_live(log_watch::line_event_ticks(&line));
                 }
@@ -403,11 +420,7 @@ fn finish_full_session(app: &AppHandle, fs: RecordingSession) {
 }
 
 /// Spawn a [`cut::reconcile_pending`] pass if it's due and none is running.
-fn maybe_reconcile_pending(
-    app: &AppHandle,
-    next: &mut Instant,
-    task: &mut Option<JoinHandle<()>>,
-) {
+fn maybe_reconcile_pending(app: &AppHandle, next: &mut Instant, task: &mut Option<JoinHandle<()>>) {
     if Instant::now() < *next {
         return;
     }

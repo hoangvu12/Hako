@@ -22,12 +22,12 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
-use windows::core::{BOOL, Interface, Result as WinResult};
+use windows::core::{Interface, Result as WinResult, BOOL};
 use windows::Win32::Foundation::{HWND, LPARAM};
 use windows::Win32::Graphics::Direct3D11::{
     ID3D11Device, ID3D11DeviceContext, ID3D11Resource, ID3D11Texture2D, D3D11_BIND_RENDER_TARGET,
-    D3D11_BOX, D3D11_CPU_ACCESS_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, D3D11_MAP_READ,
-    D3D11_MAPPED_SUBRESOURCE, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING,
+    D3D11_BOX, D3D11_CPU_ACCESS_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_FLAG_DO_NOT_WAIT,
+    D3D11_MAP_READ, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_TYPELESS, DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -41,18 +41,18 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::core::audio::{self, AudioCapture, AudioControl, AudioMeta};
-use crate::settings::AudioConfig;
 use crate::core::buffer::{AudioRing, BufferStats, PacketRing};
-use crate::core::disk_buffer::DiskPacketRing;
 use crate::core::clock::{MasterClock, TICKS_PER_SECOND};
 use crate::core::convert::Converter;
 use crate::core::device;
-use crate::core::overlay_card;
+use crate::core::disk_buffer::DiskPacketRing;
 use crate::core::encode::{EncodeSettings, EncodedPacket, Encoder};
 use crate::core::hook::{HookCapture, RunningHook};
 use crate::core::mux::{self, AudioClip, ClipMeta};
+use crate::core::overlay_card;
 use crate::core::session::SessionWriter;
 use crate::events;
+use crate::settings::AudioConfig;
 
 /// Number of BGRA staging textures shared between the hook source loop and the
 /// encode thread. Also bounds in-flight frames (backpressure: the source loop
@@ -385,9 +385,9 @@ impl ClipBuffer {
         // capture can run below target fps when the game renders slowly, so PTS
         // (1/fps units, derived from the capture clock) is the real
         // timeline — frame_count/fps would report e.g. 12s for 30s of footage.
-        let (lo, hi) = packets
-            .iter()
-            .fold((i64::MAX, i64::MIN), |(lo, hi), p| (lo.min(p.pts), hi.max(p.pts)));
+        let (lo, hi) = packets.iter().fold((i64::MAX, i64::MIN), |(lo, hi), p| {
+            (lo.min(p.pts), hi.max(p.pts))
+        });
         let span_pts = (hi - lo).max(0) + 1; // +1 for the last frame's own duration
 
         // Audio: slice EVERY output track's AAC ring over the same wall-clock
@@ -601,7 +601,10 @@ pub fn find_window_by_process(process_names: &[&str]) -> Option<i64> {
     if pids.is_empty() {
         return None;
     }
-    let mut search = ProcessSearch { pids: &pids, found: 0 };
+    let mut search = ProcessSearch {
+        pids: &pids,
+        found: 0,
+    };
     // SAFETY: `search` outlives the EnumWindows call; the callback only writes it.
     unsafe {
         let _ = EnumWindows(
@@ -706,7 +709,12 @@ pub fn start_hook(
     let target_fps = target_fps.clamp(1, 480);
     let game_pid = pid_for_hwnd(hwnd_raw);
     let track_names = audio::planned_track_names(&audio, game_pid);
-    let clip = ClipBuffer::new(target_fps, buffer_secs.clamp(5, 600), track_names, disk_buffer_dir);
+    let clip = ClipBuffer::new(
+        target_fps,
+        buffer_secs.clamp(5, 600),
+        track_names,
+        disk_buffer_dir,
+    );
     // Shared live-audio control: the audio thread reads its initial config here
     // and re-reads it on a pushed volume change (no restart).
     let audio_control = AudioControl::new(audio);
@@ -721,8 +729,18 @@ pub fn start_hook(
             .name("hako-capture-hook".into())
             .spawn(move || {
                 hook_capture_thread(
-                    app, hwnd_raw, target_fps, adapter_index, audio_control, game_pid, stop,
-                    shared, clip, enc_cfg, dirty_frame_skip, ready_tx,
+                    app,
+                    hwnd_raw,
+                    target_fps,
+                    adapter_index,
+                    audio_control,
+                    game_pid,
+                    stop,
+                    shared,
+                    clip,
+                    enc_cfg,
+                    dirty_frame_skip,
+                    ready_tx,
                 )
             })
             .map_err(|e| format!("failed to spawn hook capture thread: {e}"))?
@@ -760,6 +778,7 @@ fn hook_capture_thread(
     dirty_frame_skip: bool,
     ready_tx: std::sync::mpsc::Sender<std::result::Result<(), String>>,
 ) {
+    let started = Instant::now();
     match run_hook_pipeline(
         hwnd_raw,
         target_fps,
@@ -779,6 +798,7 @@ fn hook_capture_thread(
             let _ = ready_tx.send(Ok(()));
             emit_loop(&app, target_fps, &stop, &shared);
             running.teardown();
+            log_capture_health(&app, target_fps, &shared, started.elapsed());
             // The source loop asks for a restart when the game changed resolution
             // mid-capture, so the new clip records at the game's native size. Do it
             // from a detached thread: the restart's `stop_capture_with` joins THIS
@@ -790,12 +810,10 @@ fn hook_capture_thread(
                 std::thread::spawn(move || {
                     crate::commands::stop_capture_with(&app);
                     match crate::commands::start_capture_with(&app, hwnd_raw, None, None) {
-                        Ok(()) => tracing::info!(
-                            "capture: restarted at the game's new resolution"
-                        ),
-                        Err(e) => tracing::warn!(
-                            "capture: restart after resolution change failed: {e}"
-                        ),
+                        Ok(()) => tracing::info!("capture: restarted at the game's new resolution"),
+                        Err(e) => {
+                            tracing::warn!("capture: restart after resolution change failed: {e}")
+                        }
                     }
                 });
             }
@@ -943,7 +961,8 @@ fn run_hook_pipeline(
     let (filled_tx, filled_rx) = sync_channel::<(ID3D11Texture2D, i64)>(STAGING_POOL);
 
     // The shared encode thread: convert → encode → clip buffer.
-    let (enc_ready_tx, enc_ready_rx) = std::sync::mpsc::channel::<std::result::Result<(), String>>();
+    let (enc_ready_tx, enc_ready_rx) =
+        std::sync::mpsc::channel::<std::result::Result<(), String>>();
     let encode_thread = {
         let capture_device = d3d_device.clone();
         let capture_context = context.clone();
@@ -956,8 +975,20 @@ fn run_hook_pipeline(
             .name("hako-encode".into())
             .spawn(move || {
                 encode_thread(
-                    capture_device, capture_context, encode_device, encode_context, vendor, width,
-                    height, target_fps, enc_cfg, overlay_capable, filled_rx, free_pool, shared, clip,
+                    capture_device,
+                    capture_context,
+                    encode_device,
+                    encode_context,
+                    vendor,
+                    width,
+                    height,
+                    target_fps,
+                    enc_cfg,
+                    overlay_capable,
+                    filled_rx,
+                    free_pool,
+                    shared,
+                    clip,
                     enc_ready_tx,
                 )
             })
@@ -988,8 +1019,18 @@ fn run_hook_pipeline(
             .name("hako-hook-source".into())
             .spawn(move || {
                 hook_source_loop(
-                    hook, hwnd_raw, device, context, width, height, target_fps, dirty_frame_skip,
-                    filled_tx, free_pool, shared, source_stop,
+                    hook,
+                    hwnd_raw,
+                    device,
+                    context,
+                    width,
+                    height,
+                    target_fps,
+                    dirty_frame_skip,
+                    filled_tx,
+                    free_pool,
+                    shared,
+                    source_stop,
                 )
             })
             .map_err(|e| format!("spawn hook source thread: {e}"))?
@@ -1419,7 +1460,8 @@ fn hook_source_loop(
         // inactive. `staging` is still owned here (handed off just below).
         last_ts = ts;
         last_ts_at = Instant::now();
-        if shared.overlay_active.load(Ordering::Relaxed) && last_base_snap.elapsed() >= BASE_SNAPSHOT
+        if shared.overlay_active.load(Ordering::Relaxed)
+            && last_base_snap.elapsed() >= BASE_SNAPSHOT
         {
             if freeze_base.is_none() {
                 // Same desc as the staging pool (BGRA, RENDER_TARGET), so it's a
@@ -1471,9 +1513,13 @@ fn hook_source_loop(
 /// is legal since they share a format family. Unknown formats pass through.
 fn typed_capture_format(f: DXGI_FORMAT) -> DXGI_FORMAT {
     match f {
-        DXGI_FORMAT_B8G8R8A8_TYPELESS | DXGI_FORMAT_B8G8R8A8_UNORM_SRGB => DXGI_FORMAT_B8G8R8A8_UNORM,
+        DXGI_FORMAT_B8G8R8A8_TYPELESS | DXGI_FORMAT_B8G8R8A8_UNORM_SRGB => {
+            DXGI_FORMAT_B8G8R8A8_UNORM
+        }
         DXGI_FORMAT_B8G8R8X8_TYPELESS => DXGI_FORMAT_B8G8R8X8_UNORM,
-        DXGI_FORMAT_R8G8B8A8_TYPELESS | DXGI_FORMAT_R8G8B8A8_UNORM_SRGB => DXGI_FORMAT_R8G8B8A8_UNORM,
+        DXGI_FORMAT_R8G8B8A8_TYPELESS | DXGI_FORMAT_R8G8B8A8_UNORM_SRGB => {
+            DXGI_FORMAT_R8G8B8A8_UNORM
+        }
         other => other,
     }
 }
@@ -1737,7 +1783,14 @@ fn encode_thread(
 
     // The converter runs on the CAPTURE device (it reads the capture-side BGRA
     // staging textures via VideoProcessorBlt and writes NV12).
-    let converter = match Converter::new(&capture_device, &capture_context, width, height, out_w, out_h) {
+    let converter = match Converter::new(
+        &capture_device,
+        &capture_context,
+        width,
+        height,
+        out_w,
+        out_h,
+    ) {
         Ok(c) => c,
         Err(e) => {
             let _ = ready_tx.send(Err(format!("converter init: {e:?}")));
@@ -1930,6 +1983,62 @@ fn encode_thread(
     tracing::info!("hako-encode thread exiting");
 }
 
+fn log_capture_health(app: &AppHandle, target_fps: u32, shared: &Shared, elapsed: Duration) {
+    let secs = elapsed.as_secs_f64().max(0.001);
+    let arrived = shared.arrived.load(Ordering::Relaxed);
+    let handed = shared.handed.load(Ordering::Relaxed);
+    let skipped = shared.skipped_dup.load(Ordering::Relaxed);
+    let encoded = shared.enc_packets.load(Ordering::Relaxed);
+    let bytes = shared.enc_bytes.load(Ordering::Relaxed);
+    let elapsed_label = format!("{secs:.1}");
+    let encoded_fps = encoded as f64 / secs;
+    let handed_fps = handed as f64 / secs;
+    let handed_fps_label = format!("{handed_fps:.1}");
+    let encoded_fps_label = format!("{encoded_fps:.1}");
+    let skipped_pct = if arrived > 0 {
+        skipped as f64 * 100.0 / arrived as f64
+    } else {
+        0.0
+    };
+    let mbits = bytes as f64 * 8.0 / 1_000_000.0;
+    let skipped_pct_label = format!("{skipped_pct:.1}");
+    let mbits_label = format!("{mbits:.1}");
+    let bg_governor = app
+        .try_state::<crate::commands::SettingsState>()
+        .and_then(|s| s.0.lock().ok().map(|g| g.pause_background_while_gaming))
+        .unwrap_or(true);
+    let overlay_active = shared.overlay_active.load(Ordering::Relaxed);
+
+    tracing::info!(
+        target_fps,
+        elapsed_secs = %elapsed_label,
+        arrived,
+        handed,
+        encoded,
+        handed_fps = %handed_fps_label,
+        encoded_fps = %encoded_fps_label,
+        duplicate_skip_pct = %skipped_pct_label,
+        encoded_mbits = %mbits_label,
+        background_governor = bg_governor,
+        overlay_active,
+        "capture health summary"
+    );
+
+    if secs >= 5.0 && encoded > 0 && encoded_fps < target_fps as f64 * 0.80 {
+        tracing::warn!(
+            target_fps,
+            encoded_fps = %encoded_fps_label,
+            "capture health: encoder output was well below target; lower FPS/resolution/bitrate if clips look choppy"
+        );
+    }
+    if target_fps > 120 {
+        tracing::warn!(
+            target_fps,
+            "capture health: very high capture FPS can compete with the game; 60 FPS is the safest low-overhead default"
+        );
+    }
+}
+
 fn emit_loop(app: &AppHandle, target_fps: u32, stop: &Arc<AtomicBool>, shared: &Arc<Shared>) {
     let mut last_count = 0u64;
     let mut last_enc = 0u64;
@@ -2016,5 +2125,4 @@ mod tests {
         // Equal height → unchanged.
         assert_eq!(scaled_output(1280, 720, Some((1280, 720))), (1280, 720));
     }
-
 }

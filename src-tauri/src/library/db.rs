@@ -430,7 +430,15 @@ impl Library {
                    SET duration_secs = ?1, width = ?2, height = ?3,
                        size_bytes = ?4, thumb_path = ?5, filmstrip_path = ?6
                  WHERE id = ?7",
-                params![duration_secs, width, height, size_bytes, thumb_path, filmstrip_path, id],
+                params![
+                    duration_secs,
+                    width,
+                    height,
+                    size_bytes,
+                    thumb_path,
+                    filmstrip_path,
+                    id
+                ],
             )
             .map_err(|e| format!("update_media: {e}"))?;
         if n == 0 {
@@ -457,7 +465,10 @@ impl Library {
     pub fn rename(&self, id: i64, title: &str) -> Result<(), String> {
         let n = self
             .conn
-            .execute("UPDATE clips SET title = ?1 WHERE id = ?2", params![title, id])
+            .execute(
+                "UPDATE clips SET title = ?1 WHERE id = ?2",
+                params![title, id],
+            )
             .map_err(|e| format!("rename: {e}"))?;
         if n == 0 {
             return Err(format!("no clip with id {id}"));
@@ -549,7 +560,13 @@ impl Library {
                 "UPDATE cloud_uploads
                     SET status = ?1, remote_path = ?2, error = NULL, updated_at = ?3
                   WHERE clip_id = ?4 AND provider_id = ?5",
-                params![cloud_status::UPLOADING, remote_path, now_unix_ms(), clip_id, provider_id],
+                params![
+                    cloud_status::UPLOADING,
+                    remote_path,
+                    now_unix_ms(),
+                    clip_id,
+                    provider_id
+                ],
             )
             .map_err(|e| format!("cloud_mark_uploading: {e}"))?;
         Ok(())
@@ -646,7 +663,9 @@ impl Library {
             Some(id) => {
                 let mut stmt = self
                     .conn
-                    .prepare(&format!("{sql} WHERE clip_id = ?1 ORDER BY updated_at DESC"))
+                    .prepare(&format!(
+                        "{sql} WHERE clip_id = ?1 ORDER BY updated_at DESC"
+                    ))
                     .map_err(|e| format!("prepare cloud_status: {e}"))?;
                 let rows = stmt
                     .query_map(params![id], row_to_cloud_upload)
@@ -739,10 +758,7 @@ impl Library {
     /// a record of where the video used to live (and where a re-download lands).
     pub fn mark_evicted(&self, id: i64) -> Result<(), String> {
         self.conn
-            .execute(
-                "UPDATE clips SET evicted = 1 WHERE id = ?1",
-                params![id],
-            )
+            .execute("UPDATE clips SET evicted = 1 WHERE id = ?1", params![id])
             .map_err(|e| format!("mark_evicted: {e}"))?;
         Ok(())
     }
@@ -907,8 +923,10 @@ mod tests {
         // First pass (user_version 0): the two legacy "Standard" rows → "Unrated".
         relabel_legacy_standard(&conn).unwrap();
         let count = |m: &str| -> i64 {
-            conn.query_row("SELECT COUNT(*) FROM clips WHERE mode = ?1", [m], |r| r.get(0))
-                .unwrap()
+            conn.query_row("SELECT COUNT(*) FROM clips WHERE mode = ?1", [m], |r| {
+                r.get(0)
+            })
+            .unwrap()
         };
         assert_eq!(count("Unrated"), 2);
         assert_eq!(count("Standard"), 0);
@@ -949,7 +967,9 @@ mod tests {
         let all = lib.list().unwrap();
         assert_eq!(all.len(), 2);
         // Newest first; both inserted ~same ms, so just check membership.
-        assert!(all.iter().any(|c| c.title == "First" && c.event.as_deref() == Some("Ace")));
+        assert!(all
+            .iter()
+            .any(|c| c.title == "First" && c.event.as_deref() == Some("Ace")));
 
         lib.rename(id1, "Renamed").unwrap();
         assert_eq!(lib.get(id1).unwrap().unwrap().title, "Renamed");
@@ -999,7 +1019,10 @@ mod tests {
         assert_eq!(rec.map.as_deref(), Some("/Game/Maps/Ascent/Ascent"));
         assert_eq!(rec.mode.as_deref(), Some("Competitive"));
         assert_eq!(rec.won, Some(true));
-        assert_eq!((rec.kills, rec.deaths, rec.assists), (Some(21), Some(14), Some(5)));
+        assert_eq!(
+            (rec.kills, rec.deaths, rec.assists),
+            (Some(21), Some(14), Some(5))
+        );
         assert_eq!(rec.headshot_pct, Some(31.5));
 
         // A bare clip (manual save with no match context) → all game fields null.
@@ -1017,8 +1040,14 @@ mod tests {
         let lib = Library::open_in_memory().unwrap();
         let mut c = sample("e.mp4", "Double Kill", Some("Double Kill"));
         c.event_marks = vec![
-            EventMark { label: "Kill".into(), at: 3.0 },
-            EventMark { label: "Kill".into(), at: 9.5 },
+            EventMark {
+                label: "Kill".into(),
+                at: 3.0,
+            },
+            EventMark {
+                label: "Kill".into(),
+                at: 9.5,
+            },
         ];
         let id = lib.insert(&c).unwrap();
         let rec = lib.get(id).unwrap().unwrap();
@@ -1053,9 +1082,11 @@ mod tests {
         assert_eq!(q.status, cloud_status::QUEUED);
         assert_eq!((q.size_bytes, q.bytes_sent, q.uploaded_at), (1000, 0, None));
 
-        lib.cloud_mark_uploading(id, "r2-main", "hako/2026/06/c.mp4").unwrap();
+        lib.cloud_mark_uploading(id, "r2-main", "hako/2026/06/c.mp4")
+            .unwrap();
         lib.cloud_set_progress(id, "r2-main", 512).unwrap();
-        lib.cloud_mark_done(id, "r2-main", Some("https://signed/url")).unwrap();
+        lib.cloud_mark_done(id, "r2-main", Some("https://signed/url"))
+            .unwrap();
         let d = &lib.cloud_status(Some(id)).unwrap()[0];
         assert_eq!(d.status, cloud_status::DONE);
         assert_eq!(d.bytes_sent, d.size_bytes); // snapped to total on success
@@ -1064,7 +1095,8 @@ mod tests {
         assert_eq!(d.remote_path.as_deref(), Some("hako/2026/06/c.mp4"));
 
         // Re-enqueue resets progress/error/uploaded_at in place (a retry).
-        lib.cloud_mark_failed(id, "r2-main", cloud_status::ERROR, "boom").unwrap();
+        lib.cloud_mark_failed(id, "r2-main", cloud_status::ERROR, "boom")
+            .unwrap();
         lib.cloud_enqueue(id, "r2-main", 1000).unwrap();
         let r = &lib.cloud_status(Some(id)).unwrap()[0];
         assert_eq!(r.status, cloud_status::QUEUED);

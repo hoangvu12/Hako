@@ -6,6 +6,8 @@
 //! injected into or drawn inside the game process — that's a hard anti-cheat
 //! constraint. Rust owns *what* to show and *where*; the React host just renders.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -16,6 +18,15 @@ pub const DEFAULT_TTL_MS: u32 = 3500;
 const STOPPED_TTL_MS: u32 = 1600;
 /// Longer ttl for the disk-low warning (the user should have time to read it).
 const DISK_TTL_MS: u32 = 5000;
+
+/// Small overlay surface size. Keeping this window toast-sized avoids forcing a
+/// full-game transparent WebView through DWM composition for an entire match.
+const TOAST_WINDOW_W: i32 = 400;
+const TOAST_WINDOW_H: i32 = 320;
+const TOAST_MARGIN: i32 = 16;
+/// Bump every time a toast is shown so an older hide timer cannot hide a newer
+/// toast that arrived before the old timer fired.
+static OVERLAY_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 /// A single overlay toast. Serialized to the `overlay` window as the
 /// `overlay-notify` event payload; mirrored by `OverlayNotice` in
@@ -50,6 +61,12 @@ pub fn notify(app: &AppHandle, notice: OverlayNotice) {
     let _ = app.emit_to("overlay", crate::events::OVERLAY_NOTIFY, notice);
 }
 
+/// Fire a toast over Valorant (or the primary monitor if no game is present),
+/// using the same show → notify → hide lifecycle as live in-game toasts.
+pub fn toast_over_game(app: &AppHandle, notice: OverlayNotice) {
+    show_toast(app, None, notice);
+}
+
 /// Overlay window placement, pushed to the React host so it knows which corner
 /// to stack toasts in. Mirrors `OverlayConfig` in `src/lib/api.ts`.
 #[derive(Clone, Serialize)]
@@ -77,7 +94,11 @@ fn enabled(app: &AppHandle) -> bool {
 /// live and the next show always uses the latest choice.
 pub fn push_config(app: &AppHandle) {
     let position = setting(app, "top_right".to_string(), |s| s.overlay_position.clone());
-    let _ = app.emit_to("overlay", crate::events::OVERLAY_CONFIG, OverlayConfig { position });
+    let _ = app.emit_to(
+        "overlay",
+        crate::events::OVERLAY_CONFIG,
+        OverlayConfig { position },
+    );
 }
 
 /// Hide the overlay window now (e.g. the master switch was turned off while a
@@ -107,66 +128,83 @@ pub fn window_bounds(hwnd: i64) -> Option<(i32, i32, i32, i32)> {
     (w > 0 && h > 0).then_some((rect.left, rect.top, w, h))
 }
 
-/// Move + size the overlay window to cover the physical-pixel rect `(x, y, w, h)`
-/// and show it. Covering the full game rect keeps toast placement to pure CSS
-/// (matches Medal's full-rect overlay).
-pub fn fit_overlay_to_rect(app: &AppHandle, x: i32, y: i32, w: i32, h: i32) {
+/// Move + size the overlay window to a compact toast surface and show it.
+fn fit_overlay_to_rect(app: &AppHandle, x: i32, y: i32, w: i32, h: i32) {
     if let Some(win) = app.get_webview_window("overlay") {
         let _ = win.set_position(tauri::PhysicalPosition { x, y });
         let _ = win.set_size(tauri::PhysicalSize {
-            width: w as u32,
-            height: h as u32,
+            width: w.max(1) as u32,
+            height: h.max(1) as u32,
         });
         let _ = win.show();
-        // Resume the renderer now that it's visible (it's suspended while hidden
-        // to reclaim its ~75MB; see `hide_now` / `hide_overlay_after`).
+        // Resume the renderer only while a toast is visible. It is suspended again
+        // by the toast-scoped hide timer below.
         crate::suspend_window_webview(&win, false);
     }
 }
 
-/// Position the overlay over the live Valorant window and show it, falling back
-/// to the primary monitor when the game isn't running (so the Settings "Test
-/// overlay" button still surfaces a toast on-screen).
-pub fn show_overlay_over_game(app: &AppHandle) {
+fn overlay_position(app: &AppHandle) -> String {
+    setting(app, "top_right".to_string(), |s| s.overlay_position.clone())
+}
+
+fn toast_rect_within(bounds: (i32, i32, i32, i32), position: &str) -> (i32, i32, i32, i32) {
+    let (bx, by, bw, bh) = bounds;
+    let w = TOAST_WINDOW_W.min(bw.max(1));
+    let h = TOAST_WINDOW_H.min(bh.max(1));
+    let left = position.ends_with("left");
+    let top = position.starts_with("top");
+    let x = if left {
+        bx + TOAST_MARGIN.min((bw - w).max(0))
+    } else {
+        bx + (bw - w - TOAST_MARGIN).max(0)
+    };
+    let y = if top {
+        by + TOAST_MARGIN.min((bh - h).max(0))
+    } else {
+        by + (bh - h - TOAST_MARGIN).max(0)
+    };
+    (x, y, w, h)
+}
+
+fn primary_monitor_bounds(app: &AppHandle) -> Option<(i32, i32, i32, i32)> {
+    let monitor = app.primary_monitor().ok().flatten()?;
+    let pos = monitor.position();
+    let size = monitor.size();
+    Some((pos.x, pos.y, size.width as i32, size.height as i32))
+}
+
+fn current_capture_hwnd(app: &AppHandle) -> Option<i64> {
+    app.try_state::<crate::commands::CaptureState>()
+        .and_then(|s| s.0.lock().ok().and_then(|g| g.as_ref().map(|r| r.hwnd())))
+}
+
+/// Position and show the compact overlay surface for one toast. `hwnd` pins it to
+/// the captured game when known; otherwise it falls back to Valorant (test button)
+/// or the primary monitor. It intentionally does not cover the full game rect.
+fn show_overlay_for_toast(app: &AppHandle, hwnd: Option<i64>) -> u64 {
     push_config(app);
-    if let Some((x, y, w, h)) =
-        crate::core::capture::find_valorant_window().and_then(window_bounds)
-    {
+    let position = overlay_position(app);
+    let bounds = hwnd
+        .and_then(window_bounds)
+        .or_else(|| crate::core::capture::find_valorant_window().and_then(window_bounds))
+        .or_else(|| primary_monitor_bounds(app));
+    if let Some(bounds) = bounds {
+        let (x, y, w, h) = toast_rect_within(bounds, &position);
         fit_overlay_to_rect(app, x, y, w, h);
-        return;
-    }
-    // No game window: cover the primary monitor so the toast renders in the
-    // chosen corner rather than in the placeholder 400x200 box.
-    if let Ok(Some(monitor)) = app.primary_monitor() {
-        let pos = monitor.position();
-        let size = monitor.size();
-        fit_overlay_to_rect(app, pos.x, pos.y, size.width as i32, size.height as i32);
     } else if let Some(win) = app.get_webview_window("overlay") {
         let _ = win.show();
         crate::suspend_window_webview(&win, false);
     }
+    OVERLAY_EPOCH.fetch_add(1, Ordering::AcqRel) + 1
 }
 
-/// Position the overlay over `hwnd` (the window being captured) and show it. If
-/// the bounds can't be read, just show it at its last geometry.
-pub fn show_overlay_over_hwnd(app: &AppHandle, hwnd: i64) {
-    push_config(app);
-    if let Some((x, y, w, h)) = window_bounds(hwnd) {
-        fit_overlay_to_rect(app, x, y, w, h);
-    } else if let Some(win) = app.get_webview_window("overlay") {
-        let _ = win.show();
-        crate::suspend_window_webview(&win, false);
-    }
-}
-
-/// Hide the overlay window after `delay_ms` — but only if nothing is capturing
-/// by then. A capture may have (re)started during the delay (e.g. a settings
-/// change restarts the buffer), and we must not yank a freshly-shown overlay.
-fn hide_overlay_after(app: &AppHandle, delay_ms: u64) {
+/// Hide the overlay window after `delay_ms`, unless a newer toast was shown in
+/// the meantime. This is toast-scoped: capture may still be running when we hide.
+fn hide_overlay_after(app: &AppHandle, delay_ms: u64, epoch: u64) {
     let app = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-        if !crate::commands::is_capturing(&app) {
+        if OVERLAY_EPOCH.load(Ordering::Acquire) == epoch {
             if let Some(win) = app.get_webview_window("overlay") {
                 let _ = win.hide();
                 crate::suspend_window_webview(&win, true);
@@ -175,41 +213,45 @@ fn hide_overlay_after(app: &AppHandle, delay_ms: u64) {
     });
 }
 
+fn show_toast(app: &AppHandle, hwnd: Option<i64>, notice: OverlayNotice) {
+    let ttl = notice.ttl_ms.max(1) as u64;
+    let epoch = show_overlay_for_toast(app, hwnd);
+    notify(app, notice);
+    hide_overlay_after(app, ttl + 450, epoch);
+}
+
 // --- Triggers ---------------------------------------------------------------
 // One helper per trigger so the call sites stay a single line and the settings
 // gating (Part D) has a single place to land per trigger.
 
-/// Capture started: show the overlay over the captured window (so any in-game
-/// toast can appear), then toast "Now recording" if that trigger is on. No-op
-/// when the overlay is disabled — nothing is ever shown.
+/// Capture started: toast "Now recording" if that trigger is on. The overlay is
+/// shown only for the toast lifetime, never for the whole capture.
 pub fn on_capture_started(app: &AppHandle, hwnd: i64) {
-    if !enabled(app) {
+    if !enabled(app) || !setting(app, true, |s| s.overlay_on_capture_state) {
         return;
     }
-    show_overlay_over_hwnd(app, hwnd);
-    if setting(app, true, |s| s.overlay_on_capture_state) {
-        notify(
-            app,
-            OverlayNotice {
-                kind: OverlayKind::RecordingStarted,
-                title: "Now recording".into(),
-                subtitle: None,
-                ttl_ms: DEFAULT_TTL_MS,
-            },
-        );
-    }
+    show_toast(
+        app,
+        Some(hwnd),
+        OverlayNotice {
+            kind: OverlayKind::RecordingStarted,
+            title: "Now recording".into(),
+            subtitle: None,
+            ttl_ms: DEFAULT_TTL_MS,
+        },
+    );
 }
 
-/// Capture stopped: toast "Recording stopped" (if that trigger is on), then hide
-/// the overlay once the toast has rendered (emit → short delay → hide, per the
-/// plan's teardown-race note).
+/// Capture stopped: toast "Recording stopped" (if that trigger is on).
+/// If the trigger is off, hide any leftover toast surface promptly.
 pub fn on_capture_stopped(app: &AppHandle) {
     if !enabled(app) {
         return;
     }
-    let delay = if setting(app, true, |s| s.overlay_on_capture_state) {
-        notify(
+    if setting(app, true, |s| s.overlay_on_capture_state) {
+        show_toast(
             app,
+            None,
             OverlayNotice {
                 kind: OverlayKind::RecordingStopped,
                 title: "Recording stopped".into(),
@@ -217,13 +259,9 @@ pub fn on_capture_stopped(app: &AppHandle) {
                 ttl_ms: STOPPED_TTL_MS,
             },
         );
-        // Give the toast a beat beyond its ttl to play its exit animation.
-        STOPPED_TTL_MS as u64 + 400
     } else {
-        // No stopped toast: tear the surface down promptly.
-        250
-    };
-    hide_overlay_after(app, delay);
+        hide_now(app);
+    }
 }
 
 /// A manual clip was saved (F9 / UI button). `seconds` is the captured length.
@@ -231,8 +269,9 @@ pub fn on_clip_saved(app: &AppHandle, seconds: u32) {
     if !enabled(app) || !setting(app, true, |s| s.overlay_on_clip_saved) {
         return;
     }
-    notify(
+    show_toast(
         app,
+        current_capture_hwnd(app),
         OverlayNotice {
             kind: OverlayKind::ClipSaved,
             title: "Clip saved".into(),
@@ -247,8 +286,9 @@ pub fn on_disk_low(app: &AppHandle, free: u64) {
     if !enabled(app) || !setting(app, true, |s| s.overlay_on_disk_low) {
         return;
     }
-    notify(
+    show_toast(
         app,
+        current_capture_hwnd(app),
         OverlayNotice {
             kind: OverlayKind::DiskLow,
             title: "Storage almost full".into(),

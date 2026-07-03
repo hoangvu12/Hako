@@ -45,9 +45,13 @@ pub struct RematchEventTiming {
 impl Default for RematchEventTiming {
     fn default() -> Self {
         // A goal: lead in far enough to catch the build-up / shot, hold through the
-        // celebration. The goal cue logs at the ball crossing the line, so most of
-        // the window is the `before` pad.
-        RematchEventTiming { before: 12, after: 6 }
+        // celebration. The goal cue (the `PostGoal` celebration transition) logs a
+        // few seconds *after* the ball crosses, so the `before` pad is sized to
+        // reach back past that lag to the actual shot; most of the window is `before`.
+        RematchEventTiming {
+            before: 12,
+            after: 6,
+        }
     }
 }
 

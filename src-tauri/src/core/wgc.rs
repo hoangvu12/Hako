@@ -27,6 +27,7 @@ use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{
     Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession,
 };
+use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Graphics::SizeInt32;
 use windows::Win32::Foundation::HWND;
@@ -36,7 +37,6 @@ use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
 };
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
-use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 
 /// Number of buffers in the WGC frame pool. WGC recycles surfaces, so a small
 /// pool covers our single-frame-at-a-time polling (the host copies each frame out
@@ -69,7 +69,10 @@ impl WgcCapture {
     /// `d3d_device` (which must be the same device feeding the encoder, so the
     /// surfaces are usable without a cross-device copy). Returns an error if the
     /// window can't be captured (e.g. WGC unsupported, or a protected window).
-    pub fn start(hwnd: HWND, d3d_device: &windows::Win32::Graphics::Direct3D11::ID3D11Device) -> WinResult<WgcCapture> {
+    pub fn start(
+        hwnd: HWND,
+        d3d_device: &windows::Win32::Graphics::Direct3D11::ID3D11Device,
+    ) -> WinResult<WgcCapture> {
         // Wrap the D3D11 device as a WinRT IDirect3DDevice (WGC's pool binds to it).
         let dxgi: IDXGIDevice = d3d_device.cast()?;
         let inspectable = unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi)? };

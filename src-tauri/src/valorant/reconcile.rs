@@ -103,7 +103,10 @@ impl Default for EventTiming {
     /// The neutral kill window; per-kind defaults override this in
     /// [`EventTimings::default`].
     fn default() -> Self {
-        EventTiming { before: 8, after: 4 }
+        EventTiming {
+            before: 8,
+            after: 4,
+        }
     }
 }
 
@@ -200,7 +203,11 @@ impl EventTimings {
 
 /// Derive our highlight events from a finished match, keeping only enabled kinds.
 /// Events come back sorted by `time_since_game_start_millis`.
-pub fn derive_events(details: &MatchDetails, puuid: &str, toggles: &EventToggles) -> Vec<GameEvent> {
+pub fn derive_events(
+    details: &MatchDetails,
+    puuid: &str,
+    toggles: &EventToggles,
+) -> Vec<GameEvent> {
     let mut events = Vec::new();
     // Our team id (for clutch round-win and the match Victory event). Empty if we
     // aren't in the players list — the team-dependent events then never fire.
@@ -228,8 +235,7 @@ pub fn derive_events(details: &MatchDetails, puuid: &str, toggles: &EventToggles
         // pad around just the last kill would drop the early kills of a spread-out
         // Ace.) `lead_in` = the first→last gap, same in game- and round-time.
         if let (Some(first), Some(last)) = (our_kills.first(), our_kills.last()) {
-            let lead_in =
-                last.time_since_round_start_millis - first.time_since_round_start_millis;
+            let lead_in = last.time_since_round_start_millis - first.time_since_round_start_millis;
             // One seek-bar marker per kill, labelled with its running tier (1st →
             // Kill, 2nd → Double Kill, …) the way Medal emits a cumulative event
             // per kill — so a double kill shows two markers, an ace five, each at
@@ -414,7 +420,9 @@ fn detect_clutch(
         // Tally an enemy elimination (victim is on the other team).
         let victim_is_enemy = !alive_team.contains(k.victim.as_str())
             && details.players.iter().any(|p| {
-                p.puuid == k.victim && !p.team_id.is_empty() && !p.team_id.eq_ignore_ascii_case(our_team)
+                p.puuid == k.victim
+                    && !p.team_id.is_empty()
+                    && !p.team_id.eq_ignore_ascii_case(our_team)
             });
         if victim_is_enemy {
             enemy_dead += 1;
@@ -499,7 +507,12 @@ fn detect_victory(details: &MatchDetails, our_team: &str) -> Option<GameEvent> {
     let last = details
         .round_results
         .iter()
-        .flat_map(|r| r.player_stats.iter().flat_map(|ps| ps.kills.iter()).map(move |k| (r.round_num, k)))
+        .flat_map(|r| {
+            r.player_stats
+                .iter()
+                .flat_map(|ps| ps.kills.iter())
+                .map(move |k| (r.round_num, k))
+        })
         .max_by_key(|(_, k)| k.time_since_game_start_millis)?;
     Some(GameEvent::point(
         EventKind::Victory,
@@ -543,8 +556,7 @@ pub fn calibrate_match_start(events: &[GameEvent], anchors: &[RoundAnchor]) -> O
     for e in events {
         if let Some(a) = anchors.iter().find(|a| a.round == e.round) {
             return Some(
-                a.start_wallclock_ticks
-                    + e.time_since_round_start_millis * TICKS_PER_MS
+                a.start_wallclock_ticks + e.time_since_round_start_millis * TICKS_PER_MS
                     - e.time_since_game_start_millis * TICKS_PER_MS,
             );
         }
@@ -871,7 +883,10 @@ mod tests {
         let (s, e) = clip_window_span(600, 1200, 8, 4, 60);
         assert_eq!((s, e), (600 - 480, 1200 + 240));
         // A zero-width span behaves exactly like the point `clip_window`.
-        assert_eq!(clip_window_span(600, 600, 8, 4, 60), clip_window(600, 8, 4, 60));
+        assert_eq!(
+            clip_window_span(600, 600, 8, 4, 60),
+            clip_window(600, 8, 4, 60)
+        );
         // Start still clamps to ≥ 0.
         assert_eq!(clip_window_span(60, 300, 8, 4, 60).0, 0);
     }
@@ -896,7 +911,7 @@ mod tests {
         t.push(0, 0);
         t.push(10_000_000, 60); // recorded wall 0..1 s → PTS 0..60
         let tol = 2_000_000; // 0.2 s
-        // Inside the recording: interpolated normally.
+                             // Inside the recording: interpolated normally.
         assert_eq!(t.pts_at_within(5_000_000, tol), Some(30));
         // Just outside but within tol: clamped to the near end.
         assert_eq!(t.pts_at_within(-1_000_000, tol), Some(0));
@@ -983,7 +998,10 @@ mod tests {
             round_results: vec![r],
         };
         let ev = derive_events(&details, me, &EventToggles::default());
-        let spike = ev.iter().find(|e| e.kind == EventKind::SpikeDetonated).unwrap();
+        let spike = ev
+            .iter()
+            .find(|e| e.kind == EventKind::SpikeDetonated)
+            .unwrap();
         // Detonation = plant (30s) + 45s fuse = 75s into the round.
         assert_eq!(spike.time_since_round_start_millis, 75_000);
         // game time = offset 90s + 75s = 165s.
@@ -1013,7 +1031,10 @@ mod tests {
             round_results: vec![r],
         };
         let ev = derive_events(&details, me, &EventToggles::default());
-        let spike = ev.iter().find(|e| e.kind == EventKind::SpikeDefused).unwrap();
+        let spike = ev
+            .iter()
+            .find(|e| e.kind == EventKind::SpikeDefused)
+            .unwrap();
         assert_eq!(spike.time_since_round_start_millis, 38_000);
         assert_eq!(spike.time_since_game_start_millis, 78_000);
     }
@@ -1092,8 +1113,14 @@ mod tests {
             match_info: MatchInfo::default(),
             players: vec![player(me, "Blue")],
             teams: vec![
-                Team { team_id: "Blue".into(), won: true },
-                Team { team_id: "Red".into(), won: false },
+                Team {
+                    team_id: "Blue".into(),
+                    won: true,
+                },
+                Team {
+                    team_id: "Red".into(),
+                    won: false,
+                },
             ],
             round_results: vec![
                 round(0, me, vec![kill(me, "v", 1000, 5_000)]),

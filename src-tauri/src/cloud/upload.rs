@@ -141,10 +141,25 @@ impl CloudState {
 pub fn spawn_worker(app: AppHandle, mut rx: UnboundedReceiver<UploadJob>) {
     tauri::async_runtime::spawn(async move {
         while let Some(job) = rx.recv().await {
+            wait_for_background_window(&app, "cloud upload").await;
             run_job(&app, job).await;
         }
         tracing::warn!("cloud upload worker channel closed");
     });
+}
+
+async fn wait_for_background_window(app: &AppHandle, what: &str) {
+    let mut logged = false;
+    while crate::commands::pause_background_work(app) {
+        if !logged {
+            tracing::info!("{what}: paused while gaming");
+            logged = true;
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+    if logged {
+        tracing::info!("{what}: resumed after gaming paused/stopped");
+    }
 }
 
 // --- event payloads --------------------------------------------------------
@@ -166,7 +181,13 @@ struct StatusPayload {
     error: Option<String>,
 }
 
-fn emit_status(app: &AppHandle, clip_id: i64, provider_id: &str, status: &str, error: Option<&str>) {
+fn emit_status(
+    app: &AppHandle,
+    clip_id: i64,
+    provider_id: &str,
+    status: &str,
+    error: Option<&str>,
+) {
     let _ = app.emit(
         events::CLOUD_UPLOAD_STATUS,
         StatusPayload {
@@ -236,7 +257,11 @@ async fn run_job(app: &AppHandle, job: UploadJob) {
             return;
         }
     };
-    let remote = operator::remote_key(&provider_config_kind(app, &provider_id), clip.created_unix_ms, &clip.path);
+    let remote = operator::remote_key(
+        &provider_config_kind(app, &provider_id),
+        clip.created_unix_ms,
+        &clip.path,
+    );
 
     // Transition the row to `uploading` and tell the UI.
     if let Ok(lib) = app.state::<LibraryState>().0.lock() {
@@ -312,7 +337,12 @@ async fn stream_upload(
     // that stalls at 0% on a misconfigured S3-compatible endpoint. Log around it
     // so the file log shows whether a hang is here vs. in the chunk uploads.
     tracing::info!("cloud upload: opening writer for clip {clip_id} ({total} bytes) → {remote}");
-    let mut writer = match op.writer_with(remote).chunk(CHUNK).concurrent(CONCURRENT).await {
+    let mut writer = match op
+        .writer_with(remote)
+        .chunk(CHUNK)
+        .concurrent(CONCURRENT)
+        .await
+    {
         Ok(w) => w,
         Err(e) => return StreamOutcome::Failed(operator::friendly_error(&e)),
     };
@@ -377,7 +407,11 @@ fn emit_progress(
     started: Instant,
 ) {
     let secs = started.elapsed().as_secs_f64();
-    let bytes_per_sec = if secs > 0.0 { (sent as f64 / secs) as u64 } else { 0 };
+    let bytes_per_sec = if secs > 0.0 {
+        (sent as f64 / secs) as u64
+    } else {
+        0
+    };
     let _ = app.emit(
         events::CLOUD_UPLOAD_PROGRESS,
         ProgressPayload {
@@ -564,7 +598,8 @@ pub fn cloud_cancel_upload(app: AppHandle, clip_id: i64) -> Result<(), String> {
             .map(|r| r.provider_id)
             .collect();
         for provider_id in &providers {
-            let _ = guard.cloud_mark_failed(clip_id, provider_id, cloud_status::CANCELED, "canceled");
+            let _ =
+                guard.cloud_mark_failed(clip_id, provider_id, cloud_status::CANCELED, "canceled");
         }
         providers
     };

@@ -147,7 +147,10 @@ pub struct LolEventTiming {
 
 impl Default for LolEventTiming {
     fn default() -> Self {
-        LolEventTiming { before: 8, after: 4 }
+        LolEventTiming {
+            before: 8,
+            after: 4,
+        }
     }
 }
 
@@ -289,7 +292,9 @@ pub fn classify(ev: &LiveEvent, me: &MeId, my_team: &str) -> Option<EventKind> {
         "Multikill" if is_me(&ev.killer_name) => {
             Some(EventKind::for_lol_multikill(ev.kill_streak.max(2) as usize))
         }
-        "FirstBlood" if is_me(&ev.recipient) || is_me(&ev.killer_name) => Some(EventKind::FirstBlood),
+        "FirstBlood" if is_me(&ev.recipient) || is_me(&ev.killer_name) => {
+            Some(EventKind::FirstBlood)
+        }
         "Ace" => {
             let mine = is_me(&ev.acer)
                 || (!my_team.is_empty() && ev.acing_team.eq_ignore_ascii_case(my_team));
@@ -321,12 +326,18 @@ mod tests {
         let mut k = ev("ChampionKill");
         k.killer_name = "Me".into();
         k.victim_name = "Enemy".into();
-        assert_eq!(classify(&k, &MeId::single("Me"), "ORDER"), Some(EventKind::Kill));
+        assert_eq!(
+            classify(&k, &MeId::single("Me"), "ORDER"),
+            Some(EventKind::Kill)
+        );
 
         let mut d = ev("ChampionKill");
         d.killer_name = "Enemy".into();
         d.victim_name = "Me".into();
-        assert_eq!(classify(&d, &MeId::single("Me"), "ORDER"), Some(EventKind::Death));
+        assert_eq!(
+            classify(&d, &MeId::single("Me"), "ORDER"),
+            Some(EventKind::Death)
+        );
 
         // Someone else's kill we weren't part of → ignored.
         let mut other = ev("ChampionKill");
@@ -340,20 +351,32 @@ mod tests {
         let mut m = ev("Multikill");
         m.killer_name = "Me".into();
         m.kill_streak = 5;
-        assert_eq!(classify(&m, &MeId::single("Me"), "ORDER"), Some(EventKind::Pentakill));
+        assert_eq!(
+            classify(&m, &MeId::single("Me"), "ORDER"),
+            Some(EventKind::Pentakill)
+        );
         m.kill_streak = 3;
-        assert_eq!(classify(&m, &MeId::single("Me"), "ORDER"), Some(EventKind::TripleKill));
+        assert_eq!(
+            classify(&m, &MeId::single("Me"), "ORDER"),
+            Some(EventKind::TripleKill)
+        );
     }
 
     #[test]
     fn classifies_objectives_and_victory() {
         let mut dragon = ev("DragonKill");
         dragon.killer_name = "Me".into();
-        assert_eq!(classify(&dragon, &MeId::single("Me"), "ORDER"), Some(EventKind::DragonKill));
+        assert_eq!(
+            classify(&dragon, &MeId::single("Me"), "ORDER"),
+            Some(EventKind::DragonKill)
+        );
 
         let mut win = ev("GameEnd");
         win.result = "Win".into();
-        assert_eq!(classify(&win, &MeId::single("Me"), "ORDER"), Some(EventKind::Victory));
+        assert_eq!(
+            classify(&win, &MeId::single("Me"), "ORDER"),
+            Some(EventKind::Victory)
+        );
         let mut lose = ev("GameEnd");
         lose.result = "Lose".into();
         assert_eq!(classify(&lose, &MeId::single("Me"), "ORDER"), None);
@@ -385,7 +408,10 @@ mod tests {
     fn ace_matches_team() {
         let mut a = ev("Ace");
         a.acing_team = "ORDER".into();
-        assert_eq!(classify(&a, &MeId::single("Me"), "ORDER"), Some(EventKind::Ace));
+        assert_eq!(
+            classify(&a, &MeId::single("Me"), "ORDER"),
+            Some(EventKind::Ace)
+        );
         assert_eq!(classify(&a, &MeId::single("Me"), "CHAOS"), None);
     }
 }

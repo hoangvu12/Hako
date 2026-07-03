@@ -330,7 +330,11 @@ mod tests {
         let front = r.slice_last(1_000_000).first().cloned().unwrap();
         assert!(front.keyframe, "ring must start on a keyframe");
         assert_eq!(front.pts, 70);
-        assert!((r.duration_secs() - 2.9).abs() < 1e-6, "got {}", r.duration_secs());
+        assert!(
+            (r.duration_secs() - 2.9).abs() < 1e-6,
+            "got {}",
+            r.duration_secs()
+        );
         // Byte accounting stays consistent with what's retained.
         let expect_bytes: usize = (70..100).map(|i| if i % 10 == 0 { 100 } else { 10 }).sum();
         assert_eq!(r.byte_size(), expect_bytes);
@@ -391,7 +395,10 @@ mod tests {
         let newest = 199 * 213_333;
         // Oldest retained must be within the 2 s window of the newest.
         let span = newest - r.slice_ticks(0, i64::MAX).first().unwrap().pts;
-        assert!(span <= 2 * TICKS_PER_SECOND, "retained span {span} exceeds 2s");
+        assert!(
+            span <= 2 * TICKS_PER_SECOND,
+            "retained span {span} exceeds 2s"
+        );
         assert!(!r.is_empty());
     }
 

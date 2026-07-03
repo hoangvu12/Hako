@@ -122,7 +122,11 @@ impl GameCtx {
     /// `None` if no capture is running / the encoder isn't producing frames yet,
     /// or (until `audio_grace_expired`) if not all planned audio tracks have
     /// published their metadata — the caller latches and retries.
-    pub fn open_session(&self, prefix: &str, audio_grace_expired: bool) -> Option<RecordingSession> {
+    pub fn open_session(
+        &self,
+        prefix: &str,
+        audio_grace_expired: bool,
+    ) -> Option<RecordingSession> {
         let clip = self.capture_clip()?;
         let meta = clip.clip_meta()?; // encoder not open yet ⇒ can't record
         let audio_tracks = clip.audio_track_metas();
@@ -326,7 +330,12 @@ fn unix_millis() -> u128 {
 // ===========================================================================
 
 /// Clip window `[center − before, center + after]` in PTS units, clamped to ≥ 0.
-pub fn clip_window(center_pts: i64, pad_before_secs: u32, pad_after_secs: u32, fps: u32) -> (i64, i64) {
+pub fn clip_window(
+    center_pts: i64,
+    pad_before_secs: u32,
+    pad_after_secs: u32,
+    fps: u32,
+) -> (i64, i64) {
     clip_window_span(center_pts, center_pts, pad_before_secs, pad_after_secs, fps)
 }
 
@@ -417,7 +426,11 @@ pub fn cut_placed_windows(
     let windows: Vec<(i64, i64)> = placed.iter().map(|&(s, e, _)| (s, e)).collect();
     let merged = merge_windows_tol(windows, tol_pts);
 
-    tracing::info!("auto-clip: {} event(s) → {} clip(s)", placed.len(), merged.len());
+    tracing::info!(
+        "auto-clip: {} event(s) → {} clip(s)",
+        placed.len(),
+        merged.len()
+    );
 
     let mut cut = 0usize;
     let mut skipped_frozen = 0usize;
@@ -493,12 +506,17 @@ pub fn cut_placed_windows(
                 cx.game_label
             )
         } else {
-            format!("Skipped {skipped_frozen} clip(s) — the game was minimized during those moments.")
+            format!(
+                "Skipped {skipped_frozen} clip(s) — the game was minimized during those moments."
+            )
         };
         tracing::warn!("auto-clip: {msg}");
         let _ = cx.app.emit(events::RECORDER_ERROR, &msg);
     }
-    CutOutcome { cut, skipped_frozen }
+    CutOutcome {
+        cut,
+        skipped_frozen,
+    }
 }
 
 /// Save a whole Mode-B session file as a single library clip (FullMatch / Session
@@ -572,12 +590,7 @@ fn kinds_in_window(placed: &[(i64, i64, EventKind)], start: i64, end: i64) -> Ve
 /// The seek-bar markers landing inside `[start, end]` — each reconciled marker's
 /// label plus its offset (seconds) from the clip's start. Markers at
 /// (near-)identical times are de-duplicated, keeping the higher-priority label.
-fn marks_in_window(
-    marks: &[(i64, EventKind)],
-    start: i64,
-    end: i64,
-    fps: i64,
-) -> Vec<EventMark> {
+fn marks_in_window(marks: &[(i64, EventKind)], start: i64, end: i64, fps: i64) -> Vec<EventMark> {
     let fps = fps.max(1);
     let mut hits: Vec<(i64, EventKind)> = marks
         .iter()
@@ -622,7 +635,10 @@ mod tests {
     fn span_window_pads_outward_from_first_and_last() {
         let (s, e) = clip_window_span(600, 1200, 8, 4, 60);
         assert_eq!((s, e), (600 - 480, 1200 + 240));
-        assert_eq!(clip_window_span(600, 600, 8, 4, 60), clip_window(600, 8, 4, 60));
+        assert_eq!(
+            clip_window_span(600, 600, 8, 4, 60),
+            clip_window(600, 8, 4, 60)
+        );
         assert_eq!(clip_window_span(60, 300, 8, 4, 60).0, 0);
     }
 

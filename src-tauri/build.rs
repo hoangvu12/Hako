@@ -55,7 +55,10 @@ fn bake_oauth_credentials() {
         );
     } else {
         // Names only, never values.
-        println!("cargo:warning=baked OAuth credentials: {}", baked.join(", "));
+        println!(
+            "cargo:warning=baked OAuth credentials: {}",
+            baked.join(", ")
+        );
     }
 }
 
