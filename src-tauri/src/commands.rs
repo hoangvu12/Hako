@@ -289,6 +289,7 @@ pub fn start_capture_with(
                 bitrate_mbps: s.bitrate_mbps,
                 target_res: s.resolution_dims(),
                 freeze_overlay: s.freeze_overlay,
+                record_cursor: s.record_cursor,
             },
             s.gpu_adapter_index(),
             s.dirty_frame_skip,
@@ -1092,6 +1093,7 @@ pub fn update_settings(
     let new_hotkey = next.save_hotkey.clone();
     let overlay_enabled = next.overlay_enabled;
     let new_freeze_overlay = next.freeze_overlay;
+    let new_record_cursor = next.record_cursor;
     let new_audio = next.effective_audio();
     // Classify the capture-affecting change the way Medal does:
     //  - a layout-preserving audio change applies LIVE (no restart): a volume/
@@ -1099,7 +1101,7 @@ pub fn update_settings(
     //    mono flip that keeps the same track layout (`UpdateAudioCaptureAndProcessor`);
     //  - a video-encode change or an audio *layout* change (mic on/off, source
     //    add/remove, separate-tracks, mode switch) needs a capture RESTART.
-    let (old_hotkey, restart_needed, audio_live, freeze_changed) = {
+    let (old_hotkey, restart_needed, audio_live, freeze_changed, cursor_changed) = {
         let mut guard = settings.0.lock().map_err(|_| "settings poisoned")?;
         let prev_hotkey = guard.save_hotkey.clone();
         let old_audio = guard.effective_audio();
@@ -1110,8 +1112,16 @@ pub fn update_settings(
         let restart_needed = video_changed || (audio_changed && !old_audio.layout_eq(&new_audio));
         // The freeze overlay is a per-frame flag — applied live, never a restart.
         let freeze_changed = guard.freeze_overlay != new_freeze_overlay;
+        // "Record mouse cursor" is likewise a per-frame flag — applied live.
+        let cursor_changed = guard.record_cursor != new_record_cursor;
         *guard = next;
-        (prev_hotkey, restart_needed, audio_live, freeze_changed)
+        (
+            prev_hotkey,
+            restart_needed,
+            audio_live,
+            freeze_changed,
+            cursor_changed,
+        )
     };
     if old_hotkey != new_hotkey {
         crate::set_clip_hotkey(&app, &new_hotkey);
@@ -1140,6 +1150,11 @@ pub fn update_settings(
     // mid-match.
     if freeze_changed {
         apply_freeze_overlay_live(&app, new_freeze_overlay);
+    }
+    // "Record mouse cursor" is a per-frame flag too — apply it to the running
+    // capture immediately, no restart, even mid-match.
+    if cursor_changed {
+        apply_record_cursor_live(&app, new_record_cursor);
     }
     // Keep a live overlay in sync: re-push the corner placement, and clear the
     // overlay immediately if the master switch was just turned off.
@@ -1180,6 +1195,21 @@ fn apply_freeze_overlay_live(app: &AppHandle, on: bool) {
     if let Some(running) = guard.as_ref() {
         running.set_freeze_overlay(on);
         tracing::info!("settings: applied freeze-overlay toggle live ({on})");
+    }
+}
+
+/// Toggle "record mouse cursor" on the running capture live (no restart — it's a
+/// per-frame flag). No-op when nothing is capturing (the change is persisted and
+/// applied when capture next starts).
+fn apply_record_cursor_live(app: &AppHandle, on: bool) {
+    let state = app.state::<CaptureState>();
+    let guard = match state.0.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    if let Some(running) = guard.as_ref() {
+        running.set_record_cursor(on);
+        tracing::info!("settings: applied record-cursor toggle live ({on})");
     }
 }
 

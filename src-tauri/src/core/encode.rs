@@ -311,6 +311,10 @@ pub struct EncodeSettings {
     /// intentional notice instead of a silently-held frame. See
     /// [`crate::core::overlay_card`].
     pub freeze_overlay: bool,
+    /// Composite the mouse cursor onto captured frames before encoding (the
+    /// hardware cursor isn't in the shared backbuffer). See
+    /// [`crate::core::cursor_overlay`]. A per-frame flag, toggled live.
+    pub record_cursor: bool,
 }
 
 impl VideoCodec {

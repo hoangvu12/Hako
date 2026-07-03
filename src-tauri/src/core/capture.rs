@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use windows::core::{Interface, Result as WinResult, BOOL};
-use windows::Win32::Foundation::{HWND, LPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, POINT};
 use windows::Win32::Graphics::Direct3D11::{
     ID3D11Device, ID3D11DeviceContext, ID3D11Resource, ID3D11Texture2D, D3D11_BIND_RENDER_TARGET,
     D3D11_BOX, D3D11_CPU_ACCESS_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_FLAG_DO_NOT_WAIT,
@@ -36,14 +36,15 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_SAMPLE_DESC,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
-    IsWindowVisible,
+    EnumWindows, GetCursorPos, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+    IsIconic, IsWindowVisible,
 };
 
 use crate::core::audio::{self, AudioCapture, AudioControl, AudioMeta};
 use crate::core::buffer::{AudioRing, BufferStats, PacketRing};
 use crate::core::clock::{MasterClock, TICKS_PER_SECOND};
 use crate::core::convert::Converter;
+use crate::core::cursor_overlay;
 use crate::core::device;
 use crate::core::disk_buffer::DiskPacketRing;
 use crate::core::encode::{EncodeSettings, EncodedPacket, Encoder};
@@ -131,6 +132,16 @@ struct Shared {
     /// for the capture's life; gates the live `overlay_active` toggle so turning
     /// the feature on can't enable drawing on an incapable capture.
     overlay_capable: AtomicBool,
+    /// True when the mouse cursor should be composited onto live frames: the
+    /// `record_cursor` feature is **on** AND the capture is overlay-capable. Read
+    /// per-frame by the encode thread (cursor draw gate) and per-tick by the source
+    /// loop (so a moving cursor over a static scene isn't dirty-skipped), so
+    /// toggling applies live via [`RunningCapture::set_record_cursor`].
+    cursor_active: AtomicBool,
+    /// True once the encode thread confirmed the cursor overlay can be drawn for
+    /// this capture (D2D-targetable format AND `CursorOverlay` init succeeded).
+    /// Fixed for the capture's life; gates the live `cursor_active` toggle.
+    cursor_capable: AtomicBool,
     /// Set by the source loop when the game changed its backbuffer resolution
     /// mid-capture (e.g. a 16:9 menu → a 4:3 stretched match). The recorder follows
     /// the game's native size, but a clip's dimensions are fixed for its lifetime
@@ -504,6 +515,16 @@ impl RunningCapture {
             .store(on && capable, Ordering::Release);
     }
 
+    /// Toggle "record mouse cursor" on the live capture without a restart — it's a
+    /// per-frame flag. Clamped by cursor capability, so turning it on does nothing
+    /// when the capture format can't be annotated.
+    pub fn set_record_cursor(&self, on: bool) {
+        let capable = self.shared.cursor_capable.load(Ordering::Acquire);
+        self.shared
+            .cursor_active
+            .store(on && capable, Ordering::Release);
+    }
+
     /// Whether a Valorant match is actively being recorded into this capture.
     /// A restart while true would orphan the in-progress session's buffer, so
     /// the settings path defers config-change restarts until the match ends.
@@ -646,6 +667,15 @@ pub fn pid_for_hwnd(hwnd_raw: i64) -> Option<u32> {
         GetWindowThreadProcessId(HWND(hwnd_raw as *mut c_void), Some(&mut pid));
     }
     (pid != 0).then_some(pid)
+}
+
+/// The mouse cursor's current screen position (physical pixels), or `None` if the
+/// query fails. Used by the source loop to un-skip a static frame when the cursor
+/// moved while "record cursor" is on.
+fn cursor_screen_pos() -> Option<(i32, i32)> {
+    let mut pt = POINT::default();
+    // SAFETY: GetCursorPos writes the current pointer position into `pt`.
+    (unsafe { GetCursorPos(&mut pt) }).ok().map(|_| (pt.x, pt.y))
 }
 
 /// Whether a window is minimized (iconic). A minimized game — common with
@@ -985,6 +1015,7 @@ fn run_hook_pipeline(
                     target_fps,
                     enc_cfg,
                     overlay_capable,
+                    hwnd_raw,
                     filled_rx,
                     free_pool,
                     shared,
@@ -1130,6 +1161,10 @@ fn hook_source_loop(
     // Skip state: hash of the previous tick's frame (one-tick latency; see
     // `DirtyProbe`). Distinct from the watchdog's 1 Hz `last_hash`.
     let mut last_dirty_hash: Option<u64> = None;
+    // Last mouse position, tracked only while "record cursor" is active: a moving
+    // cursor over a byte-identical (static) backbuffer must still push a fresh
+    // frame, or the composited pointer would freeze until the scene next changes.
+    let mut last_cursor_pos: Option<(i32, i32)> = None;
     // Static watchdog state (sampled at STATIC_SAMPLE cadence).
     let mut last_hash: Option<u64> = None;
     let mut last_change = Instant::now();
@@ -1392,8 +1427,24 @@ fn hook_source_loop(
         // touches the staging pool. The cap forces a real frame through every
         // ~2 s as insurance against a hash collision or an all-static scene.
         if dirty_frame_skip {
+            // When recording the cursor, a pointer move over an otherwise static
+            // frame must break the skip so the encode thread redraws it at the new
+            // spot. No-op (and no syscall cost) when the feature is off.
+            let cursor_moved = if shared.cursor_active.load(Ordering::Relaxed) {
+                let pos = cursor_screen_pos();
+                let moved = last_cursor_pos.is_some() && last_cursor_pos != pos;
+                last_cursor_pos = pos;
+                moved
+            } else {
+                last_cursor_pos = None;
+                false
+            };
             match cur_hash {
-                Some(hash) if last_dirty_hash == Some(hash) && consecutive_skips < max_skips => {
+                Some(hash)
+                    if !cursor_moved
+                        && last_dirty_hash == Some(hash)
+                        && consecutive_skips < max_skips =>
+                {
                     consecutive_skips += 1;
                     shared.skipped_dup.fetch_add(1, Ordering::Relaxed);
                     // `last_dirty_hash` stays put (same content); loop back.
@@ -1758,6 +1809,7 @@ fn encode_thread(
     fps: u32,
     enc_cfg: EncodeSettings,
     overlay_capable: bool,
+    hwnd_raw: i64,
     filled_rx: Receiver<(ID3D11Texture2D, i64)>,
     free_pool: Arc<Mutex<Vec<ID3D11Texture2D>>>,
     shared: Arc<Shared>,
@@ -1862,6 +1914,31 @@ fn encode_thread(
     };
     let mut warned_overlay = false;
 
+    // In-frame mouse-cursor compositor ("record cursor"). Same D2D-targetable
+    // requirement as the freeze overlay (both draw onto the BGRA staging texture),
+    // so it's *capable* exactly when `overlay_capable`; whether it draws is the
+    // live `cursor_active` toggle (the `record_cursor` setting). The Game Capture
+    // path shares the game's backbuffer, which lacks the Windows hardware cursor,
+    // so this stamps the live pointer on. Non-fatal on failure.
+    let cursor = if overlay_capable {
+        match cursor_overlay::CursorOverlay::new(&capture_device) {
+            Ok(c) => {
+                shared.cursor_capable.store(true, Ordering::Release);
+                shared
+                    .cursor_active
+                    .store(enc_cfg.record_cursor, Ordering::Release);
+                Some(c)
+            }
+            Err(e) => {
+                tracing::warn!("cursor overlay init failed; clips won't show the pointer: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mut warned_cursor = false;
+
     let _ = ready_tx.send(Ok(()));
 
     // Account for stats and store the compressed packets in the RAM ring. The
@@ -1910,14 +1987,26 @@ fn encode_thread(
         // staging frames keep flowing) and the minimized keep-alive emit (the
         // source loop re-sends the last frame). Gap-fill then repeats the carded
         // NV12, so the whole frozen stretch stays annotated.
+        let frozen_now = shared.frozen.load(Ordering::Relaxed);
         if let Some(o) = &overlay {
-            if shared.frozen.load(Ordering::Relaxed)
-                && shared.overlay_active.load(Ordering::Relaxed)
-            {
+            if frozen_now && shared.overlay_active.load(Ordering::Relaxed) {
                 if let Err(e) = o.draw(&staging) {
                     if !warned_overlay {
                         tracing::warn!("freeze overlay draw failed (first occurrence): {e}");
                         warned_overlay = true;
+                    }
+                }
+            }
+        }
+        // Live frame → stamp the mouse cursor on top of the captured backbuffer
+        // (the hardware cursor isn't in it). Skipped while frozen: the "tabbed out"
+        // card owns those frames, and the last-known cursor position would be stale.
+        if let Some(c) = &cursor {
+            if !frozen_now && shared.cursor_active.load(Ordering::Relaxed) {
+                if let Err(e) = c.draw(&staging, hwnd_raw, width, height) {
+                    if !warned_cursor {
+                        tracing::warn!("cursor overlay draw failed (first occurrence): {e}");
+                        warned_cursor = true;
                     }
                 }
             }

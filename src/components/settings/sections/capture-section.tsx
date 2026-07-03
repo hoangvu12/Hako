@@ -117,6 +117,18 @@ export function CaptureSection({
       </Panel>
 
 
+      <Panel title="Mouse cursor">
+        <Row
+          label="Record mouse cursor"
+          hint="Draw your mouse pointer into clips. Games use a hardware cursor that isn't in the captured frame, so it's added on top — turn off for a clean, pointer-free recording."
+        >
+          <Switch
+            checked={draft.record_cursor}
+            onCheckedChange={(v) => set("record_cursor", v)}
+          />
+        </Row>
+      </Panel>
+
       <Panel title="Tabbed out">
         <Row
           label='Show "tabbed out" card'

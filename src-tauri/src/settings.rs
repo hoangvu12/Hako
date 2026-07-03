@@ -46,6 +46,15 @@ pub struct Settings {
     /// frame so output stays smooth. On by default; kill-switch for diagnosing
     /// capture issues. See the dirty-frame check in `core::capture::hook_source_loop`.
     pub dirty_frame_skip: bool,
+    /// Composite the mouse cursor onto captured frames ("Record mouse cursor" —
+    /// Medal's "Show mouse cursor" / OBS Game Capture's "Capture Cursor"). The
+    /// Game Capture path shares the game's backbuffer, which never contains the
+    /// Windows *hardware* cursor (composited by the OS after present) — so games
+    /// like League of Legends and Valorant would otherwise record no pointer at
+    /// all. When on, the encode thread rasterizes the live cursor and draws it at
+    /// its mapped position (see `core::cursor_overlay`). A per-frame flag, applied
+    /// live like `freeze_overlay` (no capture restart). On by default.
+    pub record_cursor: bool,
     /// Capture desktop (loopback) audio into clips ("Audio Source": All PC
     /// audio vs Off).
     pub capture_audio: bool,
@@ -190,6 +199,7 @@ impl Default for Settings {
             bitrate_mbps: 20,
             freeze_overlay: true,
             dirty_frame_skip: true,
+            record_cursor: true,
             capture_audio: true,
             mic_source: "auto".into(),
             audio: None,

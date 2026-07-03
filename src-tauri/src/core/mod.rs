@@ -120,6 +120,7 @@ pub mod buffer; // RAM ring + IDR index
 pub mod capture; // capture pipeline: hook source loop → channel → encode thread
 pub mod clock;
 pub mod convert; // ID3D11VideoProcessor BGRA → NV12/P010
+pub mod cursor_overlay; // in-frame host-side mouse-cursor composite (Direct2D)
 pub mod denoise; // offline mic noise suppression (DeepFilterNet 3), editor export only
 pub mod device; // shared D3D11 device + DXGI adapter enumeration
 pub mod disk_buffer; // disk-backed rolling segment ring (RAM-vs-disk buffer toggle)

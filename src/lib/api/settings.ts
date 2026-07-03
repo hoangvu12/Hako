@@ -178,6 +178,14 @@ export interface Settings {
    * dedicated UI control.
    */
   dirty_frame_skip: boolean;
+  /**
+   * Composite the mouse cursor onto captured frames ("Record mouse cursor" —
+   * Medal's "Show mouse cursor"). The Game Capture path shares the game's
+   * backbuffer, which never contains the Windows hardware cursor, so games like
+   * League of Legends and Valorant would otherwise record no pointer. Applied
+   * live (per-frame flag, no restart). On by default.
+   */
+  record_cursor: boolean;
   capture_audio: boolean;
   /** Microphone to mix in: "off", "auto" (system default), or a device id. */
   mic_source: string;
