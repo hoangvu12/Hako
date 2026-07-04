@@ -1,13 +1,14 @@
 import * as React from "react";
 
 import { ClipCard } from "@/components/clips/clip-card";
-import type { GameAssets } from "@/games/use-game-assets";
 import type { ClipRecord } from "@/lib/api";
 
 // Memoized row pieces. The virtualizer re-renders `ClipsPage` on every scroll
 // tick; with these boundaries (and stable props — the `rows`/`row.clips` arrays
-// are memoized, the handlers and `assets` are stable) an already-mounted header
-// or clip row short-circuits instead of re-rendering as you scroll.
+// are memoized, the handlers stable) an already-mounted header or clip row
+// short-circuits instead of re-rendering as you scroll. Card badges read the
+// game-asset bundle from context (`GameAssetsProvider`), so it no longer rides
+// down through here as a prop.
 export const HeaderRow = React.memo(function HeaderRow({
   label,
   count,
@@ -28,13 +29,11 @@ export const HeaderRow = React.memo(function HeaderRow({
 export const ClipRow = React.memo(function ClipRow({
   clips,
   columns,
-  assets,
   onDelete,
   onRename,
 }: {
   clips: ClipRecord[];
   columns: number;
-  assets: GameAssets;
   onDelete: (clip: ClipRecord) => void;
   onRename: (clip: ClipRecord) => void;
 }) {
@@ -47,7 +46,6 @@ export const ClipRow = React.memo(function ClipRow({
         <ClipCard
           key={clip.id}
           clip={clip}
-          assets={assets}
           onDelete={onDelete}
           onRename={onRename}
         />

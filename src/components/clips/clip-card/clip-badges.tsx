@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import type { GameAssets } from "@/games/use-game-assets";
+import { useGameAssetsContext } from "@/games/use-game-assets";
 import { clipPresenter } from "@/games/clip-presenter";
 import type { ClipRecord } from "@/lib/api";
 
@@ -28,13 +28,8 @@ export function ClipResultBadge({ clip }: { clip: ClipRecord }) {
  * needs no change here. Inline (no positioning of its own) — the card places it
  * in the shared bottom-left badge row alongside the upload status icon.
  */
-export function ClipBadges({
-  clip,
-  assets,
-}: {
-  clip: ClipRecord;
-  assets: GameAssets;
-}) {
+export function ClipBadges({ clip }: { clip: ClipRecord }) {
+  const assets = useGameAssetsContext();
   const badges = clipPresenter(clip).cardBadges(clip, assets);
   if (!badges.length) return null;
 

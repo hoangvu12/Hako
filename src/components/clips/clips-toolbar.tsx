@@ -15,7 +15,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import type { GameAssets } from "@/games/use-game-assets";
+import { useGameAssetsContext } from "@/games/use-game-assets";
 import {
   SORTS,
   type ClipFilters,
@@ -43,7 +43,6 @@ export const ClipsToolbar = React.memo(function ClipsToolbar({
   update,
   toggle,
   reset,
-  assets,
 }: {
   clipSeconds: number;
   onSave: () => void;
@@ -55,8 +54,8 @@ export const ClipsToolbar = React.memo(function ClipsToolbar({
   update: (patch: Partial<ClipFilters>) => void;
   toggle: (key: MultiKey, value: string) => void;
   reset: () => void;
-  assets: GameAssets;
 }) {
+  const assets = useGameAssetsContext();
   const { gameOptions, agentOptions, mapOptions, modeOptions, eventOptions } =
     buildFacetOptions(facets, assets.valorant);
 

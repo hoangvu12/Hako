@@ -23,7 +23,7 @@ import {
 } from "@/hooks/use-library";
 import { useUploadClip } from "@/hooks/use-cloud";
 import { useSettings } from "@/hooks/use-settings";
-import { useGameAssets } from "@/games/use-game-assets";
+import { GameAssetsProvider } from "@/games/use-game-assets";
 import type { ClipRecord } from "@/lib/api";
 import {
   CARD_CHROME,
@@ -55,7 +55,6 @@ export default function ClipsPage() {
   const { mutate: deleteClip } = useDeleteClip();
   const { mutate: renameClip } = useRenameClip();
   const { mutate: uploadClip, isPending: uploading } = useUploadClip();
-  const assets = useGameAssets();
   // One library across every game — scoping is done via the toolbar's Game
   // filter, not a separate page mode.
   const allClips = React.useMemo(() => clips ?? [], [clips]);
@@ -201,7 +200,8 @@ export default function ClipsPage() {
   const noMatches = !isLoading && allClips.length > 0 && total === 0;
 
   return (
-    <div className="flex h-full flex-col">
+    <GameAssetsProvider>
+      <div className="flex h-full flex-col">
       {selectionActive ? (
         <ClipsBulkBar
           selectedCount={selection.size}
@@ -224,7 +224,6 @@ export default function ClipsPage() {
           update={update}
           toggle={toggle}
           reset={reset}
-          assets={assets}
         />
       )}
 
@@ -286,7 +285,6 @@ export default function ClipsPage() {
                     <ClipRow
                       clips={row.clips}
                       columns={columns}
-                      assets={assets}
                       onDelete={handleDelete}
                       onRename={handleRename}
                     />
@@ -297,6 +295,7 @@ export default function ClipsPage() {
           </div>
         )}
       </div>
-    </div>
+      </div>
+    </GameAssetsProvider>
   );
 }

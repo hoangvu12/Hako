@@ -1,7 +1,6 @@
 import * as React from "react";
 
 import { cn } from "@/lib/utils";
-import type { GameAssets } from "@/games/use-game-assets";
 import type { ClipRecord } from "@/lib/api";
 import {
   toggleClipSelected,
@@ -23,18 +22,17 @@ function Dot() {
 // Memoized: the clips grid re-renders on every scroll tick (virtualizer state),
 // hover, and resize. Without this, each of those re-rendered all ~25 visible
 // cards and their full Radix dropdown + icon subtrees. With stable props (see
-// the parent's `useCallback` handlers + the session-stable `assets`), a card
-// now re-renders only when its own `clip` changes (or its selection toggles).
+// the parent's `useCallback` handlers), a card now re-renders only when its own
+// `clip` changes (or its selection toggles). Its badges read the game-asset
+// bundle from context, so it isn't a prop here.
 export const ClipCard = React.memo(function ClipCard({
   clip,
   onDelete,
   onRename,
-  assets,
 }: {
   clip: ClipRecord;
   onDelete: (clip: ClipRecord) => void;
   onRename: (clip: ClipRecord) => void;
-  assets: GameAssets;
 }) {
   // Per-card selection: subscribed individually so toggling another card never
   // re-renders this one (see `use-clip-selection`). Drives both the corner
@@ -71,7 +69,7 @@ export const ClipCard = React.memo(function ClipCard({
             upload status sits next to the pills instead of on top of them. Fades
             on hover like the duration badge so it never fights the controls. */}
         <div className="pointer-events-none absolute inset-x-2 bottom-2 z-10 flex max-w-[85%] flex-wrap items-center gap-1.5 transition-opacity group-hover/media:opacity-0">
-          <ClipBadges clip={clip} assets={assets} />
+          <ClipBadges clip={clip} />
           <ClipUploadBadge clipId={clip.id} />
         </div>
         <SelectCheckbox id={clip.id} selected={selected} />
