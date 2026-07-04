@@ -1,19 +1,10 @@
 import * as React from "react";
-import {
-  SpeakerSimpleHigh,
-  SpeakerSimpleX,
-  CircleNotch,
-  Faders,
-  Sparkle,
-} from "@phosphor-icons/react";
+import { SpeakerSimpleHigh, SpeakerSimpleX, Faders, Sparkle } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
+import { Spinner } from "@/components/ui/spinner";
 import { Slider } from "@/components/ui/slider";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { AudioTrackInfo } from "@/lib/api";
 import type { TrackCtl } from "./constants";
 
@@ -85,9 +76,7 @@ export const AudioSettingsPopover = React.memo(function AudioSettingsPopover({
           className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-white/5"
         >
           <span className="min-w-0">
-            <span className="block text-sm font-medium text-foreground">
-              Include audio
-            </span>
+            <span className="block text-sm font-medium text-foreground">Include audio</span>
             <span className="block text-xs text-muted-foreground">
               {audioEnabled ? "Saved with sound" : "Saved without sound"}
             </span>
@@ -114,7 +103,7 @@ export const AudioSettingsPopover = React.memo(function AudioSettingsPopover({
               Tracks
               {decoding ? (
                 <span className="flex items-center gap-1.5 font-normal text-muted-foreground/70">
-                  <CircleNotch weight="bold" className="size-3 animate-spin" />
+                  <Spinner weight="bold" className="size-3" />
                   Decoding…
                 </span>
               ) : denoisingIdx.length ? (
@@ -122,7 +111,7 @@ export const AudioSettingsPopover = React.memo(function AudioSettingsPopover({
                 // freezes every CSS animation, so a lone spinner reads as idle —
                 // the label is what tells the user noise cancel is working.
                 <span className="flex items-center gap-1.5 font-normal text-info/80">
-                  <CircleNotch weight="bold" className="size-3 animate-spin" />
+                  <Spinner weight="bold" className="size-3" />
                   Cancelling noise…
                 </span>
               ) : null}
@@ -206,12 +195,9 @@ export const AudioSettingsPopover = React.memo(function AudioSettingsPopover({
                       )}
                     >
                       {denoising ? (
-                        <CircleNotch weight="bold" className="size-3.5 animate-spin" />
+                        <Spinner weight="bold" className="size-3.5" />
                       ) : (
-                        <Sparkle
-                          weight={c.denoise ? "fill" : "regular"}
-                          className="size-3.5"
-                        />
+                        <Sparkle weight={c.denoise ? "fill" : "regular"} className="size-3.5" />
                       )}
                     </button>
                     <Slider

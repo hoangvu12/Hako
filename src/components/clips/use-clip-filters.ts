@@ -72,26 +72,39 @@ export function isAutoClip(clip: ClipRecord): boolean {
   return clip.event != null;
 }
 
-function uniqueSorted(values: (string | null)[]): string[] {
-  return [...new Set(values.filter((v): v is string => !!v))].sort((a, b) =>
-    a.localeCompare(b)
-  );
-}
-
 function deriveFacets(clips: ClipRecord[]): Facets {
-  const mapPaths = uniqueSorted(clips.map((c) => c.map));
-  // Games actually present in the library, in registry (display) order.
-  const present = new Set(clips.map((c) => clipGame(c.game)));
+  // Collect every facet in a single pass instead of ~8 separate array walks
+  // (map/game/agent/mode/events + the three `some` scans). Sets dedupe as we go.
+  const maps = new Set<string>();
+  const games = new Set<GameId>();
+  const agents = new Set<string>();
+  const modes = new Set<string>();
+  const events = new Set<string>();
+  let hasManual = false;
+  let hasAuto = false;
+  let hasResult = false;
+  for (const c of clips) {
+    if (c.map) maps.add(c.map);
+    games.add(clipGame(c.game));
+    if (c.agent) agents.add(c.agent);
+    if (c.mode) modes.add(c.mode);
+    if (c.events) for (const e of c.events) if (e) events.add(e);
+    if (isAutoClip(c)) hasAuto = true;
+    else hasManual = true;
+    if (c.won != null) hasResult = true;
+  }
+  const sorted = (s: Set<string>) => [...s].sort((a, b) => a.localeCompare(b));
   return {
-    games: GAMES.map((g) => g.id).filter((id) => present.has(id)),
-    agents: uniqueSorted(clips.map((c) => c.agent)),
-    maps: mapPaths.map((path) => ({ path, name: mapNameFromPath(path) })),
-    modes: uniqueSorted(clips.map((c) => c.mode)),
+    // Games actually present in the library, in registry (display) order.
+    games: GAMES.map((g) => g.id).filter((id) => games.has(id)),
+    agents: sorted(agents),
+    maps: sorted(maps).map((path) => ({ path, name: mapNameFromPath(path) })),
+    modes: sorted(modes),
     // Event facet across both the headline event and merged events list.
-    events: uniqueSorted(clips.flatMap((c) => c.events ?? [])),
-    hasManual: clips.some((c) => !isAutoClip(c)),
-    hasAuto: clips.some((c) => isAutoClip(c)),
-    hasResult: clips.some((c) => c.won != null),
+    events: sorted(events),
+    hasManual,
+    hasAuto,
+    hasResult,
   };
 }
 
@@ -105,11 +118,9 @@ function matches(clip: ClipRecord, f: ClipFilters): boolean {
     if (!hay.includes(q)) return false;
   }
   if (f.games.length && !f.games.includes(clipGame(clip.game))) return false;
-  if (f.agents.length && !(clip.agent && f.agents.includes(clip.agent)))
-    return false;
+  if (f.agents.length && !(clip.agent && f.agents.includes(clip.agent))) return false;
   if (f.maps.length && !(clip.map && f.maps.includes(clip.map))) return false;
-  if (f.modes.length && !(clip.mode && f.modes.includes(clip.mode)))
-    return false;
+  if (f.modes.length && !(clip.mode && f.modes.includes(clip.mode))) return false;
   if (f.events.length) {
     const ev = clip.events ?? [];
     if (!ev.some((e) => f.events.includes(e))) return false;
@@ -141,11 +152,8 @@ function dayKey(ms: number): string {
 }
 
 function dayLabel(ms: number): string {
-  const startOfDay = (d: Date) =>
-    new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const diff = Math.round(
-    (startOfDay(new Date()) - startOfDay(new Date(ms))) / 86_400_000
-  );
+  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const diff = Math.round((startOfDay(new Date()) - startOfDay(new Date(ms))) / 86_400_000);
   if (diff <= 0) return "Today";
   if (diff === 1) return "Yesterday";
   return new Date(ms).toLocaleDateString(undefined, {
@@ -196,33 +204,25 @@ export function useClipFilters(clips: ClipRecord[]) {
   const [filters, setFilters] = React.useState<ClipFilters>(EMPTY);
 
   const facets = React.useMemo(() => deriveFacets(clips), [clips]);
-  const sections = React.useMemo(
-    () => buildSections(clips, filters),
-    [clips, filters]
-  );
-  const total = React.useMemo(
-    () => sections.reduce((n, s) => n + s.clips.length, 0),
-    [sections]
-  );
+  const sections = React.useMemo(() => buildSections(clips, filters), [clips, filters]);
+  const total = React.useMemo(() => sections.reduce((n, s) => n + s.clips.length, 0), [sections]);
   const activeCount = countActive(filters);
 
   const update = React.useCallback(
     (patch: Partial<ClipFilters>) => setFilters((f) => ({ ...f, ...patch })),
-    []
+    [],
   );
   const toggle = React.useCallback(
     (key: "games" | "agents" | "maps" | "modes" | "events", value: string) =>
       setFilters((f) => {
         const set = new Set(f[key]);
-        set.has(value) ? set.delete(value) : set.add(value);
+        if (set.has(value)) set.delete(value);
+        else set.add(value);
         return { ...f, [key]: [...set] };
       }),
-    []
+    [],
   );
-  const reset = React.useCallback(
-    () => setFilters((f) => ({ ...EMPTY, sort: f.sort })),
-    []
-  );
+  const reset = React.useCallback(() => setFilters((f) => ({ ...EMPTY, sort: f.sort })), []);
 
   return {
     filters,

@@ -1,9 +1,6 @@
-import {
-  CloudArrowUp,
-  CloudCheck,
-  CircleNotch,
-  WarningCircle,
-} from "@phosphor-icons/react";
+import { CloudArrowUp, CloudCheck, WarningCircle } from "@phosphor-icons/react";
+
+import { Spinner } from "@/components/ui/spinner";
 
 import { cn } from "@/lib/utils";
 import { useClipUpload } from "@/hooks/use-cloud";
@@ -31,7 +28,7 @@ export function ClipUploadBadge({ clipId }: { clipId: number }) {
     case "uploading":
       return (
         <span className={cn(chip, "bg-black/70")} title="Uploading…">
-          <CircleNotch weight="bold" className="size-3 animate-spin" />
+          <Spinner weight="bold" className="size-3" />
         </span>
       );
     case "done":

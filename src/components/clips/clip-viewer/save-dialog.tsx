@@ -1,4 +1,6 @@
-import { Copy, FloppyDisk, CircleNotch } from "@phosphor-icons/react";
+import { Copy, FloppyDisk } from "@phosphor-icons/react";
+
+import { Spinner } from "@/components/ui/spinner";
 
 import type { TrimMode } from "@/lib/api";
 import { fmtClock } from "./format";
@@ -83,7 +85,7 @@ export function SaveDialog({
           </button>
           {pending ? (
             <span className="flex items-center gap-2 text-sm text-muted-foreground">
-              <CircleNotch weight="bold" className="size-4 animate-spin" />
+              <Spinner weight="bold" className="size-4" />
               Saving…
             </span>
           ) : null}

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CircleNotch } from "@phosphor-icons/react";
+import { Spinner } from "@/components/ui/spinner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -49,7 +49,12 @@ export function AddProviderForm({ onDone }: { onDone: () => void }) {
   const buildKind = (): ProviderKind => {
     switch (kind) {
       case "r2":
-        return { kind: "r2", account_id: accountId.trim(), bucket: bucket.trim(), prefix: prefix.trim() };
+        return {
+          kind: "r2",
+          account_id: accountId.trim(),
+          bucket: bucket.trim(),
+          prefix: prefix.trim(),
+        };
       case "s3":
         return {
           kind: "s3",
@@ -127,32 +132,21 @@ export function AddProviderForm({ onDone }: { onDone: () => void }) {
       {oauth ? (
         <>
           <Field label="Folder">
-            <Input
-              value={folder}
-              placeholder="/Hako"
-              onChange={(e) => setFolder(e.target.value)}
-            />
+            <Input value={folder} placeholder="/Hako" onChange={(e) => setFolder(e.target.value)} />
           </Field>
           <p className="text-xs text-muted-foreground">
-            Connecting opens your browser to sign in to {kindLabel(kind)}. Hako
-            stores only a refresh token in your OS keyring, never your password.
+            Connecting opens your browser to sign in to {kindLabel(kind)}. Hako stores only a
+            refresh token in your OS keyring, never your password.
           </p>
           {connect.error ? (
             <p className="text-xs text-destructive">{String(connect.error)}</p>
           ) : null}
           <div className="flex items-center justify-end gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onDone}
-              disabled={connect.isPending}
-            >
+            <Button variant="ghost" size="sm" onClick={onDone} disabled={connect.isPending}>
               Cancel
             </Button>
             <Button size="sm" disabled={connect.isPending} onClick={connectOAuth}>
-              {connect.isPending ? (
-                <CircleNotch className="size-3.5 animate-spin" />
-              ) : null}
+              {connect.isPending ? <Spinner className="size-3.5" /> : null}
               {connect.isPending ? "Waiting for browser…" : `Connect ${kindLabel(kind)}`}
             </Button>
           </div>
@@ -200,70 +194,64 @@ export function AddProviderForm({ onDone }: { onDone: () => void }) {
 
       {!oauth ? (
         <>
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Bucket">
-          <Input
-            value={bucket}
-            placeholder="clips"
-            onChange={(e) => setBucket(e.target.value)}
-          />
-        </Field>
-        <Field label="Path prefix (optional)">
-          <Input
-            value={prefix}
-            placeholder="hako"
-            onChange={(e) => setPrefix(e.target.value)}
-          />
-        </Field>
-      </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Bucket">
+              <Input
+                value={bucket}
+                placeholder="clips"
+                onChange={(e) => setBucket(e.target.value)}
+              />
+            </Field>
+            <Field label="Path prefix (optional)">
+              <Input
+                value={prefix}
+                placeholder="hako"
+                onChange={(e) => setPrefix(e.target.value)}
+              />
+            </Field>
+          </div>
 
-      {showKeyPair ? (
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Access key ID">
-            <Input
-              value={accessKeyId}
-              autoComplete="off"
-              onChange={(e) => setAccessKeyId(e.target.value)}
-            />
-          </Field>
-          <Field label="Secret access key">
-            <Input
-              type="password"
-              value={secretAccessKey}
-              autoComplete="off"
-              onChange={(e) => setSecretAccessKey(e.target.value)}
-            />
-          </Field>
-        </div>
-      ) : (
-        <Field label="Service-account JSON">
-          <textarea
-            value={gcsCredentialJson}
-            onChange={(e) => setGcsCredentialJson(e.target.value)}
-            rows={4}
-            placeholder='{ "type": "service_account", ... }'
-            className="scrollbar-thin w-full rounded-md border border-input bg-field px-3 py-2 font-mono text-xs outline-none focus-visible:border-ring"
-          />
-        </Field>
-      )}
+          {showKeyPair ? (
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Access key ID">
+                <Input
+                  value={accessKeyId}
+                  autoComplete="off"
+                  onChange={(e) => setAccessKeyId(e.target.value)}
+                />
+              </Field>
+              <Field label="Secret access key">
+                <Input
+                  type="password"
+                  value={secretAccessKey}
+                  autoComplete="off"
+                  onChange={(e) => setSecretAccessKey(e.target.value)}
+                />
+              </Field>
+            </div>
+          ) : (
+            <Field label="Service-account JSON">
+              <textarea
+                value={gcsCredentialJson}
+                onChange={(e) => setGcsCredentialJson(e.target.value)}
+                rows={4}
+                placeholder='{ "type": "service_account", ... }'
+                className="scrollbar-thin w-full rounded-md border border-input bg-field px-3 py-2 font-mono text-xs outline-none focus-visible:border-ring"
+              />
+            </Field>
+          )}
 
-      {add.error ? (
-        <p className="text-xs text-destructive">{String(add.error)}</p>
-      ) : null}
+          {add.error ? <p className="text-xs text-destructive">{String(add.error)}</p> : null}
 
-      <div className="flex items-center justify-end gap-2">
-        <Button variant="ghost" size="sm" onClick={onDone}>
-          Cancel
-        </Button>
-        <Button
-          size="sm"
-          disabled={!valid || add.isPending}
-          onClick={submit}
-        >
-          {add.isPending ? <CircleNotch className="size-3.5 animate-spin" /> : null}
-          Add provider
-        </Button>
-      </div>
+          <div className="flex items-center justify-end gap-2">
+            <Button variant="ghost" size="sm" onClick={onDone}>
+              Cancel
+            </Button>
+            <Button size="sm" disabled={!valid || add.isPending} onClick={submit}>
+              {add.isPending ? <Spinner className="size-3.5" /> : null}
+              Add provider
+            </Button>
+          </div>
         </>
       ) : null}
     </div>

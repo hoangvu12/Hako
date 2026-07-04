@@ -1,5 +1,7 @@
 import { useState } from "react";
-import { CheckCircle, Trash, XCircle, CircleNotch } from "@phosphor-icons/react";
+import { CheckCircle, Trash, XCircle } from "@phosphor-icons/react";
+
+import { Spinner } from "@/components/ui/spinner";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -35,9 +37,7 @@ export function ProviderRow({
     <li className="flex items-center gap-3 rounded-lg border border-border/70 bg-card/40 px-3 py-2.5">
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm font-medium">{provider.label}</div>
-        <div className="truncate text-xs text-muted-foreground">
-          {describe(provider.kind)}
-        </div>
+        <div className="truncate text-xs text-muted-foreground">{describe(provider.kind)}</div>
       </div>
       {result && result !== "pending" ? (
         <span
@@ -54,15 +54,8 @@ export function ProviderRow({
           )}
         </span>
       ) : null}
-      <Button
-        variant="secondary"
-        size="sm"
-        disabled={result === "pending"}
-        onClick={runTest}
-      >
-        {result === "pending" ? (
-          <CircleNotch className="size-3.5 animate-spin" />
-        ) : null}
+      <Button variant="secondary" size="sm" disabled={result === "pending"} onClick={runTest}>
+        {result === "pending" ? <Spinner className="size-3.5" /> : null}
         Test
       </Button>
       <Button
