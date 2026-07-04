@@ -16,7 +16,12 @@ rationale under each below. Not yet merged to `main`.
 
 | Commit | What |
 |--------|------|
-| `066792d` | Extract the shared `recording::finish_and_cut` match-finalizer tail (the reconcile-and-cut half of `end_match`) — collapses the verbatim tail out of all six games. Verified: `cargo check` + 202 tests + clippy clean on touched files. |
+| `066792d` | Extract the shared `recording::finish_and_cut` match-finalizer tail (the reconcile-and-cut half of `end_match`) — collapses the verbatim tail out of all six games. |
+| `4d41200` | Generic `games::engine::run_live_feed(ctx, driver)` engine + per-game `LiveDriver` — collapses the ~130-line run loop each game duplicated. **The whole of #7 is now implemented.** |
+
+All verified here: `cargo check` + 202 tests + clippy (27 bin warnings = unchanged
+baseline, none in touched files). **`4d41200` still needs real-game verification
+before merge** — it rewrites the async run-loop timing that `cargo test` doesn't cover.
 
 ## Done (committed this session, oldest → newest)
 
@@ -39,27 +44,33 @@ can't be verified in this environment (no real game + GPU capture, no real user
 `settings.json`), and a blind commit to `main` risks a silent, hard-to-detect
 regression. They should be done on a branch by someone who can test on real games.
 
-### #7 — `end_match` tail: **DONE** (`066792d`). Run-loop engine: still deferred.
-- **Done:** the reconcile-and-cut tail every `end_match` inlined verbatim is now
-  `recording::finish_and_cut(app, rec, MatchCut, pad_for)`. Per-game knobs
-  (`game_label`, `MAX_AUTOCLIP_SECS`, `PLACEMENT_TOL_SECS`, merge-after, title
-  suffix, clip context) ride in `MatchCut`; `pad_for` is a closure yielding each
-  kind's `(before, after)` from the game's `EventTimings`. PUBG maps its replay
-  Unix-ms → capture-clock ticks and applies its toggle filter when *building*
-  `MatchCut.events` (the live-feed games already filter at receipt), so the shared
-  tail is uniform. This was the safe, `cargo`-verifiable half.
-- **Scope left (the risky half):** the ~250-line `run()` loop scaffold is still
-  ~90% identical across the six games. The genuinely game-specific part is only the
-  "drain the event source" block in the middle. Target: a generic
-  `run_live_feed(ctx, driver)` engine owning the loop, with each game implementing a
-  small driver trait (`poll_events`, `clip_context`, `game_label`).
-- **Why still deferred:** this rewrites the capture-orchestration hot path. `cargo
-  test` covers event-diffing/parsing/timeline reconciliation, **not** the async
-  run-loop timing/state transitions. A subtle regression = clips silently not
-  recording (or wrong windows) during live matches. Needs real-game verification.
-  `finish_and_cut` (this session) + `manage_full_session`/`finish_full_session`
-  (`4df3701`) mean the remaining engine is now purely the loop scaffold + the
-  per-source drain — smaller, but still the un-testable part.
+### #7 — **fully implemented** (`066792d` + `4d41200`). Pending real-game verify.
+- **`end_match` tail (`066792d`):** the reconcile-and-cut tail every `end_match`
+  inlined verbatim is now `recording::finish_and_cut(app, rec, MatchCut, pad_for)`.
+  Per-game knobs (`game_label`, `MAX_AUTOCLIP_SECS`, `PLACEMENT_TOL_SECS`,
+  merge-after, title suffix, clip context) ride in `MatchCut`; `pad_for` yields each
+  kind's `(before, after)`. PUBG maps its replay Unix-ms → capture-clock ticks and
+  applies its toggle filter when building `MatchCut.events`.
+- **Run-loop engine (`4d41200`):** `games::engine::run_live_feed(ctx, driver)` owns
+  the shared scaffold (sleep, auto-capture, mode, full-session roll, mode-flip /
+  config-restart teardown, recorder-status emit, the want/grace latch `Wanting`, and
+  session open). Each game implements `LiveDriver`: `id` / `refresh_settings` /
+  `begin(rec) -> Active` / `discard` / `finish` / `async drive(...)`. `drive` is the
+  per-game middle moved over verbatim (GSI drain, live-feed poll, log tail, HUD
+  poll, demo-watch), each `take()`-ing its source handle so it can `&mut self` while
+  finalizing mid-loop. `finish` delegates to `finish_and_cut`.
+- **Deliberate, harmless differences to confirm on real games** (see `4d41200`
+  message): LoL cadence is window-based not feed-based (1s vs 5s only during the
+  loading/post-game window; already 1s once live); LoL live-match context mirror can
+  lag ≤1s on the first tick a session opens; some log strings use the game id /
+  display name. No functional effect intended.
+- **Why it still needs real-game verification before merge:** it rewrites the
+  capture-orchestration hot path. `cargo test` covers event-diffing/parsing/timeline
+  reconciliation, **not** the async run-loop timing/state transitions. A subtle
+  regression = clips silently not recording (or wrong windows) during live matches.
+  **Verify per game:** play a match, confirm auto-capture starts on window detect,
+  a clip lands in the library with the right window/tags, and Session/FullMatch
+  modes + the mid-match config-restart path still behave.
 
 ### #8 — `EventToggles` / `EventTimings` as data — deferred, and now **recommend against**
 - **Scope:** each game hand-writes a bool-per-variant `*EventToggles` + `*EventTimings`
