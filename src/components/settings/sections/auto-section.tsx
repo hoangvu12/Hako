@@ -48,6 +48,7 @@ import type {
   LolEventToggles,
   OtherGamesSettings,
   RematchEventToggles,
+  SmartGameKey,
   Settings,
 } from "@/lib/api";
 
@@ -688,120 +689,47 @@ export function AutoSection({
   toggleGameMode,
   setTimingLocal,
   commitTiming,
-  setLolMode,
-  setLolDisabled,
-  toggleLolEvent,
-  setLolTimingLocal,
-  commitLolTiming,
-  setRematchMode,
-  setRematchDisabled,
-  toggleRematchEvent,
-  setRematchTimingLocal,
-  commitRematchTiming,
-  setCs2Mode,
-  setCs2Disabled,
-  toggleCs2Event,
-  setCs2TimingLocal,
-  commitCs2Timing,
-  setDota2Mode,
-  setDota2Disabled,
-  toggleDota2Event,
-  setDota2TimingLocal,
-  commitDota2Timing,
-  setWarThunderMode,
-  setWarThunderDisabled,
+  setGameMode,
+  setGameDisabled,
+  toggleGameEvent,
+  setGameTimingLocal,
+  commitGameTiming,
   setWarThunderNickname,
   commitWarThunderNickname,
-  toggleWarThunderEvent,
-  setWarThunderTimingLocal,
-  commitWarThunderTiming,
-  setPubgMode,
-  setPubgDisabled,
-  togglePubgEvent,
-  setPubgTimingLocal,
-  commitPubgTiming,
   setOtherMode,
   setOtherDisabled,
   setOtherDetect,
 }: {
   draft: Settings;
   set: SettingsSet;
+  // Valorant keeps its config in flat `Settings` fields, so its handlers stay
+  // distinct from the smart-game ones below.
   toggleEvent: (key: keyof EventToggles) => void;
   toggleGameMode: (key: keyof GameModeToggles) => void;
   setTimingLocal: (key: keyof EventToggles, field: "before" | "after", value: number) => void;
   commitTiming: (key: keyof EventToggles, field: "before" | "after", value: number) => void;
-  setLolMode: (mode: AutoCaptureMode) => void;
-  setLolDisabled: (disabled: boolean) => void;
-  toggleLolEvent: (key: keyof LolEventToggles) => void;
-  setLolTimingLocal: (key: keyof LolEventToggles, field: "before" | "after", value: number) => void;
-  commitLolTiming: (key: keyof LolEventToggles, field: "before" | "after", value: number) => void;
-  setRematchMode: (mode: AutoCaptureMode) => void;
-  setRematchDisabled: (disabled: boolean) => void;
-  toggleRematchEvent: (key: keyof RematchEventToggles) => void;
-  setRematchTimingLocal: (
-    key: keyof RematchEventToggles,
+  // Generic smart-game handlers, keyed by game id — one set drives every game
+  // under `games.*` (League, CS2, Dota 2, …). Adding a game reuses these; the
+  // event key is `string` because the card is game-agnostic.
+  setGameMode: (key: SmartGameKey, mode: AutoCaptureMode) => void;
+  setGameDisabled: (key: SmartGameKey, disabled: boolean) => void;
+  toggleGameEvent: (key: SmartGameKey, eventKey: string) => void;
+  setGameTimingLocal: (
+    key: SmartGameKey,
+    eventKey: string,
     field: "before" | "after",
     value: number
   ) => void;
-  commitRematchTiming: (
-    key: keyof RematchEventToggles,
+  commitGameTiming: (
+    key: SmartGameKey,
+    eventKey: string,
     field: "before" | "after",
     value: number
   ) => void;
-  setCs2Mode: (mode: AutoCaptureMode) => void;
-  setCs2Disabled: (disabled: boolean) => void;
-  toggleCs2Event: (key: keyof Cs2EventToggles) => void;
-  setCs2TimingLocal: (
-    key: keyof Cs2EventToggles,
-    field: "before" | "after",
-    value: number
-  ) => void;
-  commitCs2Timing: (
-    key: keyof Cs2EventToggles,
-    field: "before" | "after",
-    value: number
-  ) => void;
-  setDota2Mode: (mode: AutoCaptureMode) => void;
-  setDota2Disabled: (disabled: boolean) => void;
-  toggleDota2Event: (key: keyof Dota2EventToggles) => void;
-  setDota2TimingLocal: (
-    key: keyof Dota2EventToggles,
-    field: "before" | "after",
-    value: number
-  ) => void;
-  commitDota2Timing: (
-    key: keyof Dota2EventToggles,
-    field: "before" | "after",
-    value: number
-  ) => void;
-  setWarThunderMode: (mode: AutoCaptureMode) => void;
-  setWarThunderDisabled: (disabled: boolean) => void;
+  // War Thunder's one game-specific field (its free-text nickname).
   setWarThunderNickname: (nickname: string) => void;
   commitWarThunderNickname: (nickname: string) => void;
-  toggleWarThunderEvent: (key: keyof WarThunderEventToggles) => void;
-  setWarThunderTimingLocal: (
-    key: keyof WarThunderEventToggles,
-    field: "before" | "after",
-    value: number
-  ) => void;
-  commitWarThunderTiming: (
-    key: keyof WarThunderEventToggles,
-    field: "before" | "after",
-    value: number
-  ) => void;
-  setPubgMode: (mode: AutoCaptureMode) => void;
-  setPubgDisabled: (disabled: boolean) => void;
-  togglePubgEvent: (key: keyof PubgEventToggles) => void;
-  setPubgTimingLocal: (
-    key: keyof PubgEventToggles,
-    field: "before" | "after",
-    value: number
-  ) => void;
-  commitPubgTiming: (
-    key: keyof PubgEventToggles,
-    field: "before" | "after",
-    value: number
-  ) => void;
+  // The generic "record any game" bucket has its own distinct shape.
   setOtherMode: (mode: AutoCaptureMode) => void;
   setOtherDisabled: (disabled: boolean) => void;
   setOtherDetect: (key: "detect_steam" | "detect_curated", value: boolean) => void;
@@ -840,69 +768,67 @@ export function AutoSection({
     lol: {
       meta: gameMeta("lol"),
       mode: lol.auto_capture_mode,
-      setMode: setLolMode,
+      setMode: (m) => setGameMode("lol", m),
       disabled: lol.disabled,
-      setDisabled: setLolDisabled,
+      setDisabled: (v) => setGameDisabled("lol", v),
       events: LOL_EVENT_LABELS,
       enabled: (k) => lol.events[k as keyof LolEventToggles],
-      toggleEvent: (k) => toggleLolEvent(k as keyof LolEventToggles),
+      toggleEvent: (k) => toggleGameEvent("lol", k),
       timing: (k) => lol.event_timings[k as keyof LolEventToggles],
-      setTimingLocal: (k, f, v) => setLolTimingLocal(k as keyof LolEventToggles, f, v),
-      commitTiming: (k, f, v) => commitLolTiming(k as keyof LolEventToggles, f, v),
+      setTimingLocal: (k, f, v) => setGameTimingLocal("lol", k, f, v),
+      commitTiming: (k, f, v) => commitGameTiming("lol", k, f, v),
     },
     rematch: {
       meta: gameMeta("rematch"),
       mode: rematch.auto_capture_mode,
-      setMode: setRematchMode,
+      setMode: (m) => setGameMode("rematch", m),
       disabled: rematch.disabled,
-      setDisabled: setRematchDisabled,
+      setDisabled: (v) => setGameDisabled("rematch", v),
       events: REMATCH_EVENT_LABELS,
       enabled: (k) => rematch.events[k as keyof RematchEventToggles],
-      toggleEvent: (k) => toggleRematchEvent(k as keyof RematchEventToggles),
+      toggleEvent: (k) => toggleGameEvent("rematch", k),
       timing: (k) => rematch.event_timings[k as keyof RematchEventToggles],
-      setTimingLocal: (k, f, v) => setRematchTimingLocal(k as keyof RematchEventToggles, f, v),
-      commitTiming: (k, f, v) => commitRematchTiming(k as keyof RematchEventToggles, f, v),
+      setTimingLocal: (k, f, v) => setGameTimingLocal("rematch", k, f, v),
+      commitTiming: (k, f, v) => commitGameTiming("rematch", k, f, v),
     },
     cs2: {
       meta: gameMeta("cs2"),
       mode: cs2.auto_capture_mode,
-      setMode: setCs2Mode,
+      setMode: (m) => setGameMode("cs2", m),
       disabled: cs2.disabled,
-      setDisabled: setCs2Disabled,
+      setDisabled: (v) => setGameDisabled("cs2", v),
       events: CS2_EVENT_LABELS,
       enabled: (k) => cs2.events[k as keyof Cs2EventToggles],
-      toggleEvent: (k) => toggleCs2Event(k as keyof Cs2EventToggles),
+      toggleEvent: (k) => toggleGameEvent("cs2", k),
       timing: (k) => cs2.event_timings[k as keyof Cs2EventToggles],
-      setTimingLocal: (k, f, v) => setCs2TimingLocal(k as keyof Cs2EventToggles, f, v),
-      commitTiming: (k, f, v) => commitCs2Timing(k as keyof Cs2EventToggles, f, v),
+      setTimingLocal: (k, f, v) => setGameTimingLocal("cs2", k, f, v),
+      commitTiming: (k, f, v) => commitGameTiming("cs2", k, f, v),
     },
     dota2: {
       meta: gameMeta("dota2"),
       mode: dota2.auto_capture_mode,
-      setMode: setDota2Mode,
+      setMode: (m) => setGameMode("dota2", m),
       disabled: dota2.disabled,
-      setDisabled: setDota2Disabled,
+      setDisabled: (v) => setGameDisabled("dota2", v),
       events: DOTA2_EVENT_LABELS,
       enabled: (k) => dota2.events[k as keyof Dota2EventToggles],
-      toggleEvent: (k) => toggleDota2Event(k as keyof Dota2EventToggles),
+      toggleEvent: (k) => toggleGameEvent("dota2", k),
       timing: (k) => dota2.event_timings[k as keyof Dota2EventToggles],
-      setTimingLocal: (k, f, v) => setDota2TimingLocal(k as keyof Dota2EventToggles, f, v),
-      commitTiming: (k, f, v) => commitDota2Timing(k as keyof Dota2EventToggles, f, v),
+      setTimingLocal: (k, f, v) => setGameTimingLocal("dota2", k, f, v),
+      commitTiming: (k, f, v) => commitGameTiming("dota2", k, f, v),
     },
     warthunder: {
       meta: gameMeta("warthunder"),
       mode: warthunder.auto_capture_mode,
-      setMode: setWarThunderMode,
+      setMode: (m) => setGameMode("warthunder", m),
       disabled: warthunder.disabled,
-      setDisabled: setWarThunderDisabled,
+      setDisabled: (v) => setGameDisabled("warthunder", v),
       events: WARTHUNDER_EVENT_LABELS,
       enabled: (k) => warthunder.events[k as keyof WarThunderEventToggles],
-      toggleEvent: (k) => toggleWarThunderEvent(k as keyof WarThunderEventToggles),
+      toggleEvent: (k) => toggleGameEvent("warthunder", k),
       timing: (k) => warthunder.event_timings[k as keyof WarThunderEventToggles],
-      setTimingLocal: (k, f, v) =>
-        setWarThunderTimingLocal(k as keyof WarThunderEventToggles, f, v),
-      commitTiming: (k, f, v) =>
-        commitWarThunderTiming(k as keyof WarThunderEventToggles, f, v),
+      setTimingLocal: (k, f, v) => setGameTimingLocal("warthunder", k, f, v),
+      commitTiming: (k, f, v) => commitGameTiming("warthunder", k, f, v),
       nickname: {
         label: "In-game nickname",
         hint: "War Thunder's combat log is free text, so Hako matches this name to know which kills and deaths are yours. Enter it exactly as it appears in-game.",
@@ -915,15 +841,15 @@ export function AutoSection({
     pubg: {
       meta: gameMeta("pubg"),
       mode: pubg.auto_capture_mode,
-      setMode: setPubgMode,
+      setMode: (m) => setGameMode("pubg", m),
       disabled: pubg.disabled,
-      setDisabled: setPubgDisabled,
+      setDisabled: (v) => setGameDisabled("pubg", v),
       events: PUBG_EVENT_LABELS,
       enabled: (k) => pubg.events[k as keyof PubgEventToggles],
-      toggleEvent: (k) => togglePubgEvent(k as keyof PubgEventToggles),
+      toggleEvent: (k) => toggleGameEvent("pubg", k),
       timing: (k) => pubg.event_timings[k as keyof PubgEventToggles],
-      setTimingLocal: (k, f, v) => setPubgTimingLocal(k as keyof PubgEventToggles, f, v),
-      commitTiming: (k, f, v) => commitPubgTiming(k as keyof PubgEventToggles, f, v),
+      setTimingLocal: (k, f, v) => setGameTimingLocal("pubg", k, f, v),
+      commitTiming: (k, f, v) => commitGameTiming("pubg", k, f, v),
     },
   };
 

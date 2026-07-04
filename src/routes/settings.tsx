@@ -20,15 +20,11 @@ import {
   countClipsIn,
   getGpuInfo,
   migrateClipsTo,
+  type EventTiming,
   type EventToggles,
   type GameModeToggles,
-  type LolEventToggles,
-  type RematchEventToggles,
-  type Cs2EventToggles,
-  type Dota2EventToggles,
-  type WarThunderEventToggles,
-  type PubgEventToggles,
   type AutoCaptureMode,
+  type SmartGameKey,
   type Settings,
 } from "@/lib/api";
 import {
@@ -228,295 +224,85 @@ function SettingsPage() {
     if (d) persist(timingNext(d, key, field, value));
   };
 
-  // --- League (per-game) auto-capture handlers, operating on games.lol -------
-  const setLolMode = (mode: AutoCaptureMode) => {
-    const d = draftRef.current;
-    if (d)
-      persist({
-        ...d,
-        games: { ...d.games, lol: { ...d.games.lol, auto_capture_mode: mode } },
-      });
-  };
-  const setLolDisabled = (disabled: boolean) => {
-    const d = draftRef.current;
-    if (d)
-      persist({
-        ...d,
-        games: { ...d.games, lol: { ...d.games.lol, disabled } },
-      });
-  };
-  const toggleLolEvent = (key: keyof LolEventToggles) => {
-    const d = draftRef.current;
-    if (d)
-      persist({
-        ...d,
-        games: {
-          ...d.games,
-          lol: {
-            ...d.games.lol,
-            events: { ...d.games.lol.events, [key]: !d.games.lol.events[key] },
-          },
-        },
-      });
-  };
-  const lolTimingNext = (
-    d: Settings,
-    key: keyof LolEventToggles,
-    field: "before" | "after",
-    value: number
-  ): Settings => ({
+  // --- Smart per-game auto-capture handlers, keyed by game id ----------------
+  // Every smart game's settings slice (`games.lol`, `games.cs2`, …) shares the
+  // same shape, so one generic set of handlers keyed by `SmartGameKey` drives
+  // all of them — adding a game needs no new handler here, just a registry
+  // entry + a model builder in AutoSection. The event key/field are `string`
+  // because the generic auto-capture card is game-agnostic; each game's own
+  // toggle/timing types stay enforced where the card reads them back out.
+  //
+  // The casts are confined to this seam: the dynamic `[eventKey]` write can't be
+  // expressed against the per-game union without naming each game, which is the
+  // duplication we're removing. Reads elsewhere remain fully typed.
+  type GameSlice = Settings["games"][SmartGameKey];
+  const patchGame = (d: Settings, key: SmartGameKey, slice: GameSlice): Settings => ({
     ...d,
-    games: {
-      ...d.games,
-      lol: {
-        ...d.games.lol,
-        event_timings: {
-          ...d.games.lol.event_timings,
-          [key]: { ...d.games.lol.event_timings[key], [field]: value },
-        },
-      },
-    },
+    games: { ...d.games, [key]: slice } as Settings["games"],
   });
-  const setLolTimingLocal = (
-    key: keyof LolEventToggles,
-    field: "before" | "after",
-    value: number
-  ) => {
+  const setGameMode = (key: SmartGameKey, mode: AutoCaptureMode) => {
     const d = draftRef.current;
-    if (d) setDraft(lolTimingNext(d, key, field, value));
+    if (d) persist(patchGame(d, key, { ...d.games[key], auto_capture_mode: mode }));
   };
-  const commitLolTiming = (
-    key: keyof LolEventToggles,
+  const setGameDisabled = (key: SmartGameKey, disabled: boolean) => {
+    const d = draftRef.current;
+    if (d) persist(patchGame(d, key, { ...d.games[key], disabled }));
+  };
+  const toggleGameEvent = (key: SmartGameKey, eventKey: string) => {
+    const d = draftRef.current;
+    if (!d) return;
+    const slice = d.games[key];
+    const events = slice.events as unknown as Record<string, boolean>;
+    persist(
+      patchGame(d, key, {
+        ...slice,
+        events: { ...events, [eventKey]: !events[eventKey] },
+      } as unknown as GameSlice)
+    );
+  };
+  // Live drag applies locally (`setGameTimingLocal`, no save per pixel); release
+  // persists (`commitGameTiming`). Both take the explicit value so a single
+  // click — where onValueChange + onValueCommit fire in one tick — still saves.
+  const gameTimingSlice = (
+    slice: GameSlice,
+    eventKey: string,
+    field: "before" | "after",
+    value: number
+  ): GameSlice => {
+    const timings = slice.event_timings as unknown as Record<string, EventTiming>;
+    return {
+      ...slice,
+      event_timings: {
+        ...timings,
+        [eventKey]: { ...timings[eventKey], [field]: value },
+      },
+    } as unknown as GameSlice;
+  };
+  const setGameTimingLocal = (
+    key: SmartGameKey,
+    eventKey: string,
     field: "before" | "after",
     value: number
   ) => {
     const d = draftRef.current;
-    if (d) persist(lolTimingNext(d, key, field, value));
+    if (d) setDraft(patchGame(d, key, gameTimingSlice(d.games[key], eventKey, field, value)));
+  };
+  const commitGameTiming = (
+    key: SmartGameKey,
+    eventKey: string,
+    field: "before" | "after",
+    value: number
+  ) => {
+    const d = draftRef.current;
+    if (d) persist(patchGame(d, key, gameTimingSlice(d.games[key], eventKey, field, value)));
   };
 
-  // --- Rematch (per-game) auto-capture handlers, operating on games.rematch ---
-  const setRematchMode = (mode: AutoCaptureMode) => {
-    const d = draftRef.current;
-    if (d)
-      persist({
-        ...d,
-        games: { ...d.games, rematch: { ...d.games.rematch, auto_capture_mode: mode } },
-      });
-  };
-  const setRematchDisabled = (disabled: boolean) => {
-    const d = draftRef.current;
-    if (d)
-      persist({
-        ...d,
-        games: { ...d.games, rematch: { ...d.games.rematch, disabled } },
-      });
-  };
-  const toggleRematchEvent = (key: keyof RematchEventToggles) => {
-    const d = draftRef.current;
-    if (d)
-      persist({
-        ...d,
-        games: {
-          ...d.games,
-          rematch: {
-            ...d.games.rematch,
-            events: { ...d.games.rematch.events, [key]: !d.games.rematch.events[key] },
-          },
-        },
-      });
-  };
-  const rematchTimingNext = (
-    d: Settings,
-    key: keyof RematchEventToggles,
-    field: "before" | "after",
-    value: number
-  ): Settings => ({
-    ...d,
-    games: {
-      ...d.games,
-      rematch: {
-        ...d.games.rematch,
-        event_timings: {
-          ...d.games.rematch.event_timings,
-          [key]: { ...d.games.rematch.event_timings[key], [field]: value },
-        },
-      },
-    },
-  });
-  const setRematchTimingLocal = (
-    key: keyof RematchEventToggles,
-    field: "before" | "after",
-    value: number
-  ) => {
-    const d = draftRef.current;
-    if (d) setDraft(rematchTimingNext(d, key, field, value));
-  };
-  const commitRematchTiming = (
-    key: keyof RematchEventToggles,
-    field: "before" | "after",
-    value: number
-  ) => {
-    const d = draftRef.current;
-    if (d) persist(rematchTimingNext(d, key, field, value));
-  };
-
-  // --- CS2 (per-game) auto-capture handlers, operating on games.cs2 ----------
-  const setCs2Mode = (mode: AutoCaptureMode) => {
-    const d = draftRef.current;
-    if (d)
-      persist({
-        ...d,
-        games: { ...d.games, cs2: { ...d.games.cs2, auto_capture_mode: mode } },
-      });
-  };
-  const setCs2Disabled = (disabled: boolean) => {
-    const d = draftRef.current;
-    if (d)
-      persist({
-        ...d,
-        games: { ...d.games, cs2: { ...d.games.cs2, disabled } },
-      });
-  };
-  const toggleCs2Event = (key: keyof Cs2EventToggles) => {
-    const d = draftRef.current;
-    if (d)
-      persist({
-        ...d,
-        games: {
-          ...d.games,
-          cs2: {
-            ...d.games.cs2,
-            events: { ...d.games.cs2.events, [key]: !d.games.cs2.events[key] },
-          },
-        },
-      });
-  };
-  const cs2TimingNext = (
-    d: Settings,
-    key: keyof Cs2EventToggles,
-    field: "before" | "after",
-    value: number
-  ): Settings => ({
-    ...d,
-    games: {
-      ...d.games,
-      cs2: {
-        ...d.games.cs2,
-        event_timings: {
-          ...d.games.cs2.event_timings,
-          [key]: { ...d.games.cs2.event_timings[key], [field]: value },
-        },
-      },
-    },
-  });
-  const setCs2TimingLocal = (
-    key: keyof Cs2EventToggles,
-    field: "before" | "after",
-    value: number
-  ) => {
-    const d = draftRef.current;
-    if (d) setDraft(cs2TimingNext(d, key, field, value));
-  };
-  const commitCs2Timing = (
-    key: keyof Cs2EventToggles,
-    field: "before" | "after",
-    value: number
-  ) => {
-    const d = draftRef.current;
-    if (d) persist(cs2TimingNext(d, key, field, value));
-  };
-
-  // --- Dota 2 (per-game) auto-capture handlers, operating on games.dota2 -----
-  const setDota2Mode = (mode: AutoCaptureMode) => {
-    const d = draftRef.current;
-    if (d)
-      persist({
-        ...d,
-        games: { ...d.games, dota2: { ...d.games.dota2, auto_capture_mode: mode } },
-      });
-  };
-  const setDota2Disabled = (disabled: boolean) => {
-    const d = draftRef.current;
-    if (d)
-      persist({
-        ...d,
-        games: { ...d.games, dota2: { ...d.games.dota2, disabled } },
-      });
-  };
-  const toggleDota2Event = (key: keyof Dota2EventToggles) => {
-    const d = draftRef.current;
-    if (d)
-      persist({
-        ...d,
-        games: {
-          ...d.games,
-          dota2: {
-            ...d.games.dota2,
-            events: { ...d.games.dota2.events, [key]: !d.games.dota2.events[key] },
-          },
-        },
-      });
-  };
-  const dota2TimingNext = (
-    d: Settings,
-    key: keyof Dota2EventToggles,
-    field: "before" | "after",
-    value: number
-  ): Settings => ({
-    ...d,
-    games: {
-      ...d.games,
-      dota2: {
-        ...d.games.dota2,
-        event_timings: {
-          ...d.games.dota2.event_timings,
-          [key]: { ...d.games.dota2.event_timings[key], [field]: value },
-        },
-      },
-    },
-  });
-  const setDota2TimingLocal = (
-    key: keyof Dota2EventToggles,
-    field: "before" | "after",
-    value: number
-  ) => {
-    const d = draftRef.current;
-    if (d) setDraft(dota2TimingNext(d, key, field, value));
-  };
-  const commitDota2Timing = (
-    key: keyof Dota2EventToggles,
-    field: "before" | "after",
-    value: number
-  ) => {
-    const d = draftRef.current;
-    if (d) persist(dota2TimingNext(d, key, field, value));
-  };
-
-  // --- War Thunder (per-game) auto-capture handlers, on games.warthunder -----
-  const setWarThunderMode = (mode: AutoCaptureMode) => {
-    const d = draftRef.current;
-    if (d)
-      persist({
-        ...d,
-        games: {
-          ...d.games,
-          warthunder: { ...d.games.warthunder, auto_capture_mode: mode },
-        },
-      });
-  };
-  const setWarThunderDisabled = (disabled: boolean) => {
-    const d = draftRef.current;
-    if (d)
-      persist({
-        ...d,
-        games: { ...d.games, warthunder: { ...d.games.warthunder, disabled } },
-      });
-  };
+  // War Thunder's nickname is the one game-specific field (its combat log is
+  // free text). Free-text ⇒ apply locally per keystroke, persist on blur.
   const warThunderNicknameNext = (d: Settings, nickname: string): Settings => ({
     ...d,
     games: { ...d.games, warthunder: { ...d.games.warthunder, nickname } },
   });
-  // Nickname is a free-text field: apply locally per keystroke, persist on blur.
   const setWarThunderNickname = (nickname: string) => {
     const d = draftRef.current;
     if (d) setDraft(warThunderNicknameNext(d, nickname));
@@ -524,123 +310,6 @@ function SettingsPage() {
   const commitWarThunderNickname = (nickname: string) => {
     const d = draftRef.current;
     if (d) persist(warThunderNicknameNext(d, nickname));
-  };
-  const toggleWarThunderEvent = (key: keyof WarThunderEventToggles) => {
-    const d = draftRef.current;
-    if (d)
-      persist({
-        ...d,
-        games: {
-          ...d.games,
-          warthunder: {
-            ...d.games.warthunder,
-            events: {
-              ...d.games.warthunder.events,
-              [key]: !d.games.warthunder.events[key],
-            },
-          },
-        },
-      });
-  };
-  const warThunderTimingNext = (
-    d: Settings,
-    key: keyof WarThunderEventToggles,
-    field: "before" | "after",
-    value: number
-  ): Settings => ({
-    ...d,
-    games: {
-      ...d.games,
-      warthunder: {
-        ...d.games.warthunder,
-        event_timings: {
-          ...d.games.warthunder.event_timings,
-          [key]: { ...d.games.warthunder.event_timings[key], [field]: value },
-        },
-      },
-    },
-  });
-  const setWarThunderTimingLocal = (
-    key: keyof WarThunderEventToggles,
-    field: "before" | "after",
-    value: number
-  ) => {
-    const d = draftRef.current;
-    if (d) setDraft(warThunderTimingNext(d, key, field, value));
-  };
-  const commitWarThunderTiming = (
-    key: keyof WarThunderEventToggles,
-    field: "before" | "after",
-    value: number
-  ) => {
-    const d = draftRef.current;
-    if (d) persist(warThunderTimingNext(d, key, field, value));
-  };
-
-  // --- PUBG (per-game) auto-capture handlers, operating on games.pubg --------
-  const setPubgMode = (mode: AutoCaptureMode) => {
-    const d = draftRef.current;
-    if (d)
-      persist({
-        ...d,
-        games: { ...d.games, pubg: { ...d.games.pubg, auto_capture_mode: mode } },
-      });
-  };
-  const setPubgDisabled = (disabled: boolean) => {
-    const d = draftRef.current;
-    if (d)
-      persist({
-        ...d,
-        games: { ...d.games, pubg: { ...d.games.pubg, disabled } },
-      });
-  };
-  const togglePubgEvent = (key: keyof PubgEventToggles) => {
-    const d = draftRef.current;
-    if (d)
-      persist({
-        ...d,
-        games: {
-          ...d.games,
-          pubg: {
-            ...d.games.pubg,
-            events: { ...d.games.pubg.events, [key]: !d.games.pubg.events[key] },
-          },
-        },
-      });
-  };
-  const pubgTimingNext = (
-    d: Settings,
-    key: keyof PubgEventToggles,
-    field: "before" | "after",
-    value: number
-  ): Settings => ({
-    ...d,
-    games: {
-      ...d.games,
-      pubg: {
-        ...d.games.pubg,
-        event_timings: {
-          ...d.games.pubg.event_timings,
-          [key]: { ...d.games.pubg.event_timings[key], [field]: value },
-        },
-      },
-    },
-  });
-  const setPubgTimingLocal = (
-    key: keyof PubgEventToggles,
-    field: "before" | "after",
-    value: number
-  ) => {
-    const d = draftRef.current;
-    if (d) setDraft(pubgTimingNext(d, key, field, value));
-  };
-  const commitPubgTiming = (
-    key: keyof PubgEventToggles,
-    field: "before" | "after",
-    value: number
-  ) => {
-    const d = draftRef.current;
-    if (d) persist(pubgTimingNext(d, key, field, value));
   };
 
   // --- Other Games (generic "record any game") handlers, on games.other ------
@@ -752,38 +421,13 @@ function SettingsPage() {
               toggleGameMode={toggleGameMode}
               setTimingLocal={setTimingLocal}
               commitTiming={commitTiming}
-              setLolMode={setLolMode}
-              setLolDisabled={setLolDisabled}
-              toggleLolEvent={toggleLolEvent}
-              setLolTimingLocal={setLolTimingLocal}
-              commitLolTiming={commitLolTiming}
-              setRematchMode={setRematchMode}
-              setRematchDisabled={setRematchDisabled}
-              toggleRematchEvent={toggleRematchEvent}
-              setRematchTimingLocal={setRematchTimingLocal}
-              commitRematchTiming={commitRematchTiming}
-              setCs2Mode={setCs2Mode}
-              setCs2Disabled={setCs2Disabled}
-              toggleCs2Event={toggleCs2Event}
-              setCs2TimingLocal={setCs2TimingLocal}
-              commitCs2Timing={commitCs2Timing}
-              setDota2Mode={setDota2Mode}
-              setDota2Disabled={setDota2Disabled}
-              toggleDota2Event={toggleDota2Event}
-              setDota2TimingLocal={setDota2TimingLocal}
-              commitDota2Timing={commitDota2Timing}
-              setWarThunderMode={setWarThunderMode}
-              setWarThunderDisabled={setWarThunderDisabled}
+              setGameMode={setGameMode}
+              setGameDisabled={setGameDisabled}
+              toggleGameEvent={toggleGameEvent}
+              setGameTimingLocal={setGameTimingLocal}
+              commitGameTiming={commitGameTiming}
               setWarThunderNickname={setWarThunderNickname}
               commitWarThunderNickname={commitWarThunderNickname}
-              toggleWarThunderEvent={toggleWarThunderEvent}
-              setWarThunderTimingLocal={setWarThunderTimingLocal}
-              commitWarThunderTiming={commitWarThunderTiming}
-              setPubgMode={setPubgMode}
-              setPubgDisabled={setPubgDisabled}
-              togglePubgEvent={togglePubgEvent}
-              setPubgTimingLocal={setPubgTimingLocal}
-              commitPubgTiming={commitPubgTiming}
               setOtherMode={setOtherMode}
               setOtherDisabled={setOtherDisabled}
               setOtherDetect={setOtherDetect}

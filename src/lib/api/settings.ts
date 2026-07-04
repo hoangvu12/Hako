@@ -295,6 +295,15 @@ export interface GamesSettings {
   other: OtherGamesSettings;
 }
 
+/**
+ * The "smart" per-game settings keys — every game that has an event feed, i.e.
+ * everything in `GamesSettings` except the generic `other` bucket. All of these
+ * slices share the same shape (`auto_capture_mode` / `disabled` / `events` /
+ * `event_timings`), which is what lets the settings UI drive them through one
+ * generic set of handlers keyed by this id instead of a per-game handler each.
+ */
+export type SmartGameKey = Exclude<keyof GamesSettings, "other">;
+
 /** Mirrors the Rust `Settings` (src-tauri/src/settings.rs). */
 export interface Settings {
   target_fps: number;
