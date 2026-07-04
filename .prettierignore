@@ -1,0 +1,20 @@
+# Build output
+dist
+dist-ssr
+
+# Dependencies
+node_modules
+
+# Bun lockfile (generated)
+bun.lock
+
+# Rust / Tauri — the backend side; its config/data JSON isn't ours to reformat.
+src-tauri
+
+# Internal working docs (kept out of the frontend format pass).
+HANDOFF.md
+
+# Local-only / generated
+.medal-decomp
+.mimir
+docs

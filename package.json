@@ -9,7 +9,11 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "doctor": "npx react-doctor@latest"
+    "doctor": "npx react-doctor@latest",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier . --write",
+    "format:check": "prettier . --check"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
@@ -32,6 +36,7 @@
     "tailwind-merge": "^2.6.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@tailwindcss/vite": "^4.0.0",
     "@tanstack/react-query-devtools": "^5.62.0",
     "@tanstack/router-devtools": "^1.95.0",
@@ -40,11 +45,16 @@
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
     "babel-plugin-react-compiler": "^1.0.0",
+    "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.3",
+    "globals": "^17.7.0",
+    "prettier": "^3.9.4",
     "react-scan": "^0.5.7",
     "tailwindcss": "^4.0.0",
     "tw-animate-css": "^1.2.0",
     "typescript": "^5.7.0",
+    "typescript-eslint": "^8.62.1",
     "vite": "^6.0.0"
   }
 }
