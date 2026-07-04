@@ -11,9 +11,16 @@ frontend; `cargo check` + 202 tests + clippy for Rust). Working tree is clean.
 ## Follow-up session (branch `refactor/integration-engine`)
 
 Picked up #7 and #8. Net outcome: **#7 fully implemented** (engine + finalizer) and
-**#8 fully implemented** (the `event_config!` macro). Only the #7 run-loop engine
-still needs real-game verification before merge; #8 is a zero-migration-risk pure
-refactor and is done. Not yet merged to `main`.
+**#8 fully implemented** (the `event_config!` macro). **Both are now merged to `main`
+and shipped as `v1.8.0`** (see below) — the refactor plan is complete.
+
+> **⚠ Open verification for the next session:** `v1.8.0` shipped the #7 run-loop
+> engine (`4d41200`) *without* real-game testing — a deliberate call (solo app, no
+> other users, owner will test on live games). `cargo test` can't cover the async
+> run-loop timing, so the auto-clip capture path per game is **unverified in
+> practice**. If the owner reports a game where auto-capture doesn't start or a clip
+> doesn't land, that's the first place to look. #8 is fully verified and carries no
+> such risk (on-disk format byte-identical, golden tests).
 
 | Commit | What |
 |--------|------|
