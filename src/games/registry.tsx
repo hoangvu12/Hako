@@ -156,12 +156,7 @@ export function gameMeta(id: GameId): GameMeta {
  */
 export function clipGame(game: string | null | undefined): GameId {
   if (!game) return "valorant"; // legacy null (backfilled to Valorant)
-  if (game === "lol") return "lol";
-  if (game === "rematch") return "rematch";
-  if (game === "valorant") return "valorant";
-  if (game === "cs2") return "cs2";
-  if (game === "dota2") return "dota2";
-  if (game === "warthunder") return "warthunder";
-  if (game === "pubg") return "pubg";
-  return "other";
+  // Any id the registry knows maps to itself; a real game title (generic clips
+  // store the actual title, e.g. "Elden Ring") isn't a registered id → "other".
+  return BY_ID.has(game as GameId) ? (game as GameId) : "other";
 }
