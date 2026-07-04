@@ -19,16 +19,15 @@ use async_trait::async_trait;
 use tauri::{AppHandle, Manager};
 
 use crate::commands::SettingsState;
-use crate::core::clock::{now_ticks, TICKS_PER_SECOND};
+use crate::core::clock::now_ticks;
 use crate::games::cs2::detect;
 use crate::games::cs2::events::{Cs2Context, Cs2EventTimings, Cs2EventToggles, Cs2Tracker};
 use crate::games::cs2::gsi::Cs2Gsi;
 use crate::games::cs2::payload;
 use crate::games::event::EventKind;
 use crate::games::recording::{
-    clip_window_span, cut_placed_windows, finish_full_session, game_auto_mode,
-    game_capture_disabled, manage_full_session, save_whole_session, AutoCaptureState, CutWindows,
-    GameCtx, RecordingSession,
+    finish_and_cut, finish_full_session, game_auto_mode, game_capture_disabled,
+    manage_full_session, AutoCaptureState, GameCtx, MatchCut, RecordingSession,
 };
 use crate::games::{GameId, GameIntegration};
 use crate::settings::AutoCaptureMode;
@@ -226,78 +225,29 @@ fn end_match(
     toggles: Cs2EventToggles,
     timings: Cs2EventTimings,
 ) {
-    let fps = am.rec.fps.max(1);
-    let cs2_ctx = am.ctx;
-    let events = am.events;
-
+    let Cs2Active { rec, events, ctx } = am;
     tracing::info!("cs2: match end — {} highlight event(s) collected", events.len());
-
-    let Some((path, output)) = am.rec.finish() else {
-        return;
-    };
-    let timeline = output.timeline;
-    let frozen_spans = output.frozen_spans;
-    let app = app.clone();
-
-    tauri::async_runtime::spawn_blocking(move || {
-        let clip_context = cs2_ctx.clip_context();
-        let title_suffix = cs2_ctx.title_suffix();
-
-        if mode == AutoCaptureMode::FullMatch {
-            let title = if title_suffix.is_empty() {
-                "Full Match".to_string()
-            } else {
-                format!("Full Match — {title_suffix}")
-            };
-            if let Err(e) = save_whole_session(&app, &path, &title, "Full Match", clip_context) {
-                tracing::warn!("cs2: full-match save failed: {e}");
-            }
-            let _ = std::fs::remove_file(&path);
-            return;
-        }
-
-        // Highlights: reconcile each event's receipt wall-clock to a session PTS.
-        let tol = PLACEMENT_TOL_SECS * TICKS_PER_SECOND;
-        let mut placed: Vec<(i64, i64, EventKind)> = Vec::new();
-        let mut marks: Vec<(i64, EventKind)> = Vec::new();
-        let max_len_pts = MAX_AUTOCLIP_SECS * fps as i64;
-        for (kind, wall) in &events {
-            let Some(pts) = timeline.pts_at_within(*wall, tol) else {
-                continue;
-            };
-            let t = timings.for_kind(*kind);
-            let (s, end) = clip_window_span(pts, pts, t.before, t.after, fps);
-            let end = end.min(s + max_len_pts);
-            placed.push((s, end, *kind));
-            marks.push((pts, *kind));
-        }
-        tracing::info!(
-            "cs2: placed {}/{} event(s) onto the recorded timeline",
-            placed.len(),
-            events.len()
-        );
-        if placed.is_empty() {
-            tracing::info!("cs2: no enabled highlights landed in the recording");
-            let _ = std::fs::remove_file(&path);
-            return;
-        }
-        cut_placed_windows(
-            &CutWindows {
-                app: &app,
-                session_path: &path,
-                frozen_spans: &frozen_spans,
-                fps,
-                max_clip_secs: MAX_AUTOCLIP_SECS,
-                merge_after_secs: timings.max_after(&toggles),
-                game_label: "Counter-Strike 2",
-                title_suffix: &title_suffix,
-                clip_context,
-            },
-            &placed,
-            &marks,
-        );
-        let _ = std::fs::remove_file(&path);
-    });
+    let merge_after_secs = timings.max_after(&toggles);
+    let title_suffix = ctx.title_suffix();
+    let clip_context = ctx.clip_context();
+    finish_and_cut(
+        app,
+        rec,
+        MatchCut {
+            events,
+            mode,
+            max_clip_secs: MAX_AUTOCLIP_SECS,
+            placement_tol_secs: PLACEMENT_TOL_SECS,
+            merge_after_secs,
+            game_label: "Counter-Strike 2",
+            title_suffix,
+            clip_context,
+        },
+        move |kind| {
+            let t = timings.for_kind(kind);
+            (t.before, t.after)
+        },
+    );
 }
 
 /// The user's CS2 event toggles + timings (defaults when unavailable).

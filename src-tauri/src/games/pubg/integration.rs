@@ -21,16 +21,15 @@ use async_trait::async_trait;
 use tauri::{AppHandle, Manager};
 
 use crate::commands::SettingsState;
-use crate::core::clock::{now_ticks, TICKS_PER_SECOND};
+use crate::core::clock::now_ticks;
 use crate::games::event::EventKind;
 use crate::games::pubg::detect;
 use crate::games::pubg::events::{PubgEventTimings, PubgEventToggles};
 use crate::games::pubg::parse;
 use crate::games::pubg::watch;
 use crate::games::recording::{
-    clip_window_span, cut_placed_windows, finish_full_session, game_auto_mode,
-    game_capture_disabled, manage_full_session, save_whole_session, AutoCaptureState, CutWindows,
-    GameCtx, RecordingSession,
+    finish_and_cut, finish_full_session, game_auto_mode, game_capture_disabled,
+    manage_full_session, AutoCaptureState, GameCtx, MatchCut, RecordingSession,
 };
 use crate::games::timeline::TICKS_PER_MS;
 use crate::games::{GameId, GameIntegration};
@@ -270,79 +269,42 @@ fn end_match(
     toggles: PubgEventToggles,
     timings: PubgEventTimings,
 ) {
-    let fps = am.rec.fps.max(1);
-    let pubg_ctx = am.ctx;
-    let anchor_unix_ms = am.anchor_unix_ms;
-    let anchor_ticks = am.anchor_ticks;
-
+    let PubgActive {
+        rec,
+        anchor_unix_ms,
+        anchor_ticks,
+        ctx,
+    } = am;
     tracing::info!("pubg: match end — {} highlight event(s) collected", events.len());
 
-    let Some((path, output)) = am.rec.finish() else {
-        return;
-    };
-    let timeline = output.timeline;
-    let frozen_spans = output.frozen_spans;
-    let app = app.clone();
+    // Map each replay Unix-ms time onto the capture clock via the session anchor,
+    // keeping only the user's enabled kinds. Unlike the live-feed games (which
+    // filter at receipt), PUBG collects every demo event and filters here.
+    let events: Vec<(EventKind, i64)> = events
+        .into_iter()
+        .filter(|(kind, _)| toggles.enabled(*kind))
+        .map(|(kind, unix_ms)| (kind, anchor_ticks + (unix_ms - anchor_unix_ms) * TICKS_PER_MS))
+        .collect();
 
-    tauri::async_runtime::spawn_blocking(move || {
-        let clip_context = pubg_ctx.clip_context();
-        let title_suffix = String::new();
-
-        if mode == AutoCaptureMode::FullMatch {
-            if let Err(e) = save_whole_session(&app, &path, "Full Match", "Full Match", clip_context) {
-                tracing::warn!("pubg: full-match save failed: {e}");
-            }
-            let _ = std::fs::remove_file(&path);
-            return;
-        }
-
-        // Highlights: map each replay Unix-ms time onto the capture clock via the
-        // session anchor, then reconcile to a session PTS.
-        let tol = PLACEMENT_TOL_SECS * TICKS_PER_SECOND;
-        let mut placed: Vec<(i64, i64, EventKind)> = Vec::new();
-        let mut marks: Vec<(i64, EventKind)> = Vec::new();
-        let max_len_pts = MAX_AUTOCLIP_SECS * fps as i64;
-        for (kind, unix_ms) in &events {
-            if !toggles.enabled(*kind) {
-                continue;
-            }
-            let wall = anchor_ticks + (unix_ms - anchor_unix_ms) * TICKS_PER_MS;
-            let Some(pts) = timeline.pts_at_within(wall, tol) else {
-                continue;
-            };
-            let t = timings.for_kind(*kind);
-            let (s, end) = clip_window_span(pts, pts, t.before, t.after, fps);
-            let end = end.min(s + max_len_pts);
-            placed.push((s, end, *kind));
-            marks.push((pts, *kind));
-        }
-        tracing::info!(
-            "pubg: placed {}/{} event(s) onto the recorded timeline",
-            placed.len(),
-            events.len()
-        );
-        if placed.is_empty() {
-            tracing::info!("pubg: no enabled highlights landed in the recording");
-            let _ = std::fs::remove_file(&path);
-            return;
-        }
-        cut_placed_windows(
-            &CutWindows {
-                app: &app,
-                session_path: &path,
-                frozen_spans: &frozen_spans,
-                fps,
-                max_clip_secs: MAX_AUTOCLIP_SECS,
-                merge_after_secs: timings.max_after(&toggles),
-                game_label: "PUBG",
-                title_suffix: &title_suffix,
-                clip_context,
-            },
-            &placed,
-            &marks,
-        );
-        let _ = std::fs::remove_file(&path);
-    });
+    let merge_after_secs = timings.max_after(&toggles);
+    finish_and_cut(
+        app,
+        rec,
+        MatchCut {
+            events,
+            mode,
+            max_clip_secs: MAX_AUTOCLIP_SECS,
+            placement_tol_secs: PLACEMENT_TOL_SECS,
+            merge_after_secs,
+            game_label: "PUBG",
+            title_suffix: String::new(),
+            clip_context: ctx.clip_context(),
+        },
+        move |kind| {
+            let t = timings.for_kind(kind);
+            (t.before, t.after)
+        },
+    );
 }
 
 /// The user's PUBG event toggles + timings (defaults when unavailable).

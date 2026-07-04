@@ -24,6 +24,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::{self, CaptureState, RecorderStatus};
 use crate::core::capture::{self, ClipBuffer};
+use crate::core::clock::TICKS_PER_SECOND;
 use crate::core::session::{SessionOutput, SessionWriter};
 use crate::events;
 use crate::games::event::EventKind;
@@ -616,6 +617,118 @@ pub fn save_whole_session(
     )?;
     tracing::info!("auto-clip: saved {event} ({:.0}s)", res.duration_secs);
     Ok(())
+}
+
+// ===========================================================================
+// finish_and_cut — the shared match-finalizer tail
+// ===========================================================================
+
+/// The per-game inputs to [`finish_and_cut`], beyond the finished session itself.
+/// Everything here is game-agnostic once the game has stamped its events onto the
+/// capture clock and resolved its own labels/context.
+pub struct MatchCut {
+    /// `(kind, wall_ticks)` for each clippable event, already on the capture clock
+    /// and already filtered to the user's enabled kinds.
+    pub events: Vec<(EventKind, i64)>,
+    /// The user's mode for this match (drives FullMatch vs Highlights).
+    pub mode: AutoCaptureMode,
+    /// Clamp each merged window to this many seconds (`MaxAutoClipLength`).
+    pub max_clip_secs: i64,
+    /// Slack (seconds) for landing an event's wall-clock on the recorded timeline.
+    pub placement_tol_secs: i64,
+    /// Merge tolerance handed to [`cut_placed_windows`] (widest enabled after-pad).
+    pub merge_after_secs: u32,
+    /// Display name of the game (logging + the honest "frozen" notice).
+    pub game_label: &'static str,
+    /// Clip title suffix (agent/champion/hero/…), empty for none.
+    pub title_suffix: String,
+    /// Game context (agent/map/mode/result/…) applied to every cut clip.
+    pub clip_context: NewClip,
+}
+
+/// Finish `rec`, then on a blocking task reconcile the collected events onto the
+/// recorded timeline and cut the per-event highlights — or, in FullMatch mode,
+/// save the whole match as one clip. The session temp file is always removed.
+///
+/// This is the tail every game's `end_match` used to inline verbatim; the only
+/// per-game knobs are carried in [`MatchCut`], and `pad_for` yields each kind's
+/// `(before, after)` clip padding in seconds (the game's `EventTimings::for_kind`).
+pub fn finish_and_cut(
+    app: &AppHandle,
+    rec: RecordingSession,
+    cut: MatchCut,
+    pad_for: impl Fn(EventKind) -> (u32, u32) + Send + 'static,
+) {
+    let fps = rec.fps.max(1);
+    let Some((path, output)) = rec.finish() else {
+        return;
+    };
+    let timeline = output.timeline;
+    let frozen_spans = output.frozen_spans;
+    let app = app.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        if cut.mode == AutoCaptureMode::FullMatch {
+            let title = if cut.title_suffix.is_empty() {
+                "Full Match".to_string()
+            } else {
+                format!("Full Match — {}", cut.title_suffix)
+            };
+            if let Err(e) =
+                save_whole_session(&app, &path, &title, "Full Match", cut.clip_context)
+            {
+                tracing::warn!("{}: full-match save failed: {e}", cut.game_label);
+            }
+            let _ = std::fs::remove_file(&path);
+            return;
+        }
+
+        // Highlights: reconcile each event's receipt wall-clock to a session PTS.
+        let tol = cut.placement_tol_secs * TICKS_PER_SECOND;
+        let mut placed: Vec<(i64, i64, EventKind)> = Vec::new();
+        let mut marks: Vec<(i64, EventKind)> = Vec::new();
+        let max_len_pts = cut.max_clip_secs * fps as i64;
+        for (kind, wall) in &cut.events {
+            let Some(pts) = timeline.pts_at_within(*wall, tol) else {
+                continue;
+            };
+            let (before, after) = pad_for(*kind);
+            let (s, end) = clip_window_span(pts, pts, before, after, fps);
+            let end = end.min(s + max_len_pts);
+            placed.push((s, end, *kind));
+            marks.push((pts, *kind));
+        }
+        tracing::info!(
+            "{}: placed {}/{} event(s) onto the recorded timeline",
+            cut.game_label,
+            placed.len(),
+            cut.events.len()
+        );
+        if placed.is_empty() {
+            tracing::info!(
+                "{}: no enabled highlights landed in the recording",
+                cut.game_label
+            );
+            let _ = std::fs::remove_file(&path);
+            return;
+        }
+        cut_placed_windows(
+            &CutWindows {
+                app: &app,
+                session_path: &path,
+                frozen_spans: &frozen_spans,
+                fps,
+                max_clip_secs: cut.max_clip_secs,
+                merge_after_secs: cut.merge_after_secs,
+                game_label: cut.game_label,
+                title_suffix: &cut.title_suffix,
+                clip_context: cut.clip_context,
+            },
+            &placed,
+            &marks,
+        );
+        let _ = std::fs::remove_file(&path);
+    });
 }
 
 /// Total overlap (session PTS) between clip window `[s, end)` and the frozen
