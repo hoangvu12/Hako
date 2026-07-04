@@ -9,6 +9,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { listAudioInputs, AUTO_DEVICE, type AudioConfig } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 import { SourceRow, VolumeSlider } from "./primitives";
 
 /**
@@ -24,7 +25,7 @@ export function MicRow({
   patch: (p: Partial<AudioConfig>) => void;
 }) {
   const { data: micDevices } = useQuery({
-    queryKey: ["audio-inputs"],
+    queryKey: queryKeys.audioInputs,
     queryFn: listAudioInputs,
     retry: false,
   });

@@ -5,7 +5,7 @@ import {
   cloudDownloadClip,
   cloudUploadClip,
 } from "@/lib/api";
-import { CLIPS_KEY, RETENTION_KEY, UPLOADS_KEY } from "./keys";
+import { queryKeys } from "@/lib/query-keys";
 
 // --- upload actions --------------------------------------------------------
 
@@ -15,7 +15,7 @@ export function useUploadClip() {
   return useMutation({
     mutationFn: ({ clipId, providerId }: { clipId: number; providerId?: string }) =>
       cloudUploadClip(clipId, providerId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: UPLOADS_KEY }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.cloudUploads }),
   });
 }
 
@@ -32,8 +32,8 @@ export function useDownloadClip() {
   return useMutation({
     mutationFn: (clipId: number) => cloudDownloadClip(clipId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: CLIPS_KEY });
-      qc.invalidateQueries({ queryKey: RETENTION_KEY });
+      qc.invalidateQueries({ queryKey: queryKeys.clips });
+      qc.invalidateQueries({ queryKey: queryKeys.cloudRetention });
     },
   });
 }

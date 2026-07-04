@@ -8,8 +8,9 @@ import {
   updateSettings,
   type Settings,
 } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 
-const SETTINGS_KEY = ["settings"];
+const SETTINGS_KEY = queryKeys.settings;
 
 export function useSettings() {
   return useQuery({ queryKey: SETTINGS_KEY, queryFn: getSettings, retry: false });
@@ -45,11 +46,11 @@ export function useStateHydrationBridge() {
     const refresh = async () => {
       await Promise.all([
         qc.cancelQueries({ queryKey: SETTINGS_KEY }),
-        qc.cancelQueries({ queryKey: ["clips"] }),
+        qc.cancelQueries({ queryKey: queryKeys.clips }),
       ]);
       if (cancelled) return;
       qc.invalidateQueries({ queryKey: SETTINGS_KEY });
-      qc.invalidateQueries({ queryKey: ["clips"] });
+      qc.invalidateQueries({ queryKey: queryKeys.clips });
     };
     const unlisten = listen(Events.StateHydrated, refresh).then((off) => {
       if (cancelled) {

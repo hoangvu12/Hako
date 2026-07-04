@@ -5,6 +5,7 @@ import { SpeakerHigh } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 import { Checkbox } from "@/components/ui/checkbox";
 import { listAudioOutputs, AUTO_DEVICE, type AudioConfig } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 import { Panel, SourceRow, VolumeSlider } from "./primitives";
 import { MicRow } from "./mic-row";
 
@@ -21,7 +22,7 @@ export function AllPcAudioPanel({
   patch: (p: Partial<AudioConfig>) => void;
 }) {
   const { data: outputs } = useQuery({
-    queryKey: ["audio-outputs"],
+    queryKey: queryKeys.audioOutputs,
     queryFn: listAudioOutputs,
     retry: false,
   });

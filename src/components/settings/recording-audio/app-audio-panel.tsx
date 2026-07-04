@@ -8,6 +8,7 @@ import {
   type AudioConfig,
   type AudioAppSel,
 } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 import { Panel, SourceRow, VolumeSlider } from "./primitives";
 import { MicRow } from "./mic-row";
 import { SESSION_BLACKLIST, upsertApp } from "./helpers";
@@ -26,7 +27,7 @@ export function AppAudioPanel({
   patch: (p: Partial<AudioConfig>) => void;
 }) {
   const { data: sessions } = useQuery({
-    queryKey: ["audio-sessions"],
+    queryKey: queryKeys.audioSessions,
     queryFn: listActiveAudioSessions,
     retry: false,
     refetchInterval: 3000,

@@ -10,14 +10,14 @@ import {
   type ProviderConfig,
   type ProviderSecrets,
 } from "@/lib/api";
-import { PROVIDERS_KEY } from "./keys";
+import { queryKeys } from "@/lib/query-keys";
 
 // --- providers -------------------------------------------------------------
 
 /** Configured cloud providers (no secrets). */
 export function useCloudProviders() {
   return useQuery({
-    queryKey: PROVIDERS_KEY,
+    queryKey: queryKeys.cloudProviders,
     queryFn: cloudListProviders,
     retry: false,
   });
@@ -34,7 +34,7 @@ export function useAddProvider() {
       config: ProviderConfig;
       secrets: ProviderSecrets;
     }) => cloudAddProvider(config, secrets),
-    onSuccess: () => qc.invalidateQueries({ queryKey: PROVIDERS_KEY }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.cloudProviders }),
   });
 }
 
@@ -53,7 +53,7 @@ export function useConnectOAuth() {
       folder?: string;
       label?: string;
     }) => cloudConnectOAuth(kind, folder, label),
-    onSuccess: () => qc.invalidateQueries({ queryKey: PROVIDERS_KEY }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.cloudProviders }),
   });
 }
 
@@ -62,7 +62,7 @@ export function useRemoveProvider() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => cloudRemoveProvider(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: PROVIDERS_KEY }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.cloudProviders }),
   });
 }
 

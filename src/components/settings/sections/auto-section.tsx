@@ -30,6 +30,7 @@ import {
 } from "@/components/settings/config";
 import { useValorantAssets } from "@/hooks/use-valorant-assets";
 import { GAMES, gameMeta, type GameId, type GameMeta } from "@/games/registry";
+import { queryKeys } from "@/lib/query-keys";
 import {
   listCustomGames,
   removeCustomGame,
@@ -550,10 +551,10 @@ function OtherGamesCard({
   const qc = useQueryClient();
 
   const { data: games = [] } = useQuery({
-    queryKey: ["custom-games"],
+    queryKey: queryKeys.customGames,
     queryFn: listCustomGames,
   });
-  const refresh = () => qc.invalidateQueries({ queryKey: ["custom-games"] });
+  const refresh = () => qc.invalidateQueries({ queryKey: queryKeys.customGames });
   const toggle = useMutation({
     mutationFn: ({ id, on }: { id: number; on: boolean }) =>
       setCustomGameEnabled(id, on),

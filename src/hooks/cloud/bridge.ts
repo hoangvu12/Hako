@@ -10,7 +10,7 @@ import {
   type CloudUploadProgress,
   type CloudUploadStatus as CloudUploadStatusEvent,
 } from "@/lib/api";
-import { CLIPS_KEY, UPLOADS_KEY } from "./keys";
+import { queryKeys } from "@/lib/query-keys";
 import { emitProgress, progress } from "./upload-store";
 import { downloads, emitDownloads } from "./download-store";
 import { TERMINAL } from "./uploads";
@@ -54,7 +54,7 @@ export function useCloudEventBridge() {
           // done | error → drop the live entry; on done the clip is local again.
           if (downloads.delete(clip_id)) emitDownloads();
           if (status === "done") {
-            void qc.invalidateQueries({ queryKey: CLIPS_KEY });
+            void qc.invalidateQueries({ queryKey: queryKeys.clips });
           }
         }
       },
@@ -68,10 +68,10 @@ export function useCloudEventBridge() {
         if (TERMINAL.has(status) && progress.delete(clip_id)) emitProgress();
         // Optimistically reflect the new status, then refetch so terminal rows
         // pull their freshly-written `remote_url` / `uploaded_at` from the DB.
-        qc.setQueryData<CloudUpload[]>(UPLOADS_KEY, (prev) =>
+        qc.setQueryData<CloudUpload[]>(queryKeys.cloudUploads, (prev) =>
           patchStatus(prev, e.payload),
         );
-        void qc.invalidateQueries({ queryKey: UPLOADS_KEY });
+        void qc.invalidateQueries({ queryKey: queryKeys.cloudUploads });
       },
     );
 

@@ -1,6 +1,8 @@
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
 
+import { queryKeys } from "@/lib/query-keys";
+
 /**
  * League of Legends champion artwork from Riot's Data Dragon CDN, fetched once
  * and cached for the session (the version list changes only on a patch). League
@@ -75,7 +77,7 @@ export interface LolAssets {
 
 export function useLolAssets(): LolAssets {
   const q = useQuery({
-    queryKey: ["lol-assets"],
+    queryKey: queryKeys.lolAssets,
     queryFn: fetchChampions,
     // Champion data only changes on a patch, so once it loads we never refetch.
     // But don't let a transient CDN failure stick for the whole session — a

@@ -2,6 +2,7 @@ import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import type { ClipRecord } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 
 /**
  * Valorant agent + map artwork, fetched once from the community mirror
@@ -163,7 +164,7 @@ export interface ValorantAssets {
 
 export function useValorantAssets(): ValorantAssets {
   const q = useQuery({
-    queryKey: ["valorant-assets"],
+    queryKey: queryKeys.valorantAssets,
     queryFn: fetchAssets,
     staleTime: Infinity,
     gcTime: Infinity,

@@ -7,6 +7,7 @@ import {
   type MatchStatePayload,
   type MatchSummary,
 } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 
 /**
  * Live Valorant status, polled every 2s (matches the presence cadence).
@@ -14,7 +15,7 @@ import {
  */
 export function useValorantStatus() {
   return useQuery({
-    queryKey: ["valorant-status"],
+    queryKey: queryKeys.valorantStatus,
     queryFn: valorantStatus,
     retry: false,
     refetchInterval: 2000,

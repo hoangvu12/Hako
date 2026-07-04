@@ -5,7 +5,7 @@ import {
   type CloudUpload,
   type CloudUploadState,
 } from "@/lib/api";
-import { UPLOADS_KEY } from "./keys";
+import { queryKeys } from "@/lib/query-keys";
 import { useClipProgress, useProgressMap, type LiveProgress } from "./upload-store";
 
 export const TERMINAL: ReadonlySet<CloudUploadState> = new Set([
@@ -47,7 +47,7 @@ function toView(row: CloudUpload, live?: LiveProgress): UploadView {
  * transition by the bridge. */
 function useUploadRows() {
   return useQuery({
-    queryKey: UPLOADS_KEY,
+    queryKey: queryKeys.cloudUploads,
     queryFn: () => cloudUploadStatus(),
     retry: false,
     staleTime: 5_000,

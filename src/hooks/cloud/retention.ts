@@ -1,14 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { cloudFreeUpSpace, cloudRetentionStats } from "@/lib/api";
-import { CLIPS_KEY, RETENTION_KEY } from "./keys";
+import { queryKeys } from "@/lib/query-keys";
 
 // --- retention ("free up space") -------------------------------------------
 
 /** Local-usage-vs-budget gauge. Cheap; refetched after a free-up-space pass. */
 export function useRetentionStats() {
   return useQuery({
-    queryKey: RETENTION_KEY,
+    queryKey: queryKeys.cloudRetention,
     queryFn: cloudRetentionStats,
     retry: false,
   });
@@ -21,8 +21,8 @@ export function useFreeUpSpace() {
   return useMutation({
     mutationFn: () => cloudFreeUpSpace(),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: RETENTION_KEY });
-      qc.invalidateQueries({ queryKey: CLIPS_KEY });
+      qc.invalidateQueries({ queryKey: queryKeys.cloudRetention });
+      qc.invalidateQueries({ queryKey: queryKeys.clips });
     },
   });
 }

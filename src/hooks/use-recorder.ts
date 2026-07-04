@@ -2,8 +2,9 @@ import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { Events, getRecorderStatus, type RecorderStatus } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 
-const QUERY_KEY = ["recorder-status"] as const;
+const QUERY_KEY = queryKeys.recorderStatus;
 
 /** Query the current recorder status (invoke round-trip). */
 export function useRecorderStatus() {

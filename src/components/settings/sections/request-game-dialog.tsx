@@ -14,6 +14,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { queryKeys } from "@/lib/query-keys";
 import {
   addCustomGame,
   listWindows,
@@ -38,7 +39,7 @@ export function RequestGameDialog({
   // Only enumerate windows while the dialog is open; refetch each open so the
   // list is current (the user just launched the game they want to add).
   const { data: windows = [], isFetching } = useQuery({
-    queryKey: ["windows"],
+    queryKey: queryKeys.windows,
     queryFn: listWindows,
     enabled: open,
     staleTime: 0,

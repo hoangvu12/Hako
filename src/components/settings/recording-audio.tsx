@@ -13,6 +13,7 @@ import {
   processLoopbackSupported,
   type AudioConfig,
 } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 import { Panel } from "./recording-audio/primitives";
 import { AllPcAudioPanel } from "./recording-audio/all-pc-audio-panel";
 import { AppAudioPanel } from "./recording-audio/app-audio-panel";
@@ -25,7 +26,7 @@ export function RecordingAudio({
   onChange: (next: AudioConfig) => void;
 }) {
   const { data: supported } = useQuery({
-    queryKey: ["process-loopback-supported"],
+    queryKey: queryKeys.processLoopbackSupported,
     queryFn: processLoopbackSupported,
     retry: false,
   });

@@ -1,10 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { getFfmpegInfo, getGpuInfo } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 
 /** GPU adapters + selected encoder. Static for a session, so cache forever. */
 export function useGpuInfo() {
   return useQuery({
-    queryKey: ["gpu-info"],
+    queryKey: queryKeys.gpuInfo,
     queryFn: getGpuInfo,
     retry: false,
     staleTime: Infinity,
@@ -14,7 +15,7 @@ export function useGpuInfo() {
 /** Bundled FFmpeg versions + hardware encoder availability. */
 export function useFfmpegInfo() {
   return useQuery({
-    queryKey: ["ffmpeg-info"],
+    queryKey: queryKeys.ffmpegInfo,
     queryFn: getFfmpegInfo,
     retry: false,
     staleTime: Infinity,

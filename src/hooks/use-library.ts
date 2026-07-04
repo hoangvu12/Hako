@@ -20,7 +20,9 @@ import {
   type TrackVolume,
 } from "@/lib/api";
 
-const CLIPS_KEY = ["clips"];
+import { queryKeys } from "@/lib/query-keys";
+
+const CLIPS_KEY = queryKeys.clips;
 
 /**
  * Insert a new clip (newest-first) or replace an existing one, keyed by id.
@@ -138,7 +140,7 @@ export function useTrimClip() {
 /** A clip's audio tracks (count + names) — drives the editor's per-track UI. */
 export function useClipAudioTracks(id: number | undefined) {
   return useQuery({
-    queryKey: ["clip-audio-tracks", id],
+    queryKey: queryKeys.clipAudioTracks(id as number),
     queryFn: () => clipAudioTracks(id as number),
     enabled: id != null,
     staleTime: Infinity,

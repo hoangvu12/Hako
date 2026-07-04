@@ -27,6 +27,7 @@ import {
   type SmartGameKey,
   type Settings,
 } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 import {
   NAV,
   PRESETS,
@@ -58,7 +59,7 @@ function SettingsPage() {
   // GPU list for the "Selected GPU" dropdown. Cheap, cached; failure just leaves
   // the dropdown with the Auto option.
   const { data: gpus } = useQuery({
-    queryKey: ["gpu-info"],
+    queryKey: queryKeys.gpuInfo,
     queryFn: getGpuInfo,
     staleTime: 60_000,
     retry: false,
@@ -90,8 +91,8 @@ function SettingsPage() {
     mutationFn: ({ from, to }: { from: string | null; to: string | null }) =>
       migrateClipsTo(from, to),
     onSettled: () => {
-      qc.invalidateQueries({ queryKey: ["clips"] });
-      qc.invalidateQueries({ queryKey: ["cloud-retention"] });
+      qc.invalidateQueries({ queryKey: queryKeys.clips });
+      qc.invalidateQueries({ queryKey: queryKeys.cloudRetention });
     },
   });
 
@@ -105,7 +106,7 @@ function SettingsPage() {
   // Keyed on the error edge (not `data`) so it can't clobber in-flight edits.
   useEffect(() => {
     if (!saveError) return;
-    const persisted = qc.getQueryData<Settings>(["settings"]);
+    const persisted = qc.getQueryData<Settings>(queryKeys.settings);
     if (persisted) setDraft(persisted);
   }, [saveError, qc]);
 
@@ -150,7 +151,7 @@ function SettingsPage() {
   const changeStorageDir = (next: string | null) => {
     const value = next?.trim() ? next : null;
     const prev =
-      qc.getQueryData<Settings>(["settings"])?.storage_dir?.trim() || null;
+      qc.getQueryData<Settings>(queryKeys.settings)?.storage_dir?.trim() || null;
     set("storage_dir", value);
     if (value === prev) return; // no real change (e.g. blur without an edit)
     void countClipsIn(prev)

@@ -16,6 +16,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { effectiveAudioConfig } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 import { useRecorderStatus } from "@/hooks/use-recorder";
 import { useSettings } from "@/hooks/use-settings";
 
@@ -102,8 +103,8 @@ export function RecorderStatusPopover() {
   const audioSummary = `${modeLabel} · Mic ${audio.mic_enabled ? "on" : "off"}`;
 
   const recheck = () => {
-    qc.invalidateQueries({ queryKey: ["recorder-status"] });
-    qc.invalidateQueries({ queryKey: ["valorant-status"] });
+    qc.invalidateQueries({ queryKey: queryKeys.recorderStatus });
+    qc.invalidateQueries({ queryKey: queryKeys.valorantStatus });
   };
 
   const goToSettings = (section?: string) =>
