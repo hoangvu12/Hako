@@ -14,7 +14,6 @@
 #![allow(dead_code)]
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use tauri::{AppHandle, Manager};
@@ -22,28 +21,16 @@ use tauri::{AppHandle, Manager};
 use crate::commands::SettingsState;
 use crate::core::capture;
 use crate::core::clock::now_ticks;
+use crate::games::engine::{run_live_feed, LiveDriver, Wanting};
 use crate::games::event::EventKind;
 use crate::games::lol::context::LolContext;
 use crate::games::lol::detect;
 use crate::games::lol::events::{classify, is_owned_combat, LolEventTimings, LolEventToggles};
 use crate::games::lol::live_client::LiveClient;
-use crate::games::recording::{
-    finish_and_cut, finish_full_session, game_auto_mode, game_capture_disabled,
-    manage_full_session, AutoCaptureState, GameCtx, MatchCut, RecordingSession,
-};
+use crate::games::recording::{finish_and_cut, GameCtx, MatchCut, RecordingSession};
 use crate::games::{GameId, GameIntegration};
 use crate::settings::AutoCaptureMode;
 
-/// Live-feed poll cadence while League's in-game process is running (the feed
-/// updates sub-second; 1 s is plenty and clip padding absorbs the jitter).
-const POLL_INTERVAL: Duration = Duration::from_secs(1);
-/// Relaxed cadence while the in-game process isn't running — no match can be
-/// starting, so poll (and hit the shared process table) far less often. Tightens
-/// back to [`POLL_INTERVAL`] the first tick the process is seen, well before the
-/// in-game window appears, so auto-capture latency is unaffected.
-const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(5);
-/// Grace for audio-track metadata before opening the session writer.
-const AUDIO_READY_GRACE: Duration = Duration::from_secs(8);
 /// Clamp each merged window to this many seconds.
 const MAX_AUTOCLIP_SECS: i64 = 120;
 /// Slack for landing an event on the recorded timeline.
@@ -67,7 +54,14 @@ impl GameIntegration for Integration {
     }
 
     async fn run(self: Arc<Self>, ctx: GameCtx) {
-        run(ctx).await;
+        let live = match LiveClient::new() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("lol: could not build live-client ({e}); integration disabled");
+                return;
+            }
+        };
+        run_live_feed(ctx, LolDriver::new(live)).await;
     }
 }
 
@@ -88,133 +82,148 @@ struct LolActive {
     won: Option<bool>,
 }
 
-impl LolActive {
-    fn discard(self) {
-        self.rec.discard();
+/// League's live-feed driver: the Live Client Data API client, the cached event
+/// config, and the seed a freshly opened session inherits (dedup high-water +
+/// initial context), refreshed each tick a match is live.
+struct LolDriver {
+    live: LiveClient,
+    toggles: LolEventToggles,
+    timings: LolEventTimings,
+    /// Highest `EventID` present at the last live poll — a session opened this tick
+    /// starts its dedup high-water here, so events before recording aren't clipped.
+    seed_seen_max_id: i64,
+    /// Latest live context, seeding a session opened this tick.
+    seed_ctx: LolContext,
+}
+
+impl LolDriver {
+    fn new(live: LiveClient) -> Self {
+        LolDriver {
+            live,
+            toggles: LolEventToggles::default(),
+            timings: LolEventTimings::default(),
+            seed_seen_max_id: -1,
+            seed_ctx: LolContext::default(),
+        }
     }
 }
 
-async fn run(ctx: GameCtx) {
-    let app = ctx.app.clone();
-    let live = match LiveClient::new() {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!("lol: could not build live-client ({e}); integration disabled");
-            return;
+#[async_trait]
+impl LiveDriver for LolDriver {
+    type Active = LolActive;
+
+    fn id(&self) -> GameId {
+        GameId::Lol
+    }
+
+    fn refresh_settings(&mut self, app: &AppHandle) {
+        (self.toggles, self.timings) = current_lol_config(app);
+    }
+
+    fn begin(&mut self, rec: RecordingSession) -> LolActive {
+        LolActive {
+            rec,
+            events: Vec::new(),
+            combat_seen: 0,
+            seen_max_id: self.seed_seen_max_id,
+            ctx: self.seed_ctx.clone(),
+            won: None,
         }
-    };
-    let mut autocap = AutoCaptureState::new();
-    let mut active: Option<LolActive> = None;
-    let mut full_session: Option<RecordingSession> = None;
-    let mut want_match = false;
-    let mut want_since: Option<Instant> = None;
-    // Idle back-off: start fast so first detection is prompt, then relax whenever
-    // the in-game process isn't running (set at each loop tail).
-    let mut poll = POLL_INTERVAL;
-    tracing::info!("league integration started");
+    }
 
-    loop {
-        tokio::time::sleep(poll).await;
+    fn discard(&mut self, active: LolActive) {
+        active.rec.discard();
+    }
 
-        // "Disabled" fully ignores League: no buffer auto-attach, and forcing
-        // Manual below tears down any in-flight auto-recording via the paths that
-        // already handle a mid-match mode change.
-        let disabled = game_capture_disabled(&app, ctx.id());
-        ctx.auto_manage_capture(&mut autocap, disabled);
+    fn finish(&mut self, app: &AppHandle, active: LolActive, mode: AutoCaptureMode) {
+        let LolActive {
+            rec,
+            events,
+            combat_seen,
+            ctx,
+            won,
+            ..
+        } = active;
 
-        let mode = if disabled {
-            AutoCaptureMode::Manual
-        } else {
-            game_auto_mode(&app, ctx.id())
-        };
-        let (toggles, timings) = current_lol_config(&app);
-        manage_full_session(&ctx, mode, &mut full_session);
-
-        // Global auto-clip toggle flipped off mid-match → discard.
-        if !mode.records_match() {
-            if let Some(am) = active.take() {
-                tracing::info!("lol: capture mode disabled mid-match — discarding recording");
-                am.discard();
-            }
-            want_match = false;
-            want_since = None;
-        }
-
-        // Restart-class settings change mid-session → clean split.
-        if ctx.take_config_restart() {
-            let mut resume = false;
-            if let Some(am) = active.take() {
-                end_match(&app, am, mode, toggles, timings);
-                resume = mode.records_match();
-            }
-            if let Some(fs) = full_session.take() {
-                finish_full_session(&app, fs);
-            }
-            ctx.restart_capture();
-            if resume {
-                want_match = true;
-                want_since = Some(Instant::now());
-            }
+        tracing::info!(
+            "lol: match end — {} highlight event(s) collected from {} owned-combat event(s) seen; identity {} ({} name form(s))",
+            events.len(),
+            combat_seen,
+            if ctx.me.is_empty() { "UNRESOLVED" } else { "resolved" },
+            ctx.me.alias_count(),
+        );
+        if combat_seen > 0 && events.is_empty() {
+            tracing::warn!(
+                "lol: saw {combat_seen} combat event(s) but attributed none to you — \
+                 identity match failed (check your in-game name forms)"
+            );
         }
 
-        ctx.emit_recorder_status();
+        let merge_after_secs = self.timings.max_after(&self.toggles);
+        let title_suffix = ctx.title_suffix();
+        let clip_context = ctx.clip_context(won);
+        let timings = self.timings;
+        finish_and_cut(
+            app,
+            rec,
+            MatchCut {
+                events,
+                mode,
+                max_clip_secs: MAX_AUTOCLIP_SECS,
+                placement_tol_secs: PLACEMENT_TOL_SECS,
+                merge_after_secs,
+                game_label: "League of Legends",
+                title_suffix,
+                clip_context,
+            },
+            move |kind| {
+                let t = timings.for_kind(kind);
+                (t.before, t.after)
+            },
+        );
+    }
 
+    async fn drive(
+        &mut self,
+        app: &AppHandle,
+        _running: bool,
+        mode: AutoCaptureMode,
+        active: &mut Option<LolActive>,
+        want: &mut Wanting,
+    ) {
         // Poll the live feed. Ok ⇒ a match is running; Err ⇒ not in a game.
-        let data = live.all_game_data().await.ok();
+        // (League drives cadence off the feed rather than window presence; the
+        // engine's running-based cadence is equivalent once a match is live.)
+        let data = self.live.all_game_data().await.ok();
         match data {
             None => {
                 if let Some(am) = active.take() {
                     tracing::info!("lol: match ended — finalizing recording");
-                    end_match(&app, am, mode, toggles, timings);
+                    self.finish(app, am, mode);
                 }
-                want_match = false;
-                want_since = None;
-                // No live match — relax the cadence until one starts. Capture still
-                // auto-starts within one idle tick of the in-game window appearing,
-                // during the loading screen (no gameplay missed).
-                poll = IDLE_POLL_INTERVAL;
+                want.clear();
             }
             Some(data) => {
-                // A match is live — poll at the fast cadence for event latency.
-                poll = POLL_INTERVAL;
                 if mode.records_match() {
-                    want_match = true;
-                    want_since.get_or_insert_with(Instant::now);
+                    want.arm();
                 }
 
-                // Open the session once latched + the encoder is warm. Seed the
-                // dedup high-water from the events already present so we only clip
-                // what we actually record (events before recording started can't be
-                // clipped).
-                if want_match && active.is_none() && mode.records_match() {
-                    let grace = want_since.map_or(true, |t| t.elapsed() >= AUDIO_READY_GRACE);
-                    if let Some(rec) = ctx.open_session("lol_session", grace) {
-                        let seen_max_id = data
-                            .events
-                            .events
-                            .iter()
-                            .map(|e| e.event_id)
-                            .max()
-                            .unwrap_or(-1);
-                        tracing::info!("lol: recording match → {}", rec.session_path.display());
-                        active = Some(LolActive {
-                            rec,
-                            events: Vec::new(),
-                            combat_seen: 0,
-                            seen_max_id,
-                            ctx: LolContext::from_snapshot(&data),
-                            won: None,
-                        });
-                        want_match = false;
-                        want_since = None;
-                    }
-                }
+                // Seed a session opened *this* tick (the engine opens after drive)
+                // from the events already present, so we only clip what we record.
+                self.seed_seen_max_id = data
+                    .events
+                    .events
+                    .iter()
+                    .map(|e| e.event_id)
+                    .max()
+                    .unwrap_or(-1);
+                self.seed_ctx = LolContext::from_snapshot(&data);
 
                 // Update live context + consume new events.
                 if let Some(am) = active.as_mut() {
                     am.ctx = LolContext::from_snapshot(&data);
                     // Keep the shared live-match context fresh for manual F9 clips.
-                    update_live_match(&app, &am.ctx);
+                    update_live_match(app, &am.ctx);
                     for ev in &data.events.events {
                         if ev.event_id <= am.seen_max_id {
                             continue;
@@ -227,7 +236,7 @@ async fn run(ctx: GameCtx) {
                             am.won = Some(ev.result.eq_ignore_ascii_case("Win"));
                         }
                         if let Some(kind) = classify(ev, &am.ctx.me, &am.ctx.team) {
-                            if toggles.enabled(kind) {
+                            if self.toggles.enabled(kind) {
                                 am.events.push((kind, now_ticks()));
                                 tracing::debug!(
                                     "lol: event {} at {:.1}s",
@@ -241,61 +250,6 @@ async fn run(ctx: GameCtx) {
             }
         }
     }
-}
-
-/// Finish the session and (on its own blocking task) reconcile + cut the
-/// highlights, or save the whole match (FullMatch mode).
-fn end_match(
-    app: &AppHandle,
-    am: LolActive,
-    mode: AutoCaptureMode,
-    toggles: LolEventToggles,
-    timings: LolEventTimings,
-) {
-    let LolActive {
-        rec,
-        events,
-        combat_seen,
-        ctx,
-        won,
-        ..
-    } = am;
-
-    tracing::info!(
-        "lol: match end — {} highlight event(s) collected from {} owned-combat event(s) seen; identity {} ({} name form(s))",
-        events.len(),
-        combat_seen,
-        if ctx.me.is_empty() { "UNRESOLVED" } else { "resolved" },
-        ctx.me.alias_count(),
-    );
-    if combat_seen > 0 && events.is_empty() {
-        tracing::warn!(
-            "lol: saw {combat_seen} combat event(s) but attributed none to you — \
-             identity match failed (check your in-game name forms)"
-        );
-    }
-
-    let merge_after_secs = timings.max_after(&toggles);
-    let title_suffix = ctx.title_suffix();
-    let clip_context = ctx.clip_context(won);
-    finish_and_cut(
-        app,
-        rec,
-        MatchCut {
-            events,
-            mode,
-            max_clip_secs: MAX_AUTOCLIP_SECS,
-            placement_tol_secs: PLACEMENT_TOL_SECS,
-            merge_after_secs,
-            game_label: "League of Legends",
-            title_suffix,
-            clip_context,
-        },
-        move |kind| {
-            let t = timings.for_kind(kind);
-            (t.before, t.after)
-        },
-    );
 }
 
 /// The user's League event toggles + timings (defaults when unavailable).

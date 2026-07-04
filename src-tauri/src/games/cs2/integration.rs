@@ -13,7 +13,6 @@
 #![allow(dead_code)]
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use tauri::{AppHandle, Manager};
@@ -24,27 +23,18 @@ use crate::games::cs2::detect;
 use crate::games::cs2::events::{Cs2Context, Cs2EventTimings, Cs2EventToggles, Cs2Tracker};
 use crate::games::cs2::gsi::Cs2Gsi;
 use crate::games::cs2::payload;
+use crate::games::engine::{run_live_feed, LiveDriver, Wanting};
 use crate::games::event::EventKind;
-use crate::games::recording::{
-    finish_and_cut, finish_full_session, game_auto_mode, game_capture_disabled,
-    manage_full_session, AutoCaptureState, GameCtx, MatchCut, RecordingSession,
-};
+use crate::games::recording::{finish_and_cut, GameCtx, MatchCut, RecordingSession};
 use crate::games::{GameId, GameIntegration};
 use crate::settings::AutoCaptureMode;
 
-/// Loop cadence while CS2 is running (GSI payloads queue in the channel between
-/// ticks; 1 s keeps event latency well under the clip padding).
-const POLL_INTERVAL: Duration = Duration::from_secs(1);
-/// Relaxed cadence while CS2 isn't running.
-const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(5);
-/// Grace for audio-track metadata before opening the session writer.
-const AUDIO_READY_GRACE: Duration = Duration::from_secs(8);
 /// Clamp each merged window to this many seconds (Medal's MaxAutoClipLength 5m).
 const MAX_AUTOCLIP_SECS: i64 = 300;
 /// Slack for landing an event on the recorded timeline.
 const PLACEMENT_TOL_SECS: i64 = 2;
 
-/// The CS2 [`GameIntegration`] (zero-sized; all state is loop-local).
+/// The CS2 [`GameIntegration`] (zero-sized; all state lives in [`Cs2Driver`]).
 pub struct Integration;
 
 #[async_trait]
@@ -62,7 +52,7 @@ impl GameIntegration for Integration {
     }
 
     async fn run(self: Arc<Self>, ctx: GameCtx) {
-        run(ctx).await;
+        run_live_feed(ctx, Cs2Driver::new()).await;
     }
 }
 
@@ -74,114 +64,125 @@ struct Cs2Active {
     ctx: Cs2Context,
 }
 
-impl Cs2Active {
-    fn discard(self) {
-        self.rec.discard();
+/// CS2's live-feed driver: the hosted GSI server + rolling diff tracker, plus the
+/// user's cached event config.
+struct Cs2Driver {
+    gsi: Option<Cs2Gsi>,
+    tracker: Cs2Tracker,
+    toggles: Cs2EventToggles,
+    timings: Cs2EventTimings,
+}
+
+impl Cs2Driver {
+    fn new() -> Self {
+        Cs2Driver {
+            gsi: None,
+            tracker: Cs2Tracker::new(),
+            toggles: Cs2EventToggles::default(),
+            timings: Cs2EventTimings::default(),
+        }
     }
 }
 
-async fn run(ctx: GameCtx) {
-    let app = ctx.app.clone();
-    let mut autocap = AutoCaptureState::new();
-    let mut active: Option<Cs2Active> = None;
-    let mut full_session: Option<RecordingSession> = None;
-    let mut gsi: Option<Cs2Gsi> = None;
-    let mut tracker = Cs2Tracker::new();
-    let mut want_match = false;
-    let mut want_since: Option<Instant> = None;
-    let mut poll = POLL_INTERVAL;
-    tracing::info!("cs2 integration started");
+#[async_trait]
+impl LiveDriver for Cs2Driver {
+    type Active = Cs2Active;
 
-    loop {
-        tokio::time::sleep(poll).await;
+    fn id(&self) -> GameId {
+        GameId::Cs2
+    }
 
-        let disabled = game_capture_disabled(&app, ctx.id());
-        ctx.auto_manage_capture(&mut autocap, disabled);
+    fn refresh_settings(&mut self, app: &AppHandle) {
+        (self.toggles, self.timings) = current_cs2_config(app);
+    }
 
-        let mode = if disabled {
-            AutoCaptureMode::Manual
-        } else {
-            game_auto_mode(&app, ctx.id())
-        };
-        let (toggles, timings) = current_cs2_config(&app);
-        manage_full_session(&ctx, mode, &mut full_session);
-
-        // Global auto-clip toggle flipped off mid-match → discard.
-        if !mode.records_match() {
-            if let Some(am) = active.take() {
-                tracing::info!("cs2: capture mode disabled mid-match — discarding recording");
-                am.discard();
-            }
-            want_match = false;
-            want_since = None;
+    fn begin(&mut self, rec: RecordingSession) -> Cs2Active {
+        Cs2Active {
+            rec,
+            events: Vec::new(),
+            ctx: self.tracker.context().clone(),
         }
+    }
 
-        // Restart-class settings change mid-session → clean split.
-        if ctx.take_config_restart() {
-            let mut resume = false;
-            if let Some(am) = active.take() {
-                end_match(&app, am, mode, toggles, timings);
-                resume = mode.records_match();
-            }
-            if let Some(fs) = full_session.take() {
-                finish_full_session(&app, fs);
-            }
-            ctx.restart_capture();
-            if resume {
-                want_match = true;
-                want_since = Some(Instant::now());
-            }
-        }
+    fn discard(&mut self, active: Cs2Active) {
+        active.rec.discard();
+    }
 
-        ctx.emit_recorder_status();
+    fn finish(&mut self, app: &AppHandle, active: Cs2Active, mode: AutoCaptureMode) {
+        let Cs2Active { rec, events, ctx } = active;
+        tracing::info!("cs2: match end — {} highlight event(s) collected", events.len());
+        let merge_after_secs = self.timings.max_after(&self.toggles);
+        let title_suffix = ctx.title_suffix();
+        let clip_context = ctx.clip_context();
+        let timings = self.timings;
+        finish_and_cut(
+            app,
+            rec,
+            MatchCut {
+                events,
+                mode,
+                max_clip_secs: MAX_AUTOCLIP_SECS,
+                placement_tol_secs: PLACEMENT_TOL_SECS,
+                merge_after_secs,
+                game_label: "Counter-Strike 2",
+                title_suffix,
+                clip_context,
+            },
+            move |kind| {
+                let t = timings.for_kind(kind);
+                (t.before, t.after)
+            },
+        );
+    }
 
+    async fn drive(
+        &mut self,
+        app: &AppHandle,
+        running: bool,
+        mode: AutoCaptureMode,
+        active: &mut Option<Cs2Active>,
+        want: &mut Wanting,
+    ) {
         // Host the GSI server while the game runs; drop it (and finalize any
         // active match) when the game exits.
-        let running = ctx.game_running();
         if running {
-            if gsi.is_none() {
-                gsi = crate::games::cs2::gsi::start(&app);
+            if self.gsi.is_none() {
+                self.gsi = crate::games::cs2::gsi::start(app);
             }
         } else {
             if let Some(am) = active.take() {
                 tracing::info!("cs2: game closed mid-match — finalizing recording");
-                end_match(&app, am, mode, toggles, timings);
+                self.finish(app, am, mode);
             }
-            gsi = None;
-            tracker = Cs2Tracker::new();
-            want_match = false;
-            want_since = None;
+            self.gsi = None;
+            self.tracker = Cs2Tracker::new();
+            want.clear();
         }
-        poll = if running {
-            POLL_INTERVAL
-        } else {
-            IDLE_POLL_INTERVAL
-        };
 
         // Drain queued GSI payloads: diff into events, react to match lifecycle.
-        if let Some(g) = gsi.as_ref() {
+        // Take the handle out so we can `&mut self` (tracker/finish) in the loop.
+        if let Some(g) = self.gsi.take() {
             while let Ok(body) = g.rx.try_recv() {
                 let Some(p) = payload::parse_valid(&body) else {
                     continue;
                 };
-                let res = tracker.feed(&p);
+                let res = self.tracker.feed(&p);
 
                 if res.new_match {
                     if let Some(am) = active.take() {
                         tracing::info!("cs2: new match detected — finalizing previous recording");
-                        end_match(&app, am, mode, toggles, timings);
+                        self.finish(app, am, mode);
                     }
                     if mode.records_match() {
-                        want_match = true;
-                        want_since.get_or_insert_with(Instant::now);
+                        want.arm();
                     }
-                    update_live_match(&app, tracker.context());
+                    update_live_match(app, self.tracker.context());
                 }
 
                 if let Some(am) = active.as_mut() {
-                    am.ctx = tracker.context().clone();
+                    am.ctx = self.tracker.context().clone();
                     for kind in res.events {
-                        if toggles.enabled(kind) {
+                        if self.toggles.enabled(kind) {
                             am.events.push((kind, now_ticks()));
                             tracing::debug!("cs2: event {}", kind.label());
                         }
@@ -191,63 +192,14 @@ async fn run(ctx: GameCtx) {
                 if res.game_over {
                     if let Some(am) = active.take() {
                         tracing::info!("cs2: match over — finalizing recording");
-                        end_match(&app, am, mode, toggles, timings);
+                        self.finish(app, am, mode);
                     }
-                    want_match = false;
-                    want_since = None;
+                    want.clear();
                 }
             }
-        }
-
-        // Open the session once a match has latched + the encoder is warm.
-        if want_match && active.is_none() && mode.records_match() {
-            let grace = want_since.map_or(true, |t| t.elapsed() >= AUDIO_READY_GRACE);
-            if let Some(rec) = ctx.open_session("cs2_session", grace) {
-                tracing::info!("cs2: recording match → {}", rec.session_path.display());
-                active = Some(Cs2Active {
-                    rec,
-                    events: Vec::new(),
-                    ctx: tracker.context().clone(),
-                });
-                want_match = false;
-                want_since = None;
-            }
+            self.gsi = Some(g);
         }
     }
-}
-
-/// Finish the session and (on its own blocking task) reconcile + cut the
-/// highlights, or save the whole match (FullMatch mode).
-fn end_match(
-    app: &AppHandle,
-    am: Cs2Active,
-    mode: AutoCaptureMode,
-    toggles: Cs2EventToggles,
-    timings: Cs2EventTimings,
-) {
-    let Cs2Active { rec, events, ctx } = am;
-    tracing::info!("cs2: match end — {} highlight event(s) collected", events.len());
-    let merge_after_secs = timings.max_after(&toggles);
-    let title_suffix = ctx.title_suffix();
-    let clip_context = ctx.clip_context();
-    finish_and_cut(
-        app,
-        rec,
-        MatchCut {
-            events,
-            mode,
-            max_clip_secs: MAX_AUTOCLIP_SECS,
-            placement_tol_secs: PLACEMENT_TOL_SECS,
-            merge_after_secs,
-            game_label: "Counter-Strike 2",
-            title_suffix,
-            clip_context,
-        },
-        move |kind| {
-            let t = timings.for_kind(kind);
-            (t.before, t.after)
-        },
-    );
 }
 
 /// The user's CS2 event toggles + timings (defaults when unavailable).

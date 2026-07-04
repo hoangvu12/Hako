@@ -11,18 +11,15 @@
 #![allow(dead_code)]
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use tauri::{AppHandle, Manager};
 
 use crate::commands::SettingsState;
 use crate::core::clock::now_ticks;
+use crate::games::engine::{run_live_feed, LiveDriver, Wanting};
 use crate::games::event::EventKind;
-use crate::games::recording::{
-    finish_and_cut, finish_full_session, game_auto_mode, game_capture_disabled,
-    manage_full_session, AutoCaptureState, GameCtx, MatchCut, RecordingSession,
-};
+use crate::games::recording::{finish_and_cut, GameCtx, MatchCut, RecordingSession};
 use crate::games::warthunder::api::{Vehicle, WarThunderApi};
 use crate::games::warthunder::detect;
 use crate::games::warthunder::events::{
@@ -31,14 +28,11 @@ use crate::games::warthunder::events::{
 use crate::games::{GameId, GameIntegration};
 use crate::settings::AutoCaptureMode;
 
-const POLL_INTERVAL: Duration = Duration::from_secs(1);
-const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(5);
-const AUDIO_READY_GRACE: Duration = Duration::from_secs(8);
 /// Clamp each merged window (Medal's MaxAutoClipLength 5m).
 const MAX_AUTOCLIP_SECS: i64 = 300;
 const PLACEMENT_TOL_SECS: i64 = 2;
 
-/// The War Thunder [`GameIntegration`] (zero-sized; all state is loop-local).
+/// The War Thunder [`GameIntegration`] (zero-sized; state lives in [`WtDriver`]).
 pub struct Integration;
 
 #[async_trait]
@@ -56,7 +50,7 @@ impl GameIntegration for Integration {
     }
 
     async fn run(self: Arc<Self>, ctx: GameCtx) {
-        run(ctx).await;
+        run_live_feed(ctx, WtDriver::new()).await;
     }
 }
 
@@ -68,128 +62,142 @@ struct WarThunderActive {
     ctx: WarThunderContext,
 }
 
-impl WarThunderActive {
-    fn discard(self) {
-        self.rec.discard();
+/// War Thunder's live-feed driver: the web-HUD client + rolling battle context,
+/// plus the cached event config + nickname (needed to attribute damage lines).
+struct WtDriver {
+    api: Option<WarThunderApi>,
+    battle_ctx: WarThunderContext,
+    warned_no_nickname: bool,
+    toggles: WarThunderEventToggles,
+    timings: WarThunderEventTimings,
+    nickname: String,
+}
+
+impl WtDriver {
+    fn new() -> Self {
+        WtDriver {
+            api: None,
+            battle_ctx: WarThunderContext::default(),
+            warned_no_nickname: false,
+            toggles: WarThunderEventToggles::default(),
+            timings: WarThunderEventTimings::default(),
+            nickname: String::new(),
+        }
     }
 }
 
-async fn run(ctx: GameCtx) {
-    let app = ctx.app.clone();
-    let mut autocap = AutoCaptureState::new();
-    let mut active: Option<WarThunderActive> = None;
-    let mut full_session: Option<RecordingSession> = None;
-    let mut api: Option<WarThunderApi> = None;
-    let mut battle_ctx = WarThunderContext::default();
-    let mut want_match = false;
-    let mut want_since: Option<Instant> = None;
-    let mut warned_no_nickname = false;
-    let mut poll = POLL_INTERVAL;
-    tracing::info!("warthunder integration started");
+#[async_trait]
+impl LiveDriver for WtDriver {
+    type Active = WarThunderActive;
 
-    loop {
-        tokio::time::sleep(poll).await;
+    fn id(&self) -> GameId {
+        GameId::WarThunder
+    }
 
-        let disabled = game_capture_disabled(&app, ctx.id());
-        ctx.auto_manage_capture(&mut autocap, disabled);
+    fn refresh_settings(&mut self, app: &AppHandle) {
+        (self.toggles, self.timings) = current_warthunder_config(app);
+        self.nickname = current_nickname(app);
+    }
 
-        let mode = if disabled {
-            AutoCaptureMode::Manual
-        } else {
-            game_auto_mode(&app, ctx.id())
-        };
-        let (toggles, timings) = current_warthunder_config(&app);
-        let nickname = current_nickname(&app);
-        manage_full_session(&ctx, mode, &mut full_session);
-
-        // Global auto-clip toggle flipped off mid-battle → discard.
-        if !mode.records_match() {
-            if let Some(am) = active.take() {
-                tracing::info!("warthunder: capture mode disabled mid-battle — discarding recording");
-                am.discard();
-            }
-            want_match = false;
-            want_since = None;
+    fn begin(&mut self, rec: RecordingSession) -> WarThunderActive {
+        WarThunderActive {
+            rec,
+            events: Vec::new(),
+            ctx: self.battle_ctx.clone(),
         }
+    }
 
-        // Restart-class settings change mid-session → clean split.
-        if ctx.take_config_restart() {
-            let mut resume = false;
-            if let Some(am) = active.take() {
-                end_match(&app, am, mode, toggles, timings);
-                resume = mode.records_match();
-            }
-            if let Some(fs) = full_session.take() {
-                finish_full_session(&app, fs);
-            }
-            ctx.restart_capture();
-            if resume {
-                want_match = true;
-                want_since = Some(Instant::now());
-            }
-        }
+    fn discard(&mut self, active: WarThunderActive) {
+        active.rec.discard();
+    }
 
-        ctx.emit_recorder_status();
+    fn finish(&mut self, app: &AppHandle, active: WarThunderActive, mode: AutoCaptureMode) {
+        let WarThunderActive { rec, events, ctx } = active;
+        tracing::info!("warthunder: battle end — {} highlight event(s) collected", events.len());
+        let merge_after_secs = self.timings.max_after(&self.toggles);
+        let title_suffix = ctx.title_suffix();
+        let clip_context = ctx.clip_context();
+        let timings = self.timings;
+        finish_and_cut(
+            app,
+            rec,
+            MatchCut {
+                events,
+                mode,
+                max_clip_secs: MAX_AUTOCLIP_SECS,
+                placement_tol_secs: PLACEMENT_TOL_SECS,
+                merge_after_secs,
+                game_label: "War Thunder",
+                title_suffix,
+                clip_context,
+            },
+            move |kind| {
+                let t = timings.for_kind(kind);
+                (t.before, t.after)
+            },
+        );
+    }
 
-        // Poll the web HUD while the game runs; drop the client (and finalize any
+    async fn drive(
+        &mut self,
+        app: &AppHandle,
+        running: bool,
+        mode: AutoCaptureMode,
+        active: &mut Option<WarThunderActive>,
+        want: &mut Wanting,
+    ) {
+        // Keep the web-HUD client while the game runs; drop it (and finalize any
         // active battle) when the game exits.
-        let running = ctx.game_running();
         if running {
-            if api.is_none() {
+            if self.api.is_none() {
                 match WarThunderApi::new() {
-                    Ok(c) => api = Some(c),
+                    Ok(c) => self.api = Some(c),
                     Err(e) => tracing::warn!("warthunder: http client init failed: {e}"),
                 }
             }
         } else {
             if let Some(am) = active.take() {
                 tracing::info!("warthunder: game closed mid-battle — finalizing recording");
-                end_match(&app, am, mode, toggles, timings);
+                self.finish(app, am, mode);
             }
-            api = None;
-            battle_ctx = WarThunderContext::default();
-            want_match = false;
-            want_since = None;
+            self.api = None;
+            self.battle_ctx = WarThunderContext::default();
+            want.clear();
         }
-        poll = if running {
-            POLL_INTERVAL
-        } else {
-            IDLE_POLL_INTERVAL
-        };
 
-        // Drain the HUD: classify new damage lines, react to the battle boundary.
-        if let Some(c) = api.as_mut() {
+        // Drain the HUD. Take the client out so we can `&mut self` in the loop.
+        if let Some(mut c) = self.api.take() {
             let vehicle: Vehicle = c.poll_vehicle().await;
-            battle_ctx.observe(vehicle);
+            self.battle_ctx.observe(vehicle);
 
             if let Ok(hud) = c.poll_damage().await {
                 if hud.reset {
                     if let Some(am) = active.take() {
                         tracing::info!("warthunder: new battle detected — finalizing previous recording");
-                        end_match(&app, am, mode, toggles, timings);
+                        self.finish(app, am, mode);
                     }
-                    battle_ctx = WarThunderContext::default();
-                    battle_ctx.observe(vehicle);
+                    self.battle_ctx = WarThunderContext::default();
+                    self.battle_ctx.observe(vehicle);
                 }
 
                 // A blank nickname makes attribution impossible — record nothing
                 // and say so once, so the user knows to fill it in.
-                if nickname.trim().is_empty() {
-                    if !warned_no_nickname && !hud.rows.is_empty() {
+                if self.nickname.trim().is_empty() {
+                    if !self.warned_no_nickname && !hud.rows.is_empty() {
                         tracing::info!(
                             "warthunder: set your in-game nickname in settings to auto-clip kills"
                         );
-                        warned_no_nickname = true;
+                        self.warned_no_nickname = true;
                     }
                 } else {
-                    warned_no_nickname = false;
+                    self.warned_no_nickname = false;
                     for row in &hud.rows {
-                        let Some(kind) = classify(&row.msg, &nickname, vehicle) else {
+                        let Some(kind) = classify(&row.msg, &self.nickname, vehicle) else {
                             continue;
                         };
                         if let Some(am) = active.as_mut() {
-                            am.ctx = battle_ctx.clone();
-                            if toggles.enabled(kind) {
+                            am.ctx = self.battle_ctx.clone();
+                            if self.toggles.enabled(kind) {
                                 am.events.push((kind, now_ticks()));
                                 tracing::debug!("warthunder: event {}", kind.label());
                             }
@@ -202,61 +210,13 @@ async fn run(ctx: GameCtx) {
             // as soon as the game is up and the encoder is warming — a battle that
             // produces no enabled events is discarded at finalize.
             if mode.records_match() && active.is_none() {
-                want_match = true;
-                want_since.get_or_insert_with(Instant::now);
-                update_live_match(&app, &battle_ctx);
+                want.arm();
+                update_live_match(app, &self.battle_ctx);
             }
-        }
 
-        // Open the session once a battle has latched + the encoder is warm.
-        if want_match && active.is_none() && mode.records_match() {
-            let grace = want_since.map_or(true, |t| t.elapsed() >= AUDIO_READY_GRACE);
-            if let Some(rec) = ctx.open_session("warthunder_session", grace) {
-                tracing::info!("warthunder: recording battle → {}", rec.session_path.display());
-                active = Some(WarThunderActive {
-                    rec,
-                    events: Vec::new(),
-                    ctx: battle_ctx.clone(),
-                });
-                want_match = false;
-                want_since = None;
-            }
+            self.api = Some(c);
         }
     }
-}
-
-/// Finish the session and (on its own blocking task) reconcile + cut the
-/// highlights, or save the whole battle (FullMatch mode).
-fn end_match(
-    app: &AppHandle,
-    am: WarThunderActive,
-    mode: AutoCaptureMode,
-    toggles: WarThunderEventToggles,
-    timings: WarThunderEventTimings,
-) {
-    let WarThunderActive { rec, events, ctx } = am;
-    tracing::info!("warthunder: battle end — {} highlight event(s) collected", events.len());
-    let merge_after_secs = timings.max_after(&toggles);
-    let title_suffix = ctx.title_suffix();
-    let clip_context = ctx.clip_context();
-    finish_and_cut(
-        app,
-        rec,
-        MatchCut {
-            events,
-            mode,
-            max_clip_secs: MAX_AUTOCLIP_SECS,
-            placement_tol_secs: PLACEMENT_TOL_SECS,
-            merge_after_secs,
-            game_label: "War Thunder",
-            title_suffix,
-            clip_context,
-        },
-        move |kind| {
-            let t = timings.for_kind(kind);
-            (t.before, t.after)
-        },
-    );
 }
 
 /// The user's War Thunder event toggles + timings (defaults when unavailable).

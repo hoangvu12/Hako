@@ -11,17 +11,14 @@
 #![allow(dead_code)]
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use tauri::{AppHandle, Manager};
 
 use crate::commands::SettingsState;
+use crate::games::engine::{run_live_feed, LiveDriver, Wanting};
 use crate::games::event::EventKind;
-use crate::games::recording::{
-    finish_and_cut, finish_full_session, game_auto_mode, game_capture_disabled,
-    manage_full_session, AutoCaptureState, GameCtx, MatchCut, RecordingSession,
-};
+use crate::games::recording::{finish_and_cut, GameCtx, MatchCut, RecordingSession};
 use crate::games::rematch::context::RematchContext;
 use crate::games::rematch::detect;
 use crate::games::rematch::events::{RematchEventTimings, RematchEventToggles};
@@ -30,21 +27,12 @@ use crate::games::{GameId, GameIntegration};
 use crate::settings::AutoCaptureMode;
 use crate::valorant::log_watch::{line_event_ticks, LogTail};
 
-/// Tail poll cadence while Rematch is running. The log appends sub-second; 1 s +
-/// the ±pad absorbs jitter.
-const POLL_INTERVAL: Duration = Duration::from_secs(1);
-/// Relaxed cadence while the game isn't running — nothing to tail, so poll (and
-/// hit the shared process table) far less often. Tightens back the first tick the
-/// process is seen, before the game window appears, so auto-capture is unaffected.
-const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(5);
-/// Grace for audio-track metadata before opening the session writer.
-const AUDIO_READY_GRACE: Duration = Duration::from_secs(8);
 /// Clamp each merged window to this many seconds.
 const MAX_AUTOCLIP_SECS: i64 = 120;
 /// Slack for landing an event on the recorded timeline.
 const PLACEMENT_TOL_SECS: i64 = 2;
 
-/// The Rematch [`GameIntegration`] (zero-sized; all state is loop-local).
+/// The Rematch [`GameIntegration`] (zero-sized; state lives in [`RematchDriver`]).
 pub struct Integration;
 
 #[async_trait]
@@ -62,7 +50,7 @@ impl GameIntegration for Integration {
     }
 
     async fn run(self: Arc<Self>, ctx: GameCtx) {
-        run(ctx).await;
+        run_live_feed(ctx, RematchDriver::new()).await;
     }
 }
 
@@ -78,99 +66,114 @@ struct RematchActive {
     ctx: RematchContext,
 }
 
-impl RematchActive {
-    fn discard(self) {
-        self.rec.discard();
+/// Rematch's live-feed driver: the `Runtime.log` tail + the match context that
+/// accumulates across the whole game session, plus the cached event config.
+struct RematchDriver {
+    tail: Option<LogTail>,
+    /// Accumulates across the whole game session (player name is set once at
+    /// sign-in; mode/stadium update per match) and seeds each match.
+    ctx_acc: RematchContext,
+    toggles: RematchEventToggles,
+    timings: RematchEventTimings,
+}
+
+impl RematchDriver {
+    fn new() -> Self {
+        RematchDriver {
+            tail: None,
+            ctx_acc: RematchContext::default(),
+            toggles: RematchEventToggles::default(),
+            timings: RematchEventTimings::default(),
+        }
     }
 }
 
-async fn run(ctx: GameCtx) {
-    let app = ctx.app.clone();
-    let mut autocap = AutoCaptureState::new();
-    let mut active: Option<RematchActive> = None;
-    let mut full_session: Option<RecordingSession> = None;
-    let mut tail: Option<LogTail> = None;
-    // Match context accumulates across the whole game session (player name is set
-    // once at sign-in; mode/stadium update per match) and seeds each match.
-    let mut ctx_acc = RematchContext::default();
-    let mut want_match = false;
-    let mut want_since: Option<Instant> = None;
-    // Idle back-off: fast while the game runs, relaxed otherwise (set at the tick
-    // where game presence is checked).
-    let mut poll = POLL_INTERVAL;
-    tracing::info!("rematch integration started");
+#[async_trait]
+impl LiveDriver for RematchDriver {
+    type Active = RematchActive;
 
-    loop {
-        tokio::time::sleep(poll).await;
+    fn id(&self) -> GameId {
+        GameId::Rematch
+    }
 
-        // "Disabled" fully ignores Rematch: no buffer auto-attach, and forcing
-        // Manual below tears down any in-flight auto-recording via the paths that
-        // already handle a mid-match mode change.
-        let disabled = game_capture_disabled(&app, ctx.id());
-        ctx.auto_manage_capture(&mut autocap, disabled);
+    fn refresh_settings(&mut self, app: &AppHandle) {
+        (self.toggles, self.timings) = current_rematch_config(app);
+    }
 
-        let mode = if disabled {
-            AutoCaptureMode::Manual
-        } else {
-            game_auto_mode(&app, ctx.id())
-        };
-        let (toggles, timings) = current_rematch_config(&app);
-        manage_full_session(&ctx, mode, &mut full_session);
-
-        // Global auto-clip toggle flipped off mid-match → discard.
-        if !mode.records_match() {
-            if let Some(am) = active.take() {
-                tracing::info!("rematch: capture mode disabled mid-match — discarding recording");
-                am.discard();
-            }
-            want_match = false;
-            want_since = None;
+    fn begin(&mut self, rec: RecordingSession) -> RematchActive {
+        RematchActive {
+            rec,
+            events: Vec::new(),
+            goals_seen: 0,
+            ctx: self.ctx_acc.clone(),
         }
+    }
 
-        // Restart-class settings change mid-session → clean split.
-        if ctx.take_config_restart() {
-            let mut resume = false;
-            if let Some(am) = active.take() {
-                end_match(&app, am, mode, toggles, timings);
-                resume = mode.records_match();
-            }
-            if let Some(fs) = full_session.take() {
-                finish_full_session(&app, fs);
-            }
-            ctx.restart_capture();
-            if resume {
-                want_match = true;
-                want_since = Some(Instant::now());
-            }
-        }
+    fn discard(&mut self, active: RematchActive) {
+        active.rec.discard();
+    }
 
-        ctx.emit_recorder_status();
+    fn finish(&mut self, app: &AppHandle, active: RematchActive, mode: AutoCaptureMode) {
+        let RematchActive {
+            rec,
+            events,
+            goals_seen,
+            ctx,
+        } = active;
+        tracing::info!(
+            "rematch: match end — {} goal highlight(s) from {} goal(s) seen",
+            events.len(),
+            goals_seen
+        );
+        let merge_after_secs = self.timings.max_after(&self.toggles);
+        let title_suffix = ctx.title_suffix();
+        let clip_context = ctx.clip_context();
+        let timings = self.timings;
+        finish_and_cut(
+            app,
+            rec,
+            MatchCut {
+                events,
+                mode,
+                max_clip_secs: MAX_AUTOCLIP_SECS,
+                placement_tol_secs: PLACEMENT_TOL_SECS,
+                merge_after_secs,
+                game_label: "Rematch",
+                title_suffix,
+                clip_context,
+            },
+            move |kind| {
+                let t = timings.for_kind(kind);
+                (t.before, t.after)
+            },
+        );
+    }
 
+    async fn drive(
+        &mut self,
+        app: &AppHandle,
+        running: bool,
+        mode: AutoCaptureMode,
+        active: &mut Option<RematchActive>,
+        want: &mut Wanting,
+    ) {
         // Keep a tail open while the game runs; drop it (and finalize any active
         // match) when the game exits.
-        let running = ctx.game_running();
         if running {
-            if tail.is_none() {
-                tail = open_tail();
+            if self.tail.is_none() {
+                self.tail = open_tail();
             }
         } else {
             if let Some(am) = active.take() {
                 tracing::info!("rematch: game closed mid-match — finalizing recording");
-                end_match(&app, am, mode, toggles, timings);
+                self.finish(app, am, mode);
             }
-            tail = None;
-            want_match = false;
-            want_since = None;
+            self.tail = None;
+            want.clear();
         }
-        // Relax the cadence while the game isn't running.
-        poll = if running {
-            POLL_INTERVAL
-        } else {
-            IDLE_POLL_INTERVAL
-        };
 
-        // Drain new log lines: update context + react to match / goal markers.
-        if let Some(t) = tail.as_mut() {
+        // Drain new log lines. Take the tail out so we can `&mut self` in the loop.
+        if let Some(mut t) = self.tail.take() {
             let lines = match t.poll_new_lines() {
                 Ok(lines) => lines,
                 Err(e) => {
@@ -179,28 +182,26 @@ async fn run(ctx: GameCtx) {
                 }
             };
             for line in lines {
-                update_context(&mut ctx_acc, &line);
+                update_context(&mut self.ctx_acc, &line);
 
                 if log_watch::is_match_start(&line) {
                     if mode.records_match() {
                         // Seed the next recording with the latest known context.
                         if let Some(am) = active.as_mut() {
-                            am.ctx = ctx_acc.clone();
+                            am.ctx = self.ctx_acc.clone();
                         } else {
-                            want_match = true;
-                            want_since.get_or_insert_with(Instant::now);
+                            want.arm();
                         }
-                        update_live_match(&app, &ctx_acc);
+                        update_live_match(app, &self.ctx_acc);
                     }
                     continue;
                 }
 
                 if log_watch::is_match_end(&line) {
-                    want_match = false;
-                    want_since = None;
+                    want.clear();
                     if let Some(am) = active.take() {
                         tracing::info!("rematch: match ended — finalizing recording");
-                        end_match(&app, am, mode, toggles, timings);
+                        self.finish(app, am, mode);
                     }
                     continue;
                 }
@@ -208,29 +209,14 @@ async fn run(ctx: GameCtx) {
                 if log_watch::is_goal_scored(&line) {
                     if let Some(am) = active.as_mut() {
                         am.goals_seen += 1;
-                        if toggles.enabled(EventKind::Goal) {
+                        if self.toggles.enabled(EventKind::Goal) {
                             am.events.push((EventKind::Goal, line_event_ticks(&line)));
                             tracing::debug!("rematch: goal scored");
                         }
                     }
                 }
             }
-        }
-
-        // Open the session once a kickoff has latched + the encoder is warm.
-        if want_match && active.is_none() && mode.records_match() {
-            let grace = want_since.map_or(true, |t| t.elapsed() >= AUDIO_READY_GRACE);
-            if let Some(rec) = ctx.open_session("rematch_session", grace) {
-                tracing::info!("rematch: recording match → {}", rec.session_path.display());
-                active = Some(RematchActive {
-                    rec,
-                    events: Vec::new(),
-                    goals_seen: 0,
-                    ctx: ctx_acc.clone(),
-                });
-                want_match = false;
-                want_since = None;
-            }
+            self.tail = Some(t);
         }
     }
 }
@@ -261,51 +247,6 @@ fn update_context(ctx: &mut RematchContext, line: &str) {
     if let Some(map) = log_watch::parse_map(line) {
         ctx.map = map;
     }
-}
-
-/// Finish the session and (on its own blocking task) reconcile + cut the goal
-/// highlights, or save the whole match (FullMatch mode).
-fn end_match(
-    app: &AppHandle,
-    am: RematchActive,
-    mode: AutoCaptureMode,
-    toggles: RematchEventToggles,
-    timings: RematchEventTimings,
-) {
-    let RematchActive {
-        rec,
-        events,
-        goals_seen,
-        ctx,
-    } = am;
-
-    tracing::info!(
-        "rematch: match end — {} goal highlight(s) from {} goal(s) seen",
-        events.len(),
-        goals_seen
-    );
-
-    let merge_after_secs = timings.max_after(&toggles);
-    let title_suffix = ctx.title_suffix();
-    let clip_context = ctx.clip_context();
-    finish_and_cut(
-        app,
-        rec,
-        MatchCut {
-            events,
-            mode,
-            max_clip_secs: MAX_AUTOCLIP_SECS,
-            placement_tol_secs: PLACEMENT_TOL_SECS,
-            merge_after_secs,
-            game_label: "Rematch",
-            title_suffix,
-            clip_context,
-        },
-        move |kind| {
-            let t = timings.for_kind(kind);
-            (t.before, t.after)
-        },
-    );
 }
 
 /// The user's Rematch event toggles + timings (defaults when unavailable).
