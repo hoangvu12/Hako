@@ -27,6 +27,11 @@ pub enum EventKind {
     Death,
     Assist,
 
+    // ── Counter-Strike 2 ────────────────────────────────────────────────────
+    /// A headshot kill (CS2's `round_killhs`). Kill/Double/Triple/Quadra/Ace/
+    /// Death/Assist are reused from the shared combat set above.
+    Headshot,
+
     // ── Valorant-specific ───────────────────────────────────────────────────
     Knife,
     /// We won the match (anchored at the final round's last action).
@@ -58,6 +63,22 @@ pub enum EventKind {
     /// A goal was scored in the match (Rematch's lone highlight event, matching
     /// Medal's "Goal Scored").
     Goal,
+
+    // ── Dota 2 ──────────────────────────────────────────────────────────────
+    /// Four kills inside the multi-kill window (Dota's "Ultra Kill").
+    UltraKill,
+    /// Five kills inside the multi-kill window (Dota's "Rampage" — the headline).
+    Rampage,
+
+    // ── War Thunder ─────────────────────────────────────────────────────────
+    /// We crashed our own vehicle (WT's "has crashed." hud message). Ranked above
+    /// a plain kill (Medal slots crashes above kills). Kill/Death are reused.
+    Crash,
+
+    // ── PUBG ────────────────────────────────────────────────────────────────
+    /// A knockdown involving us — we downed an enemy ("Groggy") or were downed
+    /// ("Down"). Below a kill, above a death. Kill/Death/Victory are reused.
+    Knockdown,
 }
 
 impl EventKind {
@@ -71,6 +92,7 @@ impl EventKind {
             EventKind::Ace => "Ace",
             EventKind::Death => "Death",
             EventKind::Assist => "Assist",
+            EventKind::Headshot => "Headshot",
             EventKind::Knife => "Knife",
             EventKind::Victory => "Victory",
             EventKind::Clutch => "Clutch",
@@ -84,6 +106,10 @@ impl EventKind {
             EventKind::TurretKilled => "Turret",
             EventKind::InhibKilled => "Inhibitor",
             EventKind::Goal => "Goal",
+            EventKind::UltraKill => "Ultra Kill",
+            EventKind::Rampage => "Rampage",
+            EventKind::Crash => "Crash",
+            EventKind::Knockdown => "Knockdown",
         }
     }
 
@@ -110,6 +136,18 @@ impl EventKind {
         }
     }
 
+    /// The Dota 2 multi-kill tier for `n` kills within the multi-kill window
+    /// (n≥1; 4 ⇒ Ultra Kill, 5+ ⇒ Rampage).
+    pub fn for_dota_multikill(n: usize) -> EventKind {
+        match n {
+            2 => EventKind::DoubleKill,
+            3 => EventKind::TripleKill,
+            4 => EventKind::UltraKill,
+            n if n >= 5 => EventKind::Rampage,
+            _ => EventKind::Kill,
+        }
+    }
+
     /// Tag priority: the headline moments outrank multi-kills, which outrank
     /// single kills, objectives, deaths, and assists. Used to pick the dominant
     /// label of a merged clip and to dedup overlapping seek-bar markers.
@@ -118,6 +156,9 @@ impl EventKind {
             EventKind::Victory => 30,
             // Rematch's lone event — the headline of any Rematch clip it lands in.
             EventKind::Goal => 25,
+            // Dota's headline multi-kills (Rampage = 5, Ultra = 4).
+            EventKind::Rampage => 24,
+            EventKind::UltraKill => 23,
             EventKind::Pentakill => 22,
             EventKind::Ace => 21,
             EventKind::Clutch => 20,
@@ -133,8 +174,17 @@ impl EventKind {
             EventKind::SpikeDefused => 10,
             EventKind::SpikeDetonated => 9,
             EventKind::FirstBlood => 8,
+            // War Thunder crash: Medal ranks a crash above a kill (the headline of
+            // a WT clip that has one). Above Headshot; below every multi-kill.
+            EventKind::Crash => 4,
+            // CS2 headshot: outranks a plain kill, below every multi-kill (Medal
+            // slots Headshot between Kill and 2K).
+            EventKind::Headshot => 3,
             EventKind::Kill => 2,
             EventKind::Assist => 1,
+            // PUBG knockdown: below a kill, above a death. Shares the Assist rank
+            // (PUBG never emits Assist, so there's no in-clip collision).
+            EventKind::Knockdown => 1,
             EventKind::Death => 0,
         }
     }

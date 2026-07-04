@@ -145,6 +145,129 @@ export interface RematchGameSettings {
   event_timings: RematchEventTimings;
 }
 
+/** Per-event auto-clip toggles for CS2 (mirrors Rust `Cs2EventToggles`). */
+export interface Cs2EventToggles {
+  kill: boolean;
+  headshot: boolean;
+  double_kill: boolean;
+  triple_kill: boolean;
+  quadra_kill: boolean;
+  ace: boolean;
+  death: boolean;
+  assist: boolean;
+}
+
+/** Per-event clip windows for CS2 (mirrors Rust `Cs2EventTimings`). */
+export interface Cs2EventTimings {
+  kill: EventTiming;
+  headshot: EventTiming;
+  double_kill: EventTiming;
+  triple_kill: EventTiming;
+  quadra_kill: EventTiming;
+  ace: EventTiming;
+  death: EventTiming;
+  assist: EventTiming;
+}
+
+/** Counter-Strike 2 auto-capture config (mirrors Rust `Cs2GameSettings`). */
+export interface Cs2GameSettings {
+  auto_capture_mode: AutoCaptureMode;
+  /** When true, Hako completely ignores CS2 (no buffer, no auto-record).
+   * Distinct from `auto_capture_mode = "manual"`, which keeps the buffer + save
+   * hotkey working. */
+  disabled: boolean;
+  events: Cs2EventToggles;
+  event_timings: Cs2EventTimings;
+}
+
+/** Per-event auto-clip toggles for Dota 2 (mirrors Rust `Dota2EventToggles`). */
+export interface Dota2EventToggles {
+  kill: boolean;
+  double_kill: boolean;
+  triple_kill: boolean;
+  ultra_kill: boolean;
+  rampage: boolean;
+  death: boolean;
+  assist: boolean;
+}
+
+/** Per-event clip windows for Dota 2 (mirrors Rust `Dota2EventTimings`). */
+export interface Dota2EventTimings {
+  kill: EventTiming;
+  double_kill: EventTiming;
+  triple_kill: EventTiming;
+  ultra_kill: EventTiming;
+  rampage: EventTiming;
+  death: EventTiming;
+  assist: EventTiming;
+}
+
+/** Dota 2 auto-capture config (mirrors Rust `Dota2GameSettings`). */
+export interface Dota2GameSettings {
+  auto_capture_mode: AutoCaptureMode;
+  /** When true, Hako completely ignores Dota 2 (no buffer, no auto-record).
+   * Distinct from `auto_capture_mode = "manual"`, which keeps the buffer + save
+   * hotkey working. */
+  disabled: boolean;
+  events: Dota2EventToggles;
+  event_timings: Dota2EventTimings;
+}
+
+/** Per-event auto-clip toggles for War Thunder (mirrors Rust `WarThunderEventToggles`). */
+export interface WarThunderEventToggles {
+  kill: boolean;
+  crash: boolean;
+  death: boolean;
+}
+
+/** Per-event clip windows for War Thunder (mirrors Rust `WarThunderEventTimings`). */
+export interface WarThunderEventTimings {
+  kill: EventTiming;
+  crash: EventTiming;
+  death: EventTiming;
+}
+
+/** War Thunder auto-capture config (mirrors Rust `WarThunderGameSettings`). */
+export interface WarThunderGameSettings {
+  auto_capture_mode: AutoCaptureMode;
+  /** When true, Hako completely ignores War Thunder (no buffer, no auto-record).
+   * Distinct from `auto_capture_mode = "manual"`, which keeps the buffer + save
+   * hotkey working. */
+  disabled: boolean;
+  /** The player's in-game nickname, matched against the HUD combat log to
+   * attribute kills/deaths. Event clipping stays idle until it's filled in. */
+  nickname: string;
+  events: WarThunderEventToggles;
+  event_timings: WarThunderEventTimings;
+}
+
+/** Per-event auto-clip toggles for PUBG (mirrors Rust `PubgEventToggles`). */
+export interface PubgEventToggles {
+  victory: boolean;
+  kill: boolean;
+  knockdown: boolean;
+  death: boolean;
+}
+
+/** Per-event clip windows for PUBG (mirrors Rust `PubgEventTimings`). */
+export interface PubgEventTimings {
+  victory: EventTiming;
+  kill: EventTiming;
+  knockdown: EventTiming;
+  death: EventTiming;
+}
+
+/** PUBG auto-capture config (mirrors Rust `PubgGameSettings`). */
+export interface PubgGameSettings {
+  auto_capture_mode: AutoCaptureMode;
+  /** When true, Hako completely ignores PUBG (no buffer, no auto-record).
+   * Distinct from `auto_capture_mode = "manual"`, which keeps the buffer + save
+   * hotkey working. */
+  disabled: boolean;
+  events: PubgEventToggles;
+  event_timings: PubgEventTimings;
+}
+
 /**
  * Generic "record any game" config (mirrors Rust `OtherGamesSettings`). No
  * per-event toggles — a generic game has no event feed, so it records only in
@@ -165,6 +288,10 @@ export interface OtherGamesSettings {
 export interface GamesSettings {
   lol: LolGameSettings;
   rematch: RematchGameSettings;
+  cs2: Cs2GameSettings;
+  dota2: Dota2GameSettings;
+  warthunder: WarThunderGameSettings;
+  pubg: PubgGameSettings;
   other: OtherGamesSettings;
 }
 

@@ -20,6 +20,10 @@ import {
   EVENT_LABELS,
   LOL_EVENT_LABELS,
   REMATCH_EVENT_LABELS,
+  CS2_EVENT_LABELS,
+  DOTA2_EVENT_LABELS,
+  WARTHUNDER_EVENT_LABELS,
+  PUBG_EVENT_LABELS,
   MAX_BEFORE_SECS,
   MAX_AFTER_SECS,
   type SettingsSet,
@@ -34,6 +38,10 @@ import {
 } from "@/lib/api";
 import type {
   AutoCaptureMode,
+  Cs2EventToggles,
+  Dota2EventToggles,
+  WarThunderEventToggles,
+  PubgEventToggles,
   EventTiming,
   EventToggles,
   GameModeToggles,
@@ -93,6 +101,21 @@ interface GameAutoModel {
   commitTiming: (key: string, field: "before" | "after", value: number) => void;
   /** Present only for games with per-mode gating (Valorant). */
   gameModes?: GameModeModel;
+  /** Present only for games that need a free-text field to attribute events to
+   * the local player (War Thunder's in-game nickname). */
+  nickname?: NicknameModel;
+}
+
+/** A required free-text identity field (War Thunder's nickname). */
+interface NicknameModel {
+  label: string;
+  hint: string;
+  placeholder: string;
+  value: string;
+  /** Local edit (per keystroke). */
+  onChange: (value: string) => void;
+  /** Persist (on blur). */
+  onCommit: (value: string) => void;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -240,6 +263,28 @@ function EventCheck({
   );
 }
 
+/** A game's required identity field (War Thunder's nickname). Edits apply
+ * locally per keystroke and persist on blur — the same instant-apply/commit split
+ * the timing sliders use. */
+function NicknameField({ nickname }: { nickname: NicknameModel }) {
+  return (
+    <Panel title={nickname.label}>
+      <p className="-mt-1 pb-2 text-xs text-muted-foreground">{nickname.hint}</p>
+      <input
+        type="text"
+        value={nickname.value}
+        placeholder={nickname.placeholder}
+        spellCheck={false}
+        autoCapitalize="off"
+        autoCorrect="off"
+        onChange={(e) => nickname.onChange(e.target.value)}
+        onBlur={(e) => nickname.onCommit(e.target.value)}
+        className="w-full rounded-lg border border-border/70 bg-secondary/40 px-3 py-2 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/50"
+      />
+    </Panel>
+  );
+}
+
 /* -------------------------------------------------------------------------- */
 /* Per-game card                                                             */
 /* -------------------------------------------------------------------------- */
@@ -311,6 +356,8 @@ function GameAutoCard({ model }: { model: GameAutoModel }) {
       {open && enabled && (
         <div className="flex flex-col gap-4 border-t border-border/60 p-4">
           <ModeCards value={model.mode} onSelect={model.setMode} />
+
+          {model.nickname && <NicknameField nickname={model.nickname} />}
 
           {showGameModes && model.gameModes && (
             <Panel title="Game modes">
@@ -651,6 +698,28 @@ export function AutoSection({
   toggleRematchEvent,
   setRematchTimingLocal,
   commitRematchTiming,
+  setCs2Mode,
+  setCs2Disabled,
+  toggleCs2Event,
+  setCs2TimingLocal,
+  commitCs2Timing,
+  setDota2Mode,
+  setDota2Disabled,
+  toggleDota2Event,
+  setDota2TimingLocal,
+  commitDota2Timing,
+  setWarThunderMode,
+  setWarThunderDisabled,
+  setWarThunderNickname,
+  commitWarThunderNickname,
+  toggleWarThunderEvent,
+  setWarThunderTimingLocal,
+  commitWarThunderTiming,
+  setPubgMode,
+  setPubgDisabled,
+  togglePubgEvent,
+  setPubgTimingLocal,
+  commitPubgTiming,
   setOtherMode,
   setOtherDisabled,
   setOtherDetect,
@@ -679,6 +748,60 @@ export function AutoSection({
     field: "before" | "after",
     value: number
   ) => void;
+  setCs2Mode: (mode: AutoCaptureMode) => void;
+  setCs2Disabled: (disabled: boolean) => void;
+  toggleCs2Event: (key: keyof Cs2EventToggles) => void;
+  setCs2TimingLocal: (
+    key: keyof Cs2EventToggles,
+    field: "before" | "after",
+    value: number
+  ) => void;
+  commitCs2Timing: (
+    key: keyof Cs2EventToggles,
+    field: "before" | "after",
+    value: number
+  ) => void;
+  setDota2Mode: (mode: AutoCaptureMode) => void;
+  setDota2Disabled: (disabled: boolean) => void;
+  toggleDota2Event: (key: keyof Dota2EventToggles) => void;
+  setDota2TimingLocal: (
+    key: keyof Dota2EventToggles,
+    field: "before" | "after",
+    value: number
+  ) => void;
+  commitDota2Timing: (
+    key: keyof Dota2EventToggles,
+    field: "before" | "after",
+    value: number
+  ) => void;
+  setWarThunderMode: (mode: AutoCaptureMode) => void;
+  setWarThunderDisabled: (disabled: boolean) => void;
+  setWarThunderNickname: (nickname: string) => void;
+  commitWarThunderNickname: (nickname: string) => void;
+  toggleWarThunderEvent: (key: keyof WarThunderEventToggles) => void;
+  setWarThunderTimingLocal: (
+    key: keyof WarThunderEventToggles,
+    field: "before" | "after",
+    value: number
+  ) => void;
+  commitWarThunderTiming: (
+    key: keyof WarThunderEventToggles,
+    field: "before" | "after",
+    value: number
+  ) => void;
+  setPubgMode: (mode: AutoCaptureMode) => void;
+  setPubgDisabled: (disabled: boolean) => void;
+  togglePubgEvent: (key: keyof PubgEventToggles) => void;
+  setPubgTimingLocal: (
+    key: keyof PubgEventToggles,
+    field: "before" | "after",
+    value: number
+  ) => void;
+  commitPubgTiming: (
+    key: keyof PubgEventToggles,
+    field: "before" | "after",
+    value: number
+  ) => void;
   setOtherMode: (mode: AutoCaptureMode) => void;
   setOtherDisabled: (disabled: boolean) => void;
   setOtherDetect: (key: "detect_steam" | "detect_curated", value: boolean) => void;
@@ -690,6 +813,10 @@ export function AutoSection({
   // these builders; the card UI above is fully generic.
   const lol = draft.games.lol;
   const rematch = draft.games.rematch;
+  const cs2 = draft.games.cs2;
+  const dota2 = draft.games.dota2;
+  const warthunder = draft.games.warthunder;
+  const pubg = draft.games.pubg;
   const models: Record<SmartGameId, GameAutoModel> = {
     valorant: {
       meta: gameMeta("valorant"),
@@ -735,6 +862,68 @@ export function AutoSection({
       timing: (k) => rematch.event_timings[k as keyof RematchEventToggles],
       setTimingLocal: (k, f, v) => setRematchTimingLocal(k as keyof RematchEventToggles, f, v),
       commitTiming: (k, f, v) => commitRematchTiming(k as keyof RematchEventToggles, f, v),
+    },
+    cs2: {
+      meta: gameMeta("cs2"),
+      mode: cs2.auto_capture_mode,
+      setMode: setCs2Mode,
+      disabled: cs2.disabled,
+      setDisabled: setCs2Disabled,
+      events: CS2_EVENT_LABELS,
+      enabled: (k) => cs2.events[k as keyof Cs2EventToggles],
+      toggleEvent: (k) => toggleCs2Event(k as keyof Cs2EventToggles),
+      timing: (k) => cs2.event_timings[k as keyof Cs2EventToggles],
+      setTimingLocal: (k, f, v) => setCs2TimingLocal(k as keyof Cs2EventToggles, f, v),
+      commitTiming: (k, f, v) => commitCs2Timing(k as keyof Cs2EventToggles, f, v),
+    },
+    dota2: {
+      meta: gameMeta("dota2"),
+      mode: dota2.auto_capture_mode,
+      setMode: setDota2Mode,
+      disabled: dota2.disabled,
+      setDisabled: setDota2Disabled,
+      events: DOTA2_EVENT_LABELS,
+      enabled: (k) => dota2.events[k as keyof Dota2EventToggles],
+      toggleEvent: (k) => toggleDota2Event(k as keyof Dota2EventToggles),
+      timing: (k) => dota2.event_timings[k as keyof Dota2EventToggles],
+      setTimingLocal: (k, f, v) => setDota2TimingLocal(k as keyof Dota2EventToggles, f, v),
+      commitTiming: (k, f, v) => commitDota2Timing(k as keyof Dota2EventToggles, f, v),
+    },
+    warthunder: {
+      meta: gameMeta("warthunder"),
+      mode: warthunder.auto_capture_mode,
+      setMode: setWarThunderMode,
+      disabled: warthunder.disabled,
+      setDisabled: setWarThunderDisabled,
+      events: WARTHUNDER_EVENT_LABELS,
+      enabled: (k) => warthunder.events[k as keyof WarThunderEventToggles],
+      toggleEvent: (k) => toggleWarThunderEvent(k as keyof WarThunderEventToggles),
+      timing: (k) => warthunder.event_timings[k as keyof WarThunderEventToggles],
+      setTimingLocal: (k, f, v) =>
+        setWarThunderTimingLocal(k as keyof WarThunderEventToggles, f, v),
+      commitTiming: (k, f, v) =>
+        commitWarThunderTiming(k as keyof WarThunderEventToggles, f, v),
+      nickname: {
+        label: "In-game nickname",
+        hint: "War Thunder's combat log is free text, so Hako matches this name to know which kills and deaths are yours. Enter it exactly as it appears in-game.",
+        placeholder: "Your War Thunder nickname",
+        value: warthunder.nickname,
+        onChange: setWarThunderNickname,
+        onCommit: commitWarThunderNickname,
+      },
+    },
+    pubg: {
+      meta: gameMeta("pubg"),
+      mode: pubg.auto_capture_mode,
+      setMode: setPubgMode,
+      disabled: pubg.disabled,
+      setDisabled: setPubgDisabled,
+      events: PUBG_EVENT_LABELS,
+      enabled: (k) => pubg.events[k as keyof PubgEventToggles],
+      toggleEvent: (k) => togglePubgEvent(k as keyof PubgEventToggles),
+      timing: (k) => pubg.event_timings[k as keyof PubgEventToggles],
+      setTimingLocal: (k, f, v) => setPubgTimingLocal(k as keyof PubgEventToggles, f, v),
+      commitTiming: (k, f, v) => commitPubgTiming(k as keyof PubgEventToggles, f, v),
     },
   };
 

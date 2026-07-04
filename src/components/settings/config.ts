@@ -29,6 +29,10 @@ import {
 
 import type {
   AutoCaptureMode,
+  Cs2EventToggles,
+  Dota2EventToggles,
+  WarThunderEventToggles,
+  PubgEventToggles,
   EventToggles,
   GameModeToggles,
   LolEventToggles,
@@ -146,6 +150,68 @@ export const REMATCH_EVENT_LABELS: {
   icon: Icon;
 }[] = [
   { key: "goal", label: "Goal", hint: "A goal was scored in the match", icon: SoccerBall },
+];
+
+// Counter-Strike 2 auto-clip events (mirrors Rust `Cs2EventToggles`). Derived by
+// diffing the game's GSI state — multi-kills + headshots default on.
+export const CS2_EVENT_LABELS: {
+  key: keyof Cs2EventToggles;
+  label: string;
+  hint: string;
+  icon: Icon;
+}[] = [
+  { key: "ace", label: "Ace", hint: "Five kills in a round", icon: Fire },
+  { key: "quadra_kill", label: "Quad kill", hint: "4 kills in a round", icon: Sword },
+  { key: "triple_kill", label: "Triple kill", hint: "3 kills in a round", icon: Sword },
+  { key: "double_kill", label: "Double kill", hint: "2 kills in a round", icon: Sword },
+  { key: "headshot", label: "Headshot", hint: "A headshot kill", icon: Crosshair },
+  { key: "kill", label: "Kill", hint: "Any elimination", icon: Sword },
+  { key: "death", label: "Death", hint: "Your deaths", icon: Skull },
+  { key: "assist", label: "Assist", hint: "Assisted eliminations", icon: Handshake },
+];
+
+// Dota 2 auto-clip events (mirrors Rust `Dota2EventToggles`). Derived by diffing
+// the game's GSI state; multi-kills (grouped by an 18s window) default on.
+export const DOTA2_EVENT_LABELS: {
+  key: keyof Dota2EventToggles;
+  label: string;
+  hint: string;
+  icon: Icon;
+}[] = [
+  { key: "rampage", label: "Rampage", hint: "Five kills (the headline)", icon: Fire },
+  { key: "ultra_kill", label: "Ultra kill", hint: "Four kills in a row", icon: Crown },
+  { key: "triple_kill", label: "Triple kill", hint: "Three kills in a row", icon: Sword },
+  { key: "double_kill", label: "Double kill", hint: "Two kills in a row", icon: Sword },
+  { key: "kill", label: "Kill", hint: "Any kill", icon: Sword },
+  { key: "death", label: "Death", hint: "Your deaths", icon: Skull },
+  { key: "assist", label: "Assist", hint: "Assisted kills", icon: Handshake },
+];
+
+// War Thunder auto-clip events (mirrors Rust `WarThunderEventToggles`). Derived
+// by matching your nickname in the HUD combat log; kills + crashes default on.
+export const WARTHUNDER_EVENT_LABELS: {
+  key: keyof WarThunderEventToggles;
+  label: string;
+  hint: string;
+  icon: Icon;
+}[] = [
+  { key: "kill", label: "Kill", hint: "You shot down / destroyed an enemy", icon: Sword },
+  { key: "crash", label: "Crash", hint: "You crashed your own vehicle", icon: Fire },
+  { key: "death", label: "Death", hint: "You were shot down / destroyed", icon: Skull },
+];
+
+// PUBG auto-clip events (mirrors Rust `PubgEventToggles`). Derived from the
+// match replay's sidecars; the win, kills, and knockdowns default on.
+export const PUBG_EVENT_LABELS: {
+  key: keyof PubgEventToggles;
+  label: string;
+  hint: string;
+  icon: Icon;
+}[] = [
+  { key: "victory", label: "Chicken Dinner", hint: "You won the match", icon: Trophy },
+  { key: "kill", label: "Kill", hint: "You eliminated an enemy", icon: Sword },
+  { key: "knockdown", label: "Knockdown", hint: "You knocked or were knocked down", icon: Drop },
+  { key: "death", label: "Death", hint: "You were eliminated", icon: Skull },
 ];
 
 // Slider ranges for the per-event timing rows. Before can run long (the 45 s

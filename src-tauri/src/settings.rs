@@ -10,6 +10,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::games::cs2::events::{Cs2EventTimings, Cs2EventToggles};
+use crate::games::dota2::events::{Dota2EventTimings, Dota2EventToggles};
+use crate::games::pubg::events::{PubgEventTimings, PubgEventToggles};
+use crate::games::warthunder::events::{WarThunderEventTimings, WarThunderEventToggles};
 use crate::games::lol::events::{LolEventTimings, LolEventToggles};
 use crate::games::rematch::events::{RematchEventTimings, RematchEventToggles};
 use crate::valorant::model::GameModeToggles;
@@ -277,6 +281,10 @@ impl AutoCaptureMode {
 pub struct GamesSettings {
     pub lol: LolGameSettings,
     pub rematch: RematchGameSettings,
+    pub cs2: Cs2GameSettings,
+    pub dota2: Dota2GameSettings,
+    pub warthunder: WarThunderGameSettings,
+    pub pubg: PubgGameSettings,
     /// The generic "record any game" bucket (Steam / curated / user-added). Unlike
     /// the smart games it has no events — just a capture mode + detection toggles.
     pub other: OtherGamesSettings,
@@ -378,6 +386,123 @@ impl Default for RematchGameSettings {
             disabled: false,
             events: RematchEventToggles::default(),
             event_timings: RematchEventTimings::default(),
+        }
+    }
+}
+
+/// Counter-Strike 2 auto-capture config (GSI kill/headshot/multi-kill events +
+/// their clip windows).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Cs2GameSettings {
+    /// `manual` | `highlights` | `full_match` | `session` (see [`AutoCaptureMode`]).
+    pub auto_capture_mode: String,
+    /// When true, Hako completely ignores CS2 (no buffer auto-attach, no
+    /// auto-record). See [`Settings::auto_capture_disabled`] for the Valorant
+    /// equivalent and the manual/disabled distinction. Defaults off.
+    pub disabled: bool,
+    /// Per-event auto-clip toggles.
+    pub events: Cs2EventToggles,
+    /// Per-event clip windows (before/after seconds).
+    pub event_timings: Cs2EventTimings,
+}
+
+impl Default for Cs2GameSettings {
+    fn default() -> Self {
+        Cs2GameSettings {
+            auto_capture_mode: "highlights".into(),
+            disabled: false,
+            events: Cs2EventToggles::default(),
+            event_timings: Cs2EventTimings::default(),
+        }
+    }
+}
+
+/// Dota 2 auto-capture config (GSI kill/multi-kill events + their clip windows).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Dota2GameSettings {
+    /// `manual` | `highlights` | `full_match` | `session` (see [`AutoCaptureMode`]).
+    pub auto_capture_mode: String,
+    /// When true, Hako completely ignores Dota 2 (no buffer auto-attach, no
+    /// auto-record). Defaults off.
+    pub disabled: bool,
+    /// Per-event auto-clip toggles.
+    pub events: Dota2EventToggles,
+    /// Per-event clip windows (before/after seconds).
+    pub event_timings: Dota2EventTimings,
+}
+
+impl Default for Dota2GameSettings {
+    fn default() -> Self {
+        Dota2GameSettings {
+            auto_capture_mode: "highlights".into(),
+            disabled: false,
+            events: Dota2EventToggles::default(),
+            event_timings: Dota2EventTimings::default(),
+        }
+    }
+}
+
+/// War Thunder auto-capture config (HUD-polled Kill/Death/Crash events + their
+/// clip windows). Unlike the Valve GSI games it also carries the player's in-game
+/// `nickname`: War Thunder's combat log is free text, so we can only attribute a
+/// kill/death to the local player by matching this name (no nickname ⇒ nothing to
+/// clip). Forward/back-compatible via `#[serde(default)]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WarThunderGameSettings {
+    /// `manual` | `highlights` | `full_match` | `session` (see [`AutoCaptureMode`]).
+    pub auto_capture_mode: String,
+    /// When true, Hako completely ignores War Thunder (no buffer auto-attach, no
+    /// auto-record). Defaults off.
+    pub disabled: bool,
+    /// The player's in-game nickname, matched against the HUD combat log to
+    /// attribute kills/deaths. Empty by default (event clipping stays idle until
+    /// it's filled in).
+    pub nickname: String,
+    /// Per-event auto-clip toggles.
+    pub events: WarThunderEventToggles,
+    /// Per-event clip windows (before/after seconds).
+    pub event_timings: WarThunderEventTimings,
+}
+
+impl Default for WarThunderGameSettings {
+    fn default() -> Self {
+        WarThunderGameSettings {
+            auto_capture_mode: "highlights".into(),
+            disabled: false,
+            nickname: String::new(),
+            events: WarThunderEventToggles::default(),
+            event_timings: WarThunderEventTimings::default(),
+        }
+    }
+}
+
+/// PUBG auto-capture config (replay-derived kill/knockdown/death/chicken-dinner
+/// events + their clip windows). PUBG's replay header names the local player, so
+/// no nickname field is needed. Forward/back-compatible via `#[serde(default)]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PubgGameSettings {
+    /// `manual` | `highlights` | `full_match` | `session` (see [`AutoCaptureMode`]).
+    pub auto_capture_mode: String,
+    /// When true, Hako completely ignores PUBG (no buffer auto-attach, no
+    /// auto-record). Defaults off.
+    pub disabled: bool,
+    /// Per-event auto-clip toggles.
+    pub events: PubgEventToggles,
+    /// Per-event clip windows (before/after seconds).
+    pub event_timings: PubgEventTimings,
+}
+
+impl Default for PubgGameSettings {
+    fn default() -> Self {
+        PubgGameSettings {
+            auto_capture_mode: "highlights".into(),
+            disabled: false,
+            events: PubgEventToggles::default(),
+            event_timings: PubgEventTimings::default(),
         }
     }
 }
@@ -589,6 +714,22 @@ impl Settings {
 
     pub fn rematch_auto_mode(&self) -> AutoCaptureMode {
         AutoCaptureMode::parse(&self.games.rematch.auto_capture_mode)
+    }
+
+    pub fn cs2_auto_mode(&self) -> AutoCaptureMode {
+        AutoCaptureMode::parse(&self.games.cs2.auto_capture_mode)
+    }
+
+    pub fn warthunder_auto_mode(&self) -> AutoCaptureMode {
+        AutoCaptureMode::parse(&self.games.warthunder.auto_capture_mode)
+    }
+
+    pub fn pubg_auto_mode(&self) -> AutoCaptureMode {
+        AutoCaptureMode::parse(&self.games.pubg.auto_capture_mode)
+    }
+
+    pub fn dota2_auto_mode(&self) -> AutoCaptureMode {
+        AutoCaptureMode::parse(&self.games.dota2.auto_capture_mode)
     }
 
     /// The generic-capture ("Other Games") auto mode. Highlights isn't valid for

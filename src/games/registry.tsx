@@ -3,6 +3,10 @@ import {
   Sword,
   SoccerBall,
   GameController,
+  Target,
+  Lightning,
+  Airplane,
+  Skull,
   type Icon,
 } from "@phosphor-icons/react";
 
@@ -22,7 +26,15 @@ import {
 /** Stable lowercase id, matching the clip DB's `game` column + settings keys.
  * `other` is the generic "record any game" bucket (its settings + arbiter key);
  * individual generic clips store the *real* game title, not `other`. */
-export type GameId = "valorant" | "lol" | "rematch" | "other";
+export type GameId =
+  | "valorant"
+  | "lol"
+  | "rematch"
+  | "cs2"
+  | "dota2"
+  | "warthunder"
+  | "pubg"
+  | "other";
 
 export interface GameMeta {
   id: GameId;
@@ -72,6 +84,38 @@ export const GAMES: GameMeta[] = [
       "runtimeclient-wingdk-shipping.exe",
     ],
   },
+  {
+    id: "cs2",
+    label: "Counter-Strike 2",
+    logo: "/games/cs2.svg",
+    Icon: Target,
+    accent: "#E9A13B",
+    processNames: ["cs2.exe"],
+  },
+  {
+    id: "dota2",
+    label: "Dota 2",
+    logo: "/games/dota2.svg",
+    Icon: Lightning,
+    accent: "#C23C2A",
+    processNames: ["dota2.exe"],
+  },
+  {
+    id: "warthunder",
+    label: "War Thunder",
+    logo: "/games/warthunder.svg",
+    Icon: Airplane,
+    accent: "#6E8B3D",
+    processNames: ["aces.exe"],
+  },
+  {
+    id: "pubg",
+    label: "PUBG",
+    logo: "/games/pubg.svg",
+    Icon: Skull,
+    accent: "#CA9A3C",
+    processNames: ["tslgame.exe"],
+  },
   // The generic "record any game" bucket — kept LAST (mirrors the backend
   // registry order). Detected games are added via the picker / auto-scan; this
   // entry styles the Auto-Capture "Other Games" card, not per-game detection.
@@ -115,5 +159,9 @@ export function clipGame(game: string | null | undefined): GameId {
   if (game === "lol") return "lol";
   if (game === "rematch") return "rematch";
   if (game === "valorant") return "valorant";
+  if (game === "cs2") return "cs2";
+  if (game === "dota2") return "dota2";
+  if (game === "warthunder") return "warthunder";
+  if (game === "pubg") return "pubg";
   return "other";
 }

@@ -20,16 +20,21 @@
 //! ([`orchestrator`]) are the same for both: both shapes converge on producing
 //! placed clip windows handed to one cut routine.
 
+pub mod cs2;
+pub mod dota2;
 pub mod event;
 pub mod generic;
+pub mod gsi;
 pub mod lockfile;
 pub mod lol;
 pub mod net;
 pub mod orchestrator;
 pub mod process_snapshot;
+pub mod pubg;
 pub mod recording;
 pub mod rematch;
 pub mod timeline;
+pub mod warthunder;
 
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -48,6 +53,10 @@ pub enum GameId {
     Valorant,
     Lol,
     Rematch,
+    Cs2,
+    Dota2,
+    WarThunder,
+    Pubg,
     /// The generic "any other game" bucket — a single arbiter/settings key shared
     /// by every non-integrated game we detect + record generically (Steam /
     /// curated / user-added). Individual clips are still tagged with the *real*
@@ -63,6 +72,10 @@ impl GameId {
             GameId::Valorant => "valorant",
             GameId::Lol => "lol",
             GameId::Rematch => "rematch",
+            GameId::Cs2 => "cs2",
+            GameId::Dota2 => "dota2",
+            GameId::WarThunder => "warthunder",
+            GameId::Pubg => "pubg",
             GameId::Other => "other",
         }
     }
@@ -73,6 +86,10 @@ impl GameId {
             GameId::Valorant => "Valorant",
             GameId::Lol => "League of Legends",
             GameId::Rematch => "Rematch",
+            GameId::Cs2 => "Counter-Strike 2",
+            GameId::Dota2 => "Dota 2",
+            GameId::WarThunder => "War Thunder",
+            GameId::Pubg => "PUBG",
             // The generic *bucket* label. A live generic clip/status uses the real
             // detected title instead (see `commands::recorder_status_snapshot`).
             GameId::Other => "Other Games",
@@ -85,6 +102,10 @@ impl GameId {
             "valorant" => Some(GameId::Valorant),
             "lol" | "leagueoflegends" | "league_of_legends" => Some(GameId::Lol),
             "rematch" => Some(GameId::Rematch),
+            "cs2" | "counterstrike2" | "counter_strike_2" | "csgo" => Some(GameId::Cs2),
+            "dota2" | "dota" | "dota_2" => Some(GameId::Dota2),
+            "warthunder" | "war_thunder" | "aces" => Some(GameId::WarThunder),
+            "pubg" | "tslgame" | "playerunknowns_battlegrounds" => Some(GameId::Pubg),
             "other" => Some(GameId::Other),
             _ => None,
         }
@@ -134,7 +155,11 @@ pub fn registry() -> &'static [Arc<dyn GameIntegration>] {
             Arc::new(valorant::Integration) as Arc<dyn GameIntegration>,
             Arc::new(lol::Integration),
             Arc::new(rematch::Integration),
-            // Registered LAST so the three smart integrations win the single-capture
+            Arc::new(cs2::Integration),
+            Arc::new(dota2::Integration),
+            Arc::new(warthunder::Integration),
+            Arc::new(pubg::Integration),
+            // Registered LAST so the smart integrations win the single-capture
             // arbiter: if a smart game is up, the generic bucket stands down.
             Arc::new(generic::Integration),
         ]

@@ -71,6 +71,13 @@ sysinfo = "0.33"
 # Object-safe async methods on the GameIntegration trait (per-game `run` loops).
 async-trait = "0.1"
 
+# Inbound localhost HTTP server for Valve Game-State-Integration games (CS2 /
+# Dota 2): the game POSTs JSON state to a port we host. Tiny, blocking, zero
+# async surface — perfect for a localhost-only single-purpose endpoint (we
+# deliberately avoid pulling in axum/hyper for one POST handler). See
+# `games::gsi`.
+tiny_http = "0.12"
+
 # Clip library: bundled SQLite so there's no system dependency on Windows.
 rusqlite = { version = "0.32", features = ["bundled"] }
 

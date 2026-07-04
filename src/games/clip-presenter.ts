@@ -119,6 +119,77 @@ const rematch: GamePresenter = {
   },
 };
 
+const cs2: GamePresenter = {
+  // CS2 has a map + mode but no agent/champion portrait; K/D/A isn't tracked in
+  // the clip context, so the card just shows the map (the multi-kill/headshot
+  // labels are in the clip title).
+  cardBadges(clip) {
+    return badges({ label: clip.map ?? "" });
+  },
+  detail(clip) {
+    return {
+      icon: undefined,
+      name: null,
+      fallback: "Counter-Strike 2",
+      sub: [clip.map, clip.mode].filter(Boolean).join(" · "),
+      showKda: false,
+    };
+  },
+};
+
+const dota2: GamePresenter = {
+  // Dota tags the hero in the agent column but ships no bundled portrait, so the
+  // card shows the hero name as plain text (the multi-kill labels are in the
+  // clip title). No map/mode or K/D/A surfaced.
+  cardBadges(clip) {
+    return badges({ label: clip.agent ?? "" });
+  },
+  detail(clip) {
+    return {
+      icon: undefined,
+      name: clip.agent ?? null,
+      fallback: "Dota 2",
+      sub: "",
+      showKda: false,
+    };
+  },
+};
+
+const warthunder: GamePresenter = {
+  // War Thunder exposes no map/mode over its HUD API — only the local vehicle
+  // class (stored in `mode`). No agent portrait or K/D/A; the Kill/Crash labels
+  // live in the clip title.
+  cardBadges(clip) {
+    return badges({ label: clip.mode ?? "" });
+  },
+  detail(clip) {
+    return {
+      icon: undefined,
+      name: null,
+      fallback: "War Thunder",
+      sub: clip.mode ?? "",
+      showKda: false,
+    };
+  },
+};
+
+const pubg: GamePresenter = {
+  // PUBG clips carry no match context — its replay sidecars give us only the
+  // event moments (in the clip title), not a map or K/D/A. No portrait or badges.
+  cardBadges() {
+    return badges({ label: "" });
+  },
+  detail() {
+    return {
+      icon: undefined,
+      name: null,
+      fallback: "PUBG",
+      sub: "",
+      showKda: false,
+    };
+  },
+};
+
 const other: GamePresenter = {
   // Generic "record any game" clips carry no match context — just the real game
   // title (in `clip.game`, surfaced elsewhere). No portrait, badges, or K/D/A.
@@ -140,6 +211,10 @@ const GAME_PRESENTERS: Record<GameId, GamePresenter> = {
   valorant,
   lol,
   rematch,
+  cs2,
+  dota2,
+  warthunder,
+  pubg,
   other,
 };
 

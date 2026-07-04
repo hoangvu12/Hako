@@ -24,6 +24,10 @@ import {
   type GameModeToggles,
   type LolEventToggles,
   type RematchEventToggles,
+  type Cs2EventToggles,
+  type Dota2EventToggles,
+  type WarThunderEventToggles,
+  type PubgEventToggles,
   type AutoCaptureMode,
   type Settings,
 } from "@/lib/api";
@@ -356,6 +360,289 @@ function SettingsPage() {
     if (d) persist(rematchTimingNext(d, key, field, value));
   };
 
+  // --- CS2 (per-game) auto-capture handlers, operating on games.cs2 ----------
+  const setCs2Mode = (mode: AutoCaptureMode) => {
+    const d = draftRef.current;
+    if (d)
+      persist({
+        ...d,
+        games: { ...d.games, cs2: { ...d.games.cs2, auto_capture_mode: mode } },
+      });
+  };
+  const setCs2Disabled = (disabled: boolean) => {
+    const d = draftRef.current;
+    if (d)
+      persist({
+        ...d,
+        games: { ...d.games, cs2: { ...d.games.cs2, disabled } },
+      });
+  };
+  const toggleCs2Event = (key: keyof Cs2EventToggles) => {
+    const d = draftRef.current;
+    if (d)
+      persist({
+        ...d,
+        games: {
+          ...d.games,
+          cs2: {
+            ...d.games.cs2,
+            events: { ...d.games.cs2.events, [key]: !d.games.cs2.events[key] },
+          },
+        },
+      });
+  };
+  const cs2TimingNext = (
+    d: Settings,
+    key: keyof Cs2EventToggles,
+    field: "before" | "after",
+    value: number
+  ): Settings => ({
+    ...d,
+    games: {
+      ...d.games,
+      cs2: {
+        ...d.games.cs2,
+        event_timings: {
+          ...d.games.cs2.event_timings,
+          [key]: { ...d.games.cs2.event_timings[key], [field]: value },
+        },
+      },
+    },
+  });
+  const setCs2TimingLocal = (
+    key: keyof Cs2EventToggles,
+    field: "before" | "after",
+    value: number
+  ) => {
+    const d = draftRef.current;
+    if (d) setDraft(cs2TimingNext(d, key, field, value));
+  };
+  const commitCs2Timing = (
+    key: keyof Cs2EventToggles,
+    field: "before" | "after",
+    value: number
+  ) => {
+    const d = draftRef.current;
+    if (d) persist(cs2TimingNext(d, key, field, value));
+  };
+
+  // --- Dota 2 (per-game) auto-capture handlers, operating on games.dota2 -----
+  const setDota2Mode = (mode: AutoCaptureMode) => {
+    const d = draftRef.current;
+    if (d)
+      persist({
+        ...d,
+        games: { ...d.games, dota2: { ...d.games.dota2, auto_capture_mode: mode } },
+      });
+  };
+  const setDota2Disabled = (disabled: boolean) => {
+    const d = draftRef.current;
+    if (d)
+      persist({
+        ...d,
+        games: { ...d.games, dota2: { ...d.games.dota2, disabled } },
+      });
+  };
+  const toggleDota2Event = (key: keyof Dota2EventToggles) => {
+    const d = draftRef.current;
+    if (d)
+      persist({
+        ...d,
+        games: {
+          ...d.games,
+          dota2: {
+            ...d.games.dota2,
+            events: { ...d.games.dota2.events, [key]: !d.games.dota2.events[key] },
+          },
+        },
+      });
+  };
+  const dota2TimingNext = (
+    d: Settings,
+    key: keyof Dota2EventToggles,
+    field: "before" | "after",
+    value: number
+  ): Settings => ({
+    ...d,
+    games: {
+      ...d.games,
+      dota2: {
+        ...d.games.dota2,
+        event_timings: {
+          ...d.games.dota2.event_timings,
+          [key]: { ...d.games.dota2.event_timings[key], [field]: value },
+        },
+      },
+    },
+  });
+  const setDota2TimingLocal = (
+    key: keyof Dota2EventToggles,
+    field: "before" | "after",
+    value: number
+  ) => {
+    const d = draftRef.current;
+    if (d) setDraft(dota2TimingNext(d, key, field, value));
+  };
+  const commitDota2Timing = (
+    key: keyof Dota2EventToggles,
+    field: "before" | "after",
+    value: number
+  ) => {
+    const d = draftRef.current;
+    if (d) persist(dota2TimingNext(d, key, field, value));
+  };
+
+  // --- War Thunder (per-game) auto-capture handlers, on games.warthunder -----
+  const setWarThunderMode = (mode: AutoCaptureMode) => {
+    const d = draftRef.current;
+    if (d)
+      persist({
+        ...d,
+        games: {
+          ...d.games,
+          warthunder: { ...d.games.warthunder, auto_capture_mode: mode },
+        },
+      });
+  };
+  const setWarThunderDisabled = (disabled: boolean) => {
+    const d = draftRef.current;
+    if (d)
+      persist({
+        ...d,
+        games: { ...d.games, warthunder: { ...d.games.warthunder, disabled } },
+      });
+  };
+  const warThunderNicknameNext = (d: Settings, nickname: string): Settings => ({
+    ...d,
+    games: { ...d.games, warthunder: { ...d.games.warthunder, nickname } },
+  });
+  // Nickname is a free-text field: apply locally per keystroke, persist on blur.
+  const setWarThunderNickname = (nickname: string) => {
+    const d = draftRef.current;
+    if (d) setDraft(warThunderNicknameNext(d, nickname));
+  };
+  const commitWarThunderNickname = (nickname: string) => {
+    const d = draftRef.current;
+    if (d) persist(warThunderNicknameNext(d, nickname));
+  };
+  const toggleWarThunderEvent = (key: keyof WarThunderEventToggles) => {
+    const d = draftRef.current;
+    if (d)
+      persist({
+        ...d,
+        games: {
+          ...d.games,
+          warthunder: {
+            ...d.games.warthunder,
+            events: {
+              ...d.games.warthunder.events,
+              [key]: !d.games.warthunder.events[key],
+            },
+          },
+        },
+      });
+  };
+  const warThunderTimingNext = (
+    d: Settings,
+    key: keyof WarThunderEventToggles,
+    field: "before" | "after",
+    value: number
+  ): Settings => ({
+    ...d,
+    games: {
+      ...d.games,
+      warthunder: {
+        ...d.games.warthunder,
+        event_timings: {
+          ...d.games.warthunder.event_timings,
+          [key]: { ...d.games.warthunder.event_timings[key], [field]: value },
+        },
+      },
+    },
+  });
+  const setWarThunderTimingLocal = (
+    key: keyof WarThunderEventToggles,
+    field: "before" | "after",
+    value: number
+  ) => {
+    const d = draftRef.current;
+    if (d) setDraft(warThunderTimingNext(d, key, field, value));
+  };
+  const commitWarThunderTiming = (
+    key: keyof WarThunderEventToggles,
+    field: "before" | "after",
+    value: number
+  ) => {
+    const d = draftRef.current;
+    if (d) persist(warThunderTimingNext(d, key, field, value));
+  };
+
+  // --- PUBG (per-game) auto-capture handlers, operating on games.pubg --------
+  const setPubgMode = (mode: AutoCaptureMode) => {
+    const d = draftRef.current;
+    if (d)
+      persist({
+        ...d,
+        games: { ...d.games, pubg: { ...d.games.pubg, auto_capture_mode: mode } },
+      });
+  };
+  const setPubgDisabled = (disabled: boolean) => {
+    const d = draftRef.current;
+    if (d)
+      persist({
+        ...d,
+        games: { ...d.games, pubg: { ...d.games.pubg, disabled } },
+      });
+  };
+  const togglePubgEvent = (key: keyof PubgEventToggles) => {
+    const d = draftRef.current;
+    if (d)
+      persist({
+        ...d,
+        games: {
+          ...d.games,
+          pubg: {
+            ...d.games.pubg,
+            events: { ...d.games.pubg.events, [key]: !d.games.pubg.events[key] },
+          },
+        },
+      });
+  };
+  const pubgTimingNext = (
+    d: Settings,
+    key: keyof PubgEventToggles,
+    field: "before" | "after",
+    value: number
+  ): Settings => ({
+    ...d,
+    games: {
+      ...d.games,
+      pubg: {
+        ...d.games.pubg,
+        event_timings: {
+          ...d.games.pubg.event_timings,
+          [key]: { ...d.games.pubg.event_timings[key], [field]: value },
+        },
+      },
+    },
+  });
+  const setPubgTimingLocal = (
+    key: keyof PubgEventToggles,
+    field: "before" | "after",
+    value: number
+  ) => {
+    const d = draftRef.current;
+    if (d) setDraft(pubgTimingNext(d, key, field, value));
+  };
+  const commitPubgTiming = (
+    key: keyof PubgEventToggles,
+    field: "before" | "after",
+    value: number
+  ) => {
+    const d = draftRef.current;
+    if (d) persist(pubgTimingNext(d, key, field, value));
+  };
+
   // --- Other Games (generic "record any game") handlers, on games.other ------
   const setOtherMode = (mode: AutoCaptureMode) => {
     const d = draftRef.current;
@@ -475,6 +762,28 @@ function SettingsPage() {
               toggleRematchEvent={toggleRematchEvent}
               setRematchTimingLocal={setRematchTimingLocal}
               commitRematchTiming={commitRematchTiming}
+              setCs2Mode={setCs2Mode}
+              setCs2Disabled={setCs2Disabled}
+              toggleCs2Event={toggleCs2Event}
+              setCs2TimingLocal={setCs2TimingLocal}
+              commitCs2Timing={commitCs2Timing}
+              setDota2Mode={setDota2Mode}
+              setDota2Disabled={setDota2Disabled}
+              toggleDota2Event={toggleDota2Event}
+              setDota2TimingLocal={setDota2TimingLocal}
+              commitDota2Timing={commitDota2Timing}
+              setWarThunderMode={setWarThunderMode}
+              setWarThunderDisabled={setWarThunderDisabled}
+              setWarThunderNickname={setWarThunderNickname}
+              commitWarThunderNickname={commitWarThunderNickname}
+              toggleWarThunderEvent={toggleWarThunderEvent}
+              setWarThunderTimingLocal={setWarThunderTimingLocal}
+              commitWarThunderTiming={commitWarThunderTiming}
+              setPubgMode={setPubgMode}
+              setPubgDisabled={setPubgDisabled}
+              togglePubgEvent={togglePubgEvent}
+              setPubgTimingLocal={setPubgTimingLocal}
+              commitPubgTiming={commitPubgTiming}
               setOtherMode={setOtherMode}
               setOtherDisabled={setOtherDisabled}
               setOtherDetect={setOtherDetect}

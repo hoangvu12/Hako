@@ -31,6 +31,10 @@ const SMART_GAME_PROCESSES: &[&str] = &[
     "league of legends.exe",
     "runtimeclient-win64-shipping.exe",
     "runtimeclient-wingdk-shipping.exe",
+    "cs2.exe",
+    "dota2.exe",
+    "aces.exe",
+    "tslgame.exe",
 ];
 
 /// Non-games we never auto-record even if a user pointed the picker at one, and
@@ -252,6 +256,10 @@ mod tests {
         assert!(is_excluded("valorant-win64-shipping.exe"));
         assert!(is_excluded("league of legends.exe"));
         assert!(is_excluded("runtimeclient-win64-shipping.exe"));
+        assert!(is_excluded("cs2.exe"));
+        assert!(is_excluded("dota2.exe"));
+        assert!(is_excluded("aces.exe"));
+        assert!(is_excluded("tslgame.exe"));
         // Blacklisted non-games (browser / launcher / shell).
         assert!(is_excluded("chrome.exe"));
         assert!(is_excluded("steam.exe"));

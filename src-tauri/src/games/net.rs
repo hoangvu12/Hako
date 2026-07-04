@@ -25,6 +25,16 @@ pub fn insecure_localhost_client() -> Result<reqwest::Client, String> {
         .map_err(|e| format!("build localhost http client: {e}"))
 }
 
+/// A plain-HTTP localhost client (no TLS, no auth) for game telemetry servers
+/// that serve `http://127.0.0.1` — War Thunder's `:8111` web HUD. The short
+/// timeout bounds a hung socket so a poll tick never stalls the integration loop.
+pub fn plain_localhost_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(LOCAL_TIMEOUT)
+        .build()
+        .map_err(|e| format!("build plain localhost http client: {e}"))
+}
+
 /// A self-signed localhost client preloaded with a Basic `Authorization` header
 /// (Valorant local API / League LCU, authed from the lockfile password).
 pub fn insecure_localhost_client_with_auth(auth_header: &str) -> Result<reqwest::Client, String> {
