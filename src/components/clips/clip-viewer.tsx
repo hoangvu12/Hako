@@ -16,31 +16,22 @@ import {
 import { cn } from "@/lib/utils";
 import {
   useClips,
-  useClipAudioTracks,
   useDeleteClip,
   useRemuxClip,
   useRenameClip,
   useTrimClip,
 } from "@/hooks/use-library";
-import { useTrackMixer } from "@/hooks/use-track-mixer";
 import {
   useClipDownload,
   useClipRemoteUrl,
   useDownloadClip,
 } from "@/hooks/use-cloud";
-import type {
-  AudioTrackInfo,
-  ClipRecord,
-  TrackVolume,
-  TrimMode,
-} from "@/lib/api";
+import type { ClipRecord, TrackVolume, TrimMode } from "@/lib/api";
 
-import {
-  DEFAULT_CTL,
-  MIN_TRIM,
-  STREAM_SCHEME,
-  type TrackCtl,
-} from "./clip-viewer/constants";
+import { STREAM_SCHEME } from "./clip-viewer/constants";
+import { useStemMix } from "./clip-viewer/use-stem-mix";
+import { useTrimEditor } from "./clip-viewer/use-trim-editor";
+import { useClipKeyboard } from "./clip-viewer/use-clip-keyboard";
 import { fmtClock, rulerStep } from "./clip-viewer/format";
 import { formatTime } from "@/lib/format";
 import {
@@ -232,110 +223,58 @@ function ViewerStage({
   const [videoDuration, setVideoDuration] = React.useState<number | null>(null);
   const duration = videoDuration ?? clip.duration_secs;
   const [fullscreen, setFullscreen] = React.useState(false);
+  const [saveOpen, setSaveOpen] = React.useState(false);
   // Speed lives in <SettingsButton> (it has no audio coupling), but mute/volume stay
   // here: they feed the live audio mixer's master gain *and* the "m" shortcut, so
   // isolating them safely needs a shared store rather than a ref bridge.
 
-  // Editor state
-  const [trimStart, setTrimStart] = React.useState(0);
-  const [trimEnd, setTrimEnd] = React.useState(clip.duration_secs);
-  const [touched, setTouched] = React.useState(false); // user moved a handle
-  const [audioEnabled, setAudioEnabled] = React.useState(true);
-  const [drag, setDrag] = React.useState<null | "seek" | "start" | "end">(null);
-  const [saveOpen, setSaveOpen] = React.useState(false);
-
-  // Multi-track audio: stems are the audio tracks past the master (index 0).
-  // When a clip has stems the editor offers per-track mute/solo/volume, applied
-  // on export via a re-mux (browsers can't switch MP4 audio tracks live).
-  const { data: audioTracks } = useClipAudioTracks(clip.id);
-  const stems = React.useMemo<AudioTrackInfo[]>(
-    () => (audioTracks ?? []).filter((t) => t.index >= 1),
-    [audioTracks],
-  );
-  const hasStems = stems.length > 0;
-  const [trackCtl, setTrackCtl] = React.useState<Record<number, TrackCtl>>({});
-  const ctlOf = React.useCallback(
-    (idx: number): TrackCtl => trackCtl[idx] ?? DEFAULT_CTL,
-    [trackCtl],
-  );
-  const patchTrack = React.useCallback(
-    (idx: number, patch: Partial<TrackCtl>) =>
-      setTrackCtl((prev) => ({
-        ...prev,
-        [idx]: { ...(prev[idx] ?? DEFAULT_CTL), ...patch },
-      })),
-    [],
-  );
-  // Stable handlers so the memoized <AudioSettingsPopover> doesn't re-render on
-  // unrelated stage updates (trim drags, etc.) — only when the stem state it
-  // actually reads changes.
-  const toggleAudio = React.useCallback(() => setAudioEnabled((a) => !a), []);
-  const onStemMute = React.useCallback(
-    (idx: number) => patchTrack(idx, { muted: !ctlOf(idx).muted }),
-    [patchTrack, ctlOf],
-  );
-  const onStemSolo = React.useCallback(
-    (idx: number) => patchTrack(idx, { solo: !ctlOf(idx).solo }),
-    [patchTrack, ctlOf],
-  );
-  const onStemVolume = React.useCallback(
-    (idx: number, v: number) => patchTrack(idx, { volume: v }),
-    [patchTrack],
-  );
-  const onStemDenoise = React.useCallback(
-    (idx: number) => patchTrack(idx, { denoise: !ctlOf(idx).denoise }),
-    [patchTrack, ctlOf],
-  );
-
-  const soloActive = stems.some((s) => ctlOf(s.index).solo);
-  // A stem is audible when soloed (if any solo is active) or simply un-muted.
-  const audibleStems = stems.filter((s) =>
-    soloActive ? ctlOf(s.index).solo : !ctlOf(s.index).muted,
-  );
-  // The mix differs from the recorded master when a stem is muted/soloed, its
-  // volume moved, or noise cancel is on — otherwise we keep the loss-less stream
-  // copy. Uses `ctlOf` (not raw `trackCtl`) so the mic's default-on noise cancel
-  // counts even before the user touches anything.
-  const tracksEdited =
-    hasStems &&
-    stems.some((s) => {
-      const c = ctlOf(s.index);
-      return c.muted || c.solo || c.volume !== 100 || c.denoise;
-    });
-  // Stem indices to noise-cancel in the live preview — kept in lockstep with the
-  // export's per-stem `denoise` flag so what you hear matches what you save.
-  const denoiseStemIdx = React.useMemo(
-    () => stems.filter((s) => ctlOf(s.index).denoise).map((s) => s.index),
-    [stems, ctlOf],
-  );
-
-  // Live per-stem mixing: decode the stems and play them through a Web Audio
-  // gain graph synced to the (muted) <video>, so mute/solo/volume are *heard*
-  // during preview — not just applied on export. `active` is false (native
-  // <video> audio kept) for no-stems clips or until/unless the decode succeeds.
-  const stemGains = React.useMemo(() => {
-    const m = new Map<number, number>();
-    for (const s of stems) {
-      const c = ctlOf(s.index);
-      const audible = soloActive ? c.solo : !c.muted;
-      m.set(s.index, audible ? c.volume / 100 : 0);
-    }
-    return m;
-  }, [stems, ctlOf, soloActive]);
-  // Top-bar mute/volume is the monitor level (preview-only; not in the export mix).
-  const masterMonitorGain = muted ? 0 : volume;
+  // Trim selection + pointer handling (filmstrip/ruler drags, seek helpers).
   const {
-    active: liveMix,
-    decoding: mixDecoding,
+    trimStart,
+    trimEnd,
+    setTrimStart,
+    setTrimEnd,
+    touched,
+    setTouched,
+    drag,
+    seekToTime,
+    onBarPointerMove,
+    endDrag,
+    startHandle,
+    startSeek,
+    onRulerPointerDown,
+  } = useTrimEditor({
+    videoRef,
+    barRef,
+    duration,
+    clipDuration: clip.duration_secs,
+  });
+
+  // Multi-track audio: per-stem mute/solo/volume/denoise + live Web Audio mix.
+  const {
+    audioEnabled,
+    setAudioEnabled,
+    toggleAudio,
+    stems,
+    hasStems,
+    ctlOf,
+    setTrackCtl,
+    onStemMute,
+    onStemSolo,
+    onStemVolume,
+    onStemDenoise,
+    soloActive,
+    audibleStems,
+    tracksEdited,
+    liveMix,
+    mixDecoding,
     denoisingIdx,
-  } = useTrackMixer({
+  } = useStemMix({
     clipId: clip.id,
     fileSize: clip.size_bytes,
-    stems,
     videoRef,
-    stemGains,
-    masterGain: masterMonitorGain,
-    denoiseStemIdx,
+    muted,
+    volume,
   });
 
   // Reflect muted/volume onto the element (React doesn't track these). While live
@@ -375,146 +314,25 @@ function ViewerStage({
     return () => document.removeEventListener("fullscreenchange", onChange);
   }, []);
 
-  function timeFromX(clientX: number): number {
-    const bar = barRef.current;
-    if (!bar || !Number.isFinite(duration) || duration <= 0) return 0;
-    const rect = bar.getBoundingClientRect();
-    const frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-    return frac * duration;
-  }
-
-  function seekTo(clientX: number) {
-    const v = videoRef.current;
-    if (!v) return;
-    // Keep the playhead inside the selection — the selection IS the clip now.
-    const t = Math.min(Math.max(timeFromX(clientX), trimStart), trimEnd);
-    // Setting currentTime fires `seeking`/`seeked`, which the playhead, readout,
-    // and overlay seek bar subscribe to — no `current` state to push here.
-    v.currentTime = t;
-  }
-
-  // Seek to an absolute time, clamped to the selection. Used by the fullscreen
-  // overlay scrubber, which has no filmstrip bar to measure against.
-  function seekToTime(t: number) {
-    const v = videoRef.current;
-    if (!v) return;
-    const clamped = Math.min(Math.max(t, trimStart), trimEnd);
-    v.currentTime = clamped;
-  }
-
-  // --- playhead / trim-handle pointer handling ---
-  // The bar isn't click-to-seek; you grab the playhead or a trim handle. Capture
-  // is set on the bar so its move/up handlers receive the whole drag.
-  // Keep the playhead inside the selection. This used to live in a useEffect
-  // watching [trimStart, trimEnd], which runs a frame late (the playhead lagged
-  // between the trim commit and the clamp). Doing it inline in the one handler
-  // that tightens the range clamps in the same render.
-  function clampPlayheadInto(start: number, end: number) {
-    const v = videoRef.current;
-    if (!v) return;
-    if (v.currentTime < start) {
-      v.currentTime = start;
-    } else if (v.currentTime > end) {
-      v.currentTime = end;
-    }
-  }
-  function onBarPointerMove(e: React.PointerEvent) {
-    if (!drag) return;
-    if (drag === "seek") {
-      seekTo(e.clientX);
-    } else if (drag === "start") {
-      const next = Math.min(Math.max(timeFromX(e.clientX), 0), trimEnd - MIN_TRIM);
-      setTrimStart(next);
-      clampPlayheadInto(next, trimEnd);
-    } else {
-      const next = Math.max(Math.min(timeFromX(e.clientX), duration), trimStart + MIN_TRIM);
-      setTrimEnd(next);
-      clampPlayheadInto(trimStart, next);
-    }
-  }
-  function endDrag(e: React.PointerEvent) {
-    setDrag(null);
-    try {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    } catch {
-      /* not captured */
-    }
-  }
-  function startHandle(which: "start" | "end", e: React.PointerEvent) {
-    e.stopPropagation();
-    e.preventDefault();
-    barRef.current?.setPointerCapture(e.pointerId);
-    setTouched(true);
-    setDrag(which);
-  }
-  function startSeek(e: React.PointerEvent) {
-    e.stopPropagation();
-    e.preventDefault();
-    barRef.current?.setPointerCapture(e.pointerId);
-    setDrag("seek");
-  }
-  // Clicking / dragging the ruler scrubs the playhead (kept inside the range).
-  function onRulerPointerDown(e: React.PointerEvent) {
-    e.currentTarget.setPointerCapture(e.pointerId);
-    setDrag("seek");
-    seekTo(e.clientX);
-  }
-
-  // Keyboard shortcuts — ignored while editing the title or in the save dialog.
-  React.useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable))
-        return;
-      if (saveOpen) {
-        if (e.key === "Escape") setSaveOpen(false);
-        return;
-      }
-      switch (e.key) {
-        case "Escape":
-          if (!document.fullscreenElement) onClose();
-          break;
-        case "ArrowLeft":
-          if (hasPrev) onPrev();
-          break;
-        case "ArrowRight":
-          if (hasNext) onNext();
-          break;
-        case "Delete":
-        case "Backspace":
-          onDelete();
-          break;
-        case " ":
-        case "k":
-          e.preventDefault();
-          togglePlay();
-          break;
-        case "m":
-          setMuted((m) => !m);
-          break;
-        case "f":
-          void toggleFullscreen();
-          break;
-        case "i": {
-          const t = videoRef.current?.currentTime ?? 0;
-          setTouched(true);
-          setTrimStart(Math.min(t, trimEnd - MIN_TRIM));
-          break;
-        }
-        case "o": {
-          const t = videoRef.current?.currentTime ?? 0;
-          setTouched(true);
-          setTrimEnd(Math.max(t, trimStart + MIN_TRIM));
-          break;
-        }
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [
-    hasPrev, hasNext, onPrev, onNext, onClose, onDelete, togglePlay,
-    toggleFullscreen, saveOpen, trimStart, trimEnd,
-  ]);
+  useClipKeyboard({
+    hasPrev,
+    hasNext,
+    onPrev,
+    onNext,
+    onClose,
+    onDelete,
+    togglePlay,
+    toggleFullscreen,
+    saveOpen,
+    setSaveOpen,
+    trimStart,
+    trimEnd,
+    setTrimStart,
+    setTrimEnd,
+    setTouched,
+    setMuted,
+    videoRef,
+  });
 
   const startPct = duration > 0 ? (trimStart / duration) * 100 : 0;
   const endPct = duration > 0 ? (trimEnd / duration) * 100 : 100;
