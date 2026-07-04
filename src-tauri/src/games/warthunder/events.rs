@@ -21,9 +21,8 @@
 
 #![allow(dead_code)]
 
-use serde::{Deserialize, Serialize};
-
 use crate::games::event::EventKind;
+use crate::games::event_config::event_config;
 use crate::games::warthunder::api::Vehicle;
 use crate::library::db::NewClip;
 
@@ -114,103 +113,21 @@ fn vehicle_label(vehicle: Vehicle) -> Option<&'static str> {
     }
 }
 
-/// Per-event auto-clip toggles for War Thunder. Kills + crashes default on;
-/// deaths default off (noisy). Additive (`serde(default)`).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(default)]
-pub struct WarThunderEventToggles {
-    pub kill: bool,
-    pub crash: bool,
-    pub death: bool,
+event_config! {
+    toggles: WarThunderEventToggles,
+    timing: WarThunderEventTiming,
+    timings: WarThunderEventTimings,
+    // Medal: Padding 15s / EventWindow 15s. WT engagements build up slowly, so
+    // the lead-in is generous; the tail is a little shorter.
+    default_window: (15, 10),
+    merge_fallback_after: 8,
+    // Kills + crashes default on; deaths default off (noisy).
+    events: {
+        kill  => EventKind::Kill,  on: true,  window: (15, 10),
+        crash => EventKind::Crash, on: true,  window: (15, 10),
+        death => EventKind::Death, on: false, window: (12, 8),
+    },
 }
-
-impl Default for WarThunderEventToggles {
-    fn default() -> Self {
-        WarThunderEventToggles {
-            kill: true,
-            crash: true,
-            death: false,
-        }
-    }
-}
-
-impl WarThunderEventToggles {
-    pub fn enabled(&self, kind: EventKind) -> bool {
-        match kind {
-            EventKind::Kill => self.kill,
-            EventKind::Crash => self.crash,
-            EventKind::Death => self.death,
-            _ => false,
-        }
-    }
-}
-
-/// Per-event clip window (seconds before / after the moment) for War Thunder.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(default)]
-pub struct WarThunderEventTiming {
-    pub before: u32,
-    pub after: u32,
-}
-
-impl Default for WarThunderEventTiming {
-    fn default() -> Self {
-        // Medal: Padding 15s / EventWindow 15s. WT engagements build up slowly, so
-        // the lead-in is generous; the tail is a little shorter.
-        WarThunderEventTiming {
-            before: 15,
-            after: 10,
-        }
-    }
-}
-
-impl WarThunderEventTiming {
-    const fn new(before: u32, after: u32) -> Self {
-        WarThunderEventTiming { before, after }
-    }
-}
-
-/// Per-event clip windows for War Thunder.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(default)]
-pub struct WarThunderEventTimings {
-    pub kill: WarThunderEventTiming,
-    pub crash: WarThunderEventTiming,
-    pub death: WarThunderEventTiming,
-}
-
-impl Default for WarThunderEventTimings {
-    fn default() -> Self {
-        WarThunderEventTimings {
-            kill: WarThunderEventTiming::new(15, 10),
-            crash: WarThunderEventTiming::new(15, 10),
-            death: WarThunderEventTiming::new(12, 8),
-        }
-    }
-}
-
-impl WarThunderEventTimings {
-    pub fn for_kind(&self, kind: EventKind) -> WarThunderEventTiming {
-        match kind {
-            EventKind::Kill => self.kill,
-            EventKind::Crash => self.crash,
-            EventKind::Death => self.death,
-            _ => WarThunderEventTiming::default(),
-        }
-    }
-
-    /// Widest after-pad across all *enabled* kinds (sizes the merge tolerance).
-    pub fn max_after(&self, toggles: &WarThunderEventToggles) -> u32 {
-        ALL_KINDS
-            .iter()
-            .filter(|k| toggles.enabled(**k))
-            .map(|k| self.for_kind(*k).after)
-            .max()
-            .unwrap_or(8)
-    }
-}
-
-const ALL_KINDS: [EventKind; 3] = [EventKind::Kill, EventKind::Crash, EventKind::Death];
 
 #[cfg(test)]
 mod tests {

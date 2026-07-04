@@ -11,11 +11,10 @@
 
 #![allow(dead_code)]
 
-use serde::{Deserialize, Serialize};
-
 use crate::core::clock::TICKS_PER_SECOND;
 use crate::games::dota2::payload::ValidPayload;
 use crate::games::event::EventKind;
+use crate::games::event_config::event_config;
 use crate::library::db::NewClip;
 
 /// Kills within this window of each other chain into a higher multi-kill tier.
@@ -173,134 +172,25 @@ fn translate_hero(internal: &str) -> String {
         .join(" ")
 }
 
-/// Per-event auto-clip toggles for Dota 2. Multi-kills default on; single kills /
-/// deaths / assists default off. Additive (`serde(default)`).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Dota2EventToggles {
-    pub kill: bool,
-    pub double_kill: bool,
-    pub triple_kill: bool,
-    pub ultra_kill: bool,
-    pub rampage: bool,
-    pub death: bool,
-    pub assist: bool,
+event_config! {
+    toggles: Dota2EventToggles,
+    timing: Dota2EventTiming,
+    timings: Dota2EventTimings,
+    // Medal: EventWindow 20s, Padding 10s. Higher tiers lead in further to cover
+    // the whole streak.
+    default_window: (12, 8),
+    merge_fallback_after: 6,
+    // Multi-kills default on; single kills / deaths / assists default off.
+    events: {
+        kill        => EventKind::Kill,       on: false, window: (10, 6),
+        double_kill => EventKind::DoubleKill, on: true,  window: (14, 8),
+        triple_kill => EventKind::TripleKill, on: true,  window: (20, 8),
+        ultra_kill  => EventKind::UltraKill,  on: true,  window: (28, 10),
+        rampage     => EventKind::Rampage,    on: true,  window: (36, 10),
+        death       => EventKind::Death,      on: false, window: (10, 6),
+        assist      => EventKind::Assist,     on: false, window: (10, 6),
+    },
 }
-
-impl Default for Dota2EventToggles {
-    fn default() -> Self {
-        Dota2EventToggles {
-            kill: false,
-            double_kill: true,
-            triple_kill: true,
-            ultra_kill: true,
-            rampage: true,
-            death: false,
-            assist: false,
-        }
-    }
-}
-
-impl Dota2EventToggles {
-    pub fn enabled(&self, kind: EventKind) -> bool {
-        match kind {
-            EventKind::Kill => self.kill,
-            EventKind::DoubleKill => self.double_kill,
-            EventKind::TripleKill => self.triple_kill,
-            EventKind::UltraKill => self.ultra_kill,
-            EventKind::Rampage => self.rampage,
-            EventKind::Death => self.death,
-            EventKind::Assist => self.assist,
-            _ => false,
-        }
-    }
-}
-
-/// Per-event clip window (seconds before / after) for Dota 2.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Dota2EventTiming {
-    pub before: u32,
-    pub after: u32,
-}
-
-impl Default for Dota2EventTiming {
-    fn default() -> Self {
-        Dota2EventTiming {
-            before: 12,
-            after: 8,
-        }
-    }
-}
-
-impl Dota2EventTiming {
-    const fn new(before: u32, after: u32) -> Self {
-        Dota2EventTiming { before, after }
-    }
-}
-
-/// Per-event clip windows for Dota 2 (Medal: EventWindow 20s, Padding 10s).
-/// Higher tiers lead in further to cover the whole streak.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Dota2EventTimings {
-    pub kill: Dota2EventTiming,
-    pub double_kill: Dota2EventTiming,
-    pub triple_kill: Dota2EventTiming,
-    pub ultra_kill: Dota2EventTiming,
-    pub rampage: Dota2EventTiming,
-    pub death: Dota2EventTiming,
-    pub assist: Dota2EventTiming,
-}
-
-impl Default for Dota2EventTimings {
-    fn default() -> Self {
-        Dota2EventTimings {
-            kill: Dota2EventTiming::new(10, 6),
-            double_kill: Dota2EventTiming::new(14, 8),
-            triple_kill: Dota2EventTiming::new(20, 8),
-            ultra_kill: Dota2EventTiming::new(28, 10),
-            rampage: Dota2EventTiming::new(36, 10),
-            death: Dota2EventTiming::new(10, 6),
-            assist: Dota2EventTiming::new(10, 6),
-        }
-    }
-}
-
-impl Dota2EventTimings {
-    pub fn for_kind(&self, kind: EventKind) -> Dota2EventTiming {
-        match kind {
-            EventKind::Kill => self.kill,
-            EventKind::DoubleKill => self.double_kill,
-            EventKind::TripleKill => self.triple_kill,
-            EventKind::UltraKill => self.ultra_kill,
-            EventKind::Rampage => self.rampage,
-            EventKind::Death => self.death,
-            EventKind::Assist => self.assist,
-            _ => Dota2EventTiming::default(),
-        }
-    }
-
-    /// Widest after-pad across all *enabled* kinds (sizes the merge tolerance).
-    pub fn max_after(&self, toggles: &Dota2EventToggles) -> u32 {
-        ALL_KINDS
-            .iter()
-            .filter(|k| toggles.enabled(**k))
-            .map(|k| self.for_kind(*k).after)
-            .max()
-            .unwrap_or(6)
-    }
-}
-
-const ALL_KINDS: [EventKind; 7] = [
-    EventKind::Kill,
-    EventKind::DoubleKill,
-    EventKind::TripleKill,
-    EventKind::UltraKill,
-    EventKind::Rampage,
-    EventKind::Death,
-    EventKind::Assist,
-];
 
 #[cfg(test)]
 mod tests {

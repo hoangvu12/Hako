@@ -10,9 +10,8 @@
 
 #![allow(dead_code)]
 
-use serde::{Deserialize, Serialize};
-
 use crate::games::event::EventKind;
+use crate::games::event_config::event_config;
 use crate::games::lol::live_client::LiveEvent;
 
 /// Our identity in the live event feed.
@@ -70,190 +69,33 @@ impl MeId {
     }
 }
 
-/// Per-event auto-clip toggles for League. Headline moments default on; noisy
-/// per-kill / structure events default off. Additive (`#[serde(default)]`).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(default)]
-pub struct LolEventToggles {
-    pub kill: bool,
-    pub double_kill: bool,
-    pub triple_kill: bool,
-    pub quadra_kill: bool,
-    pub pentakill: bool,
-    pub ace: bool,
-    pub first_blood: bool,
-    pub death: bool,
-    pub assist: bool,
-    pub dragon: bool,
-    pub baron: bool,
-    pub herald: bool,
-    pub turret: bool,
-    pub inhibitor: bool,
-    pub victory: bool,
+event_config! {
+    toggles: LolEventToggles,
+    timing: LolEventTiming,
+    timings: LolEventTimings,
+    default_window: (8, 4),
+    merge_fallback_after: 4,
+    // Outplayed-style: headline moments default on; noisy per-kill / structure
+    // events default off. Objectives lead in further since the fight that secures
+    // them precedes the kill event.
+    events: {
+        kill        => EventKind::Kill,         on: false, window: (8, 4),
+        double_kill => EventKind::DoubleKill,   on: false, window: (9, 4),
+        triple_kill => EventKind::TripleKill,   on: true,  window: (11, 5),
+        quadra_kill => EventKind::QuadraKill,   on: true,  window: (13, 5),
+        pentakill   => EventKind::Pentakill,    on: true,  window: (15, 6),
+        ace         => EventKind::Ace,          on: true,  window: (12, 6),
+        first_blood => EventKind::FirstBlood,   on: true,  window: (8, 4),
+        death       => EventKind::Death,        on: false, window: (8, 4),
+        assist      => EventKind::Assist,       on: false, window: (8, 4),
+        dragon      => EventKind::DragonKill,   on: true,  window: (14, 6),
+        baron       => EventKind::BaronKill,    on: true,  window: (16, 6),
+        herald      => EventKind::HeraldKill,   on: true,  window: (12, 5),
+        turret      => EventKind::TurretKilled, on: false, window: (8, 4),
+        inhibitor   => EventKind::InhibKilled,  on: true,  window: (8, 4),
+        victory     => EventKind::Victory,      on: true,  window: (10, 6),
+    },
 }
-
-impl Default for LolEventToggles {
-    fn default() -> Self {
-        LolEventToggles {
-            kill: false,
-            double_kill: false,
-            triple_kill: true,
-            quadra_kill: true,
-            pentakill: true,
-            ace: true,
-            first_blood: true,
-            death: false,
-            assist: false,
-            dragon: true,
-            baron: true,
-            herald: true,
-            turret: false,
-            inhibitor: true,
-            victory: true,
-        }
-    }
-}
-
-impl LolEventToggles {
-    pub fn enabled(&self, kind: EventKind) -> bool {
-        match kind {
-            EventKind::Kill => self.kill,
-            EventKind::DoubleKill => self.double_kill,
-            EventKind::TripleKill => self.triple_kill,
-            EventKind::QuadraKill => self.quadra_kill,
-            EventKind::Pentakill => self.pentakill,
-            EventKind::Ace => self.ace,
-            EventKind::FirstBlood => self.first_blood,
-            EventKind::Death => self.death,
-            EventKind::Assist => self.assist,
-            EventKind::DragonKill => self.dragon,
-            EventKind::BaronKill => self.baron,
-            EventKind::HeraldKill => self.herald,
-            EventKind::TurretKilled => self.turret,
-            EventKind::InhibKilled => self.inhibitor,
-            EventKind::Victory => self.victory,
-            _ => false,
-        }
-    }
-}
-
-/// Per-event clip window (seconds before / after the moment) for League.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(default)]
-pub struct LolEventTiming {
-    pub before: u32,
-    pub after: u32,
-}
-
-impl Default for LolEventTiming {
-    fn default() -> Self {
-        LolEventTiming {
-            before: 8,
-            after: 4,
-        }
-    }
-}
-
-impl LolEventTiming {
-    const fn new(before: u32, after: u32) -> Self {
-        LolEventTiming { before, after }
-    }
-}
-
-/// Per-event clip windows for League (Outplayed-style). Objectives lead in
-/// further since the fight that secures them precedes the kill event.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(default)]
-pub struct LolEventTimings {
-    pub kill: LolEventTiming,
-    pub double_kill: LolEventTiming,
-    pub triple_kill: LolEventTiming,
-    pub quadra_kill: LolEventTiming,
-    pub pentakill: LolEventTiming,
-    pub ace: LolEventTiming,
-    pub first_blood: LolEventTiming,
-    pub death: LolEventTiming,
-    pub assist: LolEventTiming,
-    pub dragon: LolEventTiming,
-    pub baron: LolEventTiming,
-    pub herald: LolEventTiming,
-    pub turret: LolEventTiming,
-    pub inhibitor: LolEventTiming,
-    pub victory: LolEventTiming,
-}
-
-impl Default for LolEventTimings {
-    fn default() -> Self {
-        LolEventTimings {
-            kill: LolEventTiming::new(8, 4),
-            double_kill: LolEventTiming::new(9, 4),
-            triple_kill: LolEventTiming::new(11, 5),
-            quadra_kill: LolEventTiming::new(13, 5),
-            pentakill: LolEventTiming::new(15, 6),
-            ace: LolEventTiming::new(12, 6),
-            first_blood: LolEventTiming::new(8, 4),
-            death: LolEventTiming::new(8, 4),
-            assist: LolEventTiming::new(8, 4),
-            dragon: LolEventTiming::new(14, 6),
-            baron: LolEventTiming::new(16, 6),
-            herald: LolEventTiming::new(12, 5),
-            turret: LolEventTiming::new(8, 4),
-            inhibitor: LolEventTiming::new(8, 4),
-            victory: LolEventTiming::new(10, 6),
-        }
-    }
-}
-
-impl LolEventTimings {
-    pub fn for_kind(&self, kind: EventKind) -> LolEventTiming {
-        match kind {
-            EventKind::Kill => self.kill,
-            EventKind::DoubleKill => self.double_kill,
-            EventKind::TripleKill => self.triple_kill,
-            EventKind::QuadraKill => self.quadra_kill,
-            EventKind::Pentakill => self.pentakill,
-            EventKind::Ace => self.ace,
-            EventKind::FirstBlood => self.first_blood,
-            EventKind::Death => self.death,
-            EventKind::Assist => self.assist,
-            EventKind::DragonKill => self.dragon,
-            EventKind::BaronKill => self.baron,
-            EventKind::HeraldKill => self.herald,
-            EventKind::TurretKilled => self.turret,
-            EventKind::InhibKilled => self.inhibitor,
-            EventKind::Victory => self.victory,
-            _ => LolEventTiming::default(),
-        }
-    }
-
-    /// Widest after-pad across all *enabled* kinds (sizes the merge tolerance).
-    pub fn max_after(&self, toggles: &LolEventToggles) -> u32 {
-        ALL_KINDS
-            .iter()
-            .filter(|k| toggles.enabled(**k))
-            .map(|k| self.for_kind(*k).after)
-            .max()
-            .unwrap_or(4)
-    }
-}
-
-const ALL_KINDS: [EventKind; 15] = [
-    EventKind::Kill,
-    EventKind::DoubleKill,
-    EventKind::TripleKill,
-    EventKind::QuadraKill,
-    EventKind::Pentakill,
-    EventKind::Ace,
-    EventKind::FirstBlood,
-    EventKind::Death,
-    EventKind::Assist,
-    EventKind::DragonKill,
-    EventKind::BaronKill,
-    EventKind::HeraldKill,
-    EventKind::TurretKilled,
-    EventKind::InhibKilled,
-    EventKind::Victory,
-];
 
 /// Whether an event name is one we attribute to a specific player (i.e. one
 /// `classify` can only keep if it's *ours*). Used purely for diagnostics — to
@@ -319,6 +161,74 @@ mod tests {
             event_name: name.into(),
             ..Default::default()
         }
+    }
+
+    // The on-disk (`settings.json`) field names for League are deliberately
+    // *not* the `EventKind` variant names (`dragon` ↔ `DragonKill`, `inhibitor`
+    // ↔ `InhibKilled`, …). These golden tests pin that mapping and the defaults
+    // so a future edit that renames a field — silently resetting every existing
+    // user's toggle on their next launch — fails the build instead.
+
+    #[test]
+    fn toggles_default_matches_kind_mapping() {
+        let t = LolEventToggles::default();
+        // Field ↔ EventKind: the non-uniform names must route to the right kind.
+        assert_eq!(t.dragon, t.enabled(EventKind::DragonKill));
+        assert_eq!(t.baron, t.enabled(EventKind::BaronKill));
+        assert_eq!(t.herald, t.enabled(EventKind::HeraldKill));
+        assert_eq!(t.turret, t.enabled(EventKind::TurretKilled));
+        assert_eq!(t.inhibitor, t.enabled(EventKind::InhibKilled));
+        // A representative slice of the default on/off state.
+        assert!(!t.enabled(EventKind::Kill));
+        assert!(t.enabled(EventKind::TripleKill));
+        assert!(t.enabled(EventKind::DragonKill));
+        assert!(!t.enabled(EventKind::TurretKilled));
+        assert!(t.enabled(EventKind::Victory));
+    }
+
+    #[test]
+    fn toggles_deserialize_from_legacy_field_names() {
+        // A config saved by an older build: snake_case keys, `dragon`/`baron`/
+        // `herald`/`turret`/`inhibitor` (not the kind names). Must round-trip to
+        // the same in-memory state, not reset to defaults.
+        let json = r#"{
+            "kill": true, "double_kill": true, "triple_kill": false,
+            "quadra_kill": false, "pentakill": false, "ace": false,
+            "first_blood": false, "death": true, "assist": true,
+            "dragon": false, "baron": false, "herald": false,
+            "turret": true, "inhibitor": false, "victory": false
+        }"#;
+        let t: LolEventToggles = serde_json::from_str(json).unwrap();
+        assert!(t.enabled(EventKind::Kill));
+        assert!(t.enabled(EventKind::Death));
+        assert!(!t.enabled(EventKind::DragonKill));
+        assert!(t.enabled(EventKind::TurretKilled));
+        assert!(!t.enabled(EventKind::Victory));
+    }
+
+    #[test]
+    fn toggles_are_additive_over_missing_fields() {
+        // `#[serde(default)]`: a partial config keeps stored keys and fills the
+        // rest from `Default` (so a newly added event isn't force-off).
+        let json = r#"{ "kill": true }"#;
+        let t: LolEventToggles = serde_json::from_str(json).unwrap();
+        assert!(t.enabled(EventKind::Kill)); // from JSON
+        assert!(t.enabled(EventKind::TripleKill)); // from Default (on)
+        assert!(!t.enabled(EventKind::TurretKilled)); // from Default (off)
+    }
+
+    #[test]
+    fn timings_default_and_partial_window() {
+        let ti = LolEventTimings::default();
+        assert_eq!(ti.for_kind(EventKind::BaronKill).before, 16);
+        assert_eq!(ti.for_kind(EventKind::BaronKill).after, 6);
+        // A window object missing `after` fills it from `LolEventTiming::default`.
+        let json = r#"{ "dragon": { "before": 20 } }"#;
+        let ti: LolEventTimings = serde_json::from_str(json).unwrap();
+        assert_eq!(ti.for_kind(EventKind::DragonKill).before, 20); // from JSON
+        assert_eq!(ti.for_kind(EventKind::DragonKill).after, 4); // Timing default
+        // An untouched field keeps the per-kind default, not the bare default.
+        assert_eq!(ti.for_kind(EventKind::BaronKill).before, 16);
     }
 
     #[test]

@@ -10,18 +10,22 @@ frontend; `cargo check` + 202 tests + clippy for Rust). Working tree is clean.
 
 ## Follow-up session (branch `refactor/integration-engine`)
 
-Picked up #7 and #8. Net outcome: **#7's provably-identical half landed**; the
-**#7 run-loop engine and all of #8 stay deferred** — see the revised, sharper
-rationale under each below. Not yet merged to `main`.
+Picked up #7 and #8. Net outcome: **#7 fully implemented** (engine + finalizer) and
+**#8 fully implemented** (the `event_config!` macro). Only the #7 run-loop engine
+still needs real-game verification before merge; #8 is a zero-migration-risk pure
+refactor and is done. Not yet merged to `main`.
 
 | Commit | What |
 |--------|------|
 | `066792d` | Extract the shared `recording::finish_and_cut` match-finalizer tail (the reconcile-and-cut half of `end_match`) — collapses the verbatim tail out of all six games. |
 | `4d41200` | Generic `games::engine::run_live_feed(ctx, driver)` engine + per-game `LiveDriver` — collapses the ~130-line run loop each game duplicated. **The whole of #7 is now implemented.** |
+| `e5bb1da` | `games::event_config::event_config!` macro replaces the six hand-written `*EventToggles`/`*EventTimings` triplets — the whole of #8. On-disk format unchanged; golden tests added. |
 
-All verified here: `cargo check` + 202 tests + clippy (27 bin warnings = unchanged
-baseline, none in touched files). **`4d41200` still needs real-game verification
-before merge** — it rewrites the async run-loop timing that `cargo test` doesn't cover.
+All verified here: `cargo check` + `games::` tests 66/66 (incl. 4 new golden) +
+clippy (26 bin warnings, was 27 baseline, none in touched files). The full-suite
+FFmpeg/QSV hardware tests flake under parallel contention (pass in isolation) — pre-
+existing env noise, unrelated. **`4d41200` still needs real-game verification before
+merge** — it rewrites the async run-loop timing that `cargo test` doesn't cover.
 
 ## Done (committed this session, oldest → newest)
 
@@ -72,33 +76,36 @@ regression. They should be done on a branch by someone who can test on real game
   a clip lands in the library with the right window/tags, and Session/FullMatch
   modes + the mid-match config-restart path still behave.
 
-### #8 — `EventToggles` / `EventTimings` as data — deferred, and now **recommend against**
-- **Scope:** each game hand-writes a bool-per-variant `*EventToggles` + `*EventTimings`
+### #8 — `EventToggles` / `EventTimings` as data — **done via a declarative macro**
+- **Scope:** each game hand-wrote a bool-per-variant `*EventToggles` + `*EventTimings`
   struct + `Default` + `enabled`/`for_kind`/`max_after`/`ALL_KINDS`. Adding one
-  `EventKind` variant to a game = 6–7 parallel edits in one file. Target was a generic
-  serde-friendly `EventConfig` (map keyed by `EventKind`) + a `&'static [EventKind]`
-  "kinds this game supports" slice per game.
-- **Revisited this session — the design is worse than it first looked:**
-  - The on-disk field names are **not** a function of `EventKind`. LoL persists
-    `dragon`/`baron`/`herald`/`turret`/`inhibitor` for `DragonKill`/`BaronKill`/
-    `HeraldKill`/`TurretKilled`/`InhibKilled`. So a map "keyed by `EventKind`" can't
-    derive its keys — each game needs a **bespoke `EventKind ↔ "field_name"` table**
-    just to round-trip existing configs. One wrong row silently resets that toggle
-    for every existing user on their next launch.
-  - `EventKind`'s own serde is PascalCase (`"DoubleKill"`) and is **also** the clip-DB
-    persisted form (`event.rs` header), so it can't be re-tagged to match the
-    snake_case settings fields without a second, larger migration.
-  - Even done, adding a variant becomes ~3 edits (name-table row + default row +
-    supported-kinds entry), not 0 — modest payoff on a *rare* operation.
-  - Cannot be verified here (no real `settings.json`). Golden round-trip tests only
-    prove the cases we model; a real saved config that differs still risks a silent
-    reset. Asymmetric risk: no user-visible upside, silent-data-loss downside.
-- **Recommendation:** leave the per-game structs. They're verbose but they're the most
-  boring, obvious, zero-migration-risk code in the repo — the verbosity is a feature
-  for a rarely-touched, back-compat-critical surface. If ever revisited: custom serde
-  with per-game name tables + exhaustive legacy-JSON round-trip tests (full / partial /
-  unknown-field cases), on a branch, with a manual "open settings, confirm nothing
-  reset" pass on a real upgraded profile before merge.
+  `EventKind` variant to a game was 6–7 parallel edits in one file.
+- **Why the *map-keyed-by-`EventKind`* idea was dropped (the original plan):** the
+  on-disk field names are **not** a function of `EventKind`. LoL persists
+  `dragon`/`baron`/`herald`/`turret`/`inhibitor` for `DragonKill`/`BaronKill`/
+  `HeraldKill`/`TurretKilled`/`InhibKilled`; `EventKind`'s own serde is PascalCase
+  (`"DoubleKill"`) and is *also* the clip-DB persisted form. A map keyed by
+  `EventKind` therefore can't derive its keys and would silently reset every
+  existing user's toggles unless it re-implemented a bespoke name table anyway.
+- **What we did instead (`games/event_config.rs`):** a `event_config!` declarative
+  macro that takes a per-game table of
+  `field => EventKind::Variant, on: <bool>, window: (before, after)` rows and expands
+  to the *exact same* `$Toggles` / `$Timing` / `$Timings` triplet + `Default` /
+  `enabled` / `for_kind` / `max_after`. Adding an event is now **one row**.
+  - **Zero migration risk:** the field identifiers are written verbatim at each call
+    site — they stay the on-disk `settings.json` keys — so the serialized form is
+    byte-identical. The (non-uniform) field↔kind mapping sits right beside each field
+    rather than being derived, so it's explicit, not fragile.
+  - **All six converted:** cs2, dota2, lol, warthunder, pubg, rematch. Valorant
+    (`reconcile.rs`, unprefixed `EventToggles`/`EventTimings`) is a different shape and
+    was left alone.
+  - **Golden tests (lol/events.rs):** pin the non-uniform field↔kind mapping + the
+    defaults, and assert legacy-JSON round-trips and `#[serde(default)]` additivity —
+    so a future field rename fails the build instead of silently resetting users.
+- **Verified:** `cargo check` clean; `games::` tests 66/66 (incl. 4 new golden);
+  clippy 26 warnings (was 27 baseline), none in touched files. Net ~550 fewer lines
+  across the six `events.rs` for a ~135-line macro. On-disk format unchanged, so no
+  frontend change and nothing to re-verify on a real profile.
 
 ## Verify commands
 - Frontend: `npm run build` (runs `tsc --noEmit && vite build`).

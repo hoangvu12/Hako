@@ -24,6 +24,7 @@ pub mod cs2;
 pub mod dota2;
 pub mod engine;
 pub mod event;
+pub mod event_config;
 pub mod generic;
 pub mod gsi;
 pub mod lockfile;

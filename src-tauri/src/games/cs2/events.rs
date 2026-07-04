@@ -12,10 +12,9 @@
 
 #![allow(dead_code)]
 
-use serde::{Deserialize, Serialize};
-
 use crate::games::cs2::payload::ValidPayload;
 use crate::games::event::EventKind;
+use crate::games::event_config::event_config;
 use crate::library::db::NewClip;
 
 /// What one payload produced: any clippable events, plus the two lifecycle
@@ -200,140 +199,26 @@ fn translate_mode(internal: &str) -> String {
     name.to_string()
 }
 
-/// Per-event auto-clip toggles for CS2. Multi-kills + headshots default on;
-/// noisy single kills / deaths / assists default off. Additive (`serde(default)`).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Cs2EventToggles {
-    pub kill: bool,
-    pub headshot: bool,
-    pub double_kill: bool,
-    pub triple_kill: bool,
-    pub quadra_kill: bool,
-    pub ace: bool,
-    pub death: bool,
-    pub assist: bool,
+event_config! {
+    toggles: Cs2EventToggles,
+    timing: Cs2EventTiming,
+    timings: Cs2EventTimings,
+    // Medal: EventWindow 5s, Padding 5s.
+    default_window: (6, 5),
+    merge_fallback_after: 4,
+    // Multi-kills + headshots default on; noisy single kills / deaths / assists
+    // default off.
+    events: {
+        kill        => EventKind::Kill,       on: false, window: (6, 5),
+        headshot    => EventKind::Headshot,   on: true,  window: (6, 5),
+        double_kill => EventKind::DoubleKill, on: true,  window: (7, 5),
+        triple_kill => EventKind::TripleKill, on: true,  window: (8, 5),
+        quadra_kill => EventKind::QuadraKill, on: true,  window: (9, 6),
+        ace         => EventKind::Ace,        on: true,  window: (10, 6),
+        death       => EventKind::Death,      on: false, window: (6, 4),
+        assist      => EventKind::Assist,     on: false, window: (6, 4),
+    },
 }
-
-impl Default for Cs2EventToggles {
-    fn default() -> Self {
-        Cs2EventToggles {
-            kill: false,
-            headshot: true,
-            double_kill: true,
-            triple_kill: true,
-            quadra_kill: true,
-            ace: true,
-            death: false,
-            assist: false,
-        }
-    }
-}
-
-impl Cs2EventToggles {
-    pub fn enabled(&self, kind: EventKind) -> bool {
-        match kind {
-            EventKind::Kill => self.kill,
-            EventKind::Headshot => self.headshot,
-            EventKind::DoubleKill => self.double_kill,
-            EventKind::TripleKill => self.triple_kill,
-            EventKind::QuadraKill => self.quadra_kill,
-            EventKind::Ace => self.ace,
-            EventKind::Death => self.death,
-            EventKind::Assist => self.assist,
-            _ => false,
-        }
-    }
-}
-
-/// Per-event clip window (seconds before / after the moment) for CS2.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Cs2EventTiming {
-    pub before: u32,
-    pub after: u32,
-}
-
-impl Default for Cs2EventTiming {
-    fn default() -> Self {
-        Cs2EventTiming {
-            before: 6,
-            after: 5,
-        }
-    }
-}
-
-impl Cs2EventTiming {
-    const fn new(before: u32, after: u32) -> Self {
-        Cs2EventTiming { before, after }
-    }
-}
-
-/// Per-event clip windows for CS2 (Medal: EventWindow 5s, Padding 5s).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Cs2EventTimings {
-    pub kill: Cs2EventTiming,
-    pub headshot: Cs2EventTiming,
-    pub double_kill: Cs2EventTiming,
-    pub triple_kill: Cs2EventTiming,
-    pub quadra_kill: Cs2EventTiming,
-    pub ace: Cs2EventTiming,
-    pub death: Cs2EventTiming,
-    pub assist: Cs2EventTiming,
-}
-
-impl Default for Cs2EventTimings {
-    fn default() -> Self {
-        Cs2EventTimings {
-            kill: Cs2EventTiming::new(6, 5),
-            headshot: Cs2EventTiming::new(6, 5),
-            double_kill: Cs2EventTiming::new(7, 5),
-            triple_kill: Cs2EventTiming::new(8, 5),
-            quadra_kill: Cs2EventTiming::new(9, 6),
-            ace: Cs2EventTiming::new(10, 6),
-            death: Cs2EventTiming::new(6, 4),
-            assist: Cs2EventTiming::new(6, 4),
-        }
-    }
-}
-
-impl Cs2EventTimings {
-    pub fn for_kind(&self, kind: EventKind) -> Cs2EventTiming {
-        match kind {
-            EventKind::Kill => self.kill,
-            EventKind::Headshot => self.headshot,
-            EventKind::DoubleKill => self.double_kill,
-            EventKind::TripleKill => self.triple_kill,
-            EventKind::QuadraKill => self.quadra_kill,
-            EventKind::Ace => self.ace,
-            EventKind::Death => self.death,
-            EventKind::Assist => self.assist,
-            _ => Cs2EventTiming::default(),
-        }
-    }
-
-    /// Widest after-pad across all *enabled* kinds (sizes the merge tolerance).
-    pub fn max_after(&self, toggles: &Cs2EventToggles) -> u32 {
-        ALL_KINDS
-            .iter()
-            .filter(|k| toggles.enabled(**k))
-            .map(|k| self.for_kind(*k).after)
-            .max()
-            .unwrap_or(4)
-    }
-}
-
-const ALL_KINDS: [EventKind; 8] = [
-    EventKind::Kill,
-    EventKind::Headshot,
-    EventKind::DoubleKill,
-    EventKind::TripleKill,
-    EventKind::QuadraKill,
-    EventKind::Ace,
-    EventKind::Death,
-    EventKind::Assist,
-];
 
 #[cfg(test)]
 mod tests {
