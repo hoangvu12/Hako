@@ -10,7 +10,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::core::capture::{self, RunningCapture, WindowTarget};
 use crate::core::device::{self, GpuInfo};
 use crate::core::encode::{self, FfmpegProbe};
-use crate::library::db::{rebase_marks, shift_marks, ClipRecord, EventMark, Library, NewClip};
+use crate::library::db::{
+    rebase_marks, shift_marks, ClipRecord, CustomGame, EventMark, Library, NewClip,
+};
 use crate::settings::{AudioConfig, Settings};
 
 /// Managed state holding the currently running capture, if any.
@@ -81,10 +83,19 @@ pub fn recorder_status_snapshot(app: &AppHandle) -> RecorderStatus {
             None => (false, false),
         })
         .unwrap_or((false, false));
-    // Which supported game's window is present (Valorant or League), if any.
+    // Which game's window is present (a smart game or a generic one), if any.
     let detected = crate::games::detected_game();
+    // The generic bucket labels itself with the *real* detected title (e.g. "Elden
+    // Ring"), not "Other Games"; a smart game uses its display name.
+    let detected_name = match detected {
+        Some(crate::games::GameId::Other) => crate::games::generic::detect::current_generic()
+            .map(|g| g.name)
+            .or_else(|| Some(crate::games::GameId::Other.display_name().to_string())),
+        Some(id) => Some(id.display_name().to_string()),
+        None => None,
+    };
     let valorant_detected = detected.is_some();
-    let game_name = detected.map(|g| g.display_name()).unwrap_or("game");
+    let game_name = detected_name.as_deref().unwrap_or("game");
     let buffer_seconds = app
         .state::<SettingsState>()
         .0
@@ -103,7 +114,7 @@ pub fn recorder_status_snapshot(app: &AppHandle) -> RecorderStatus {
         capturing,
         capturing_live,
         valorant_detected,
-        detected_game: detected.map(|g| g.display_name().to_string()),
+        detected_game: detected_name,
         encoder: None,
         buffer_seconds,
         message,
@@ -221,6 +232,90 @@ pub fn ffmpeg_info() -> FfmpegProbe {
 #[tauri::command]
 pub fn list_windows() -> Vec<WindowTarget> {
     capture::list_windows()
+}
+
+// ---------------------------------------------------------------------------
+// Custom games ("record any game" — Medal's Request-a-Game)
+// ---------------------------------------------------------------------------
+
+/// The user-added generic-capture list (name + enable toggle + remove rows).
+#[tauri::command]
+pub fn list_custom_games(library: State<LibraryState>) -> Result<Vec<CustomGame>, String> {
+    library
+        .0
+        .lock()
+        .map_err(|_| "library poisoned")?
+        .list_custom_games()
+}
+
+/// Add the game owning window `hwnd` to the custom list (Medal's RAG-insert):
+/// resolve its exe file name + window title, store them, and return the row. From
+/// then on the generic integration auto-records it whenever it's running. Errors if
+/// the window's owning process can't be resolved or it's a smart game / non-game.
+#[tauri::command]
+pub fn add_custom_game(app: AppHandle, hwnd: i64) -> Result<CustomGame, String> {
+    let pid = capture::pid_for_hwnd(hwnd).ok_or("could not resolve the window's process")?;
+    let process_name =
+        crate::games::process_snapshot::name_for_pid(pid, std::time::Duration::from_secs(2))
+            .ok_or("could not resolve the process executable name")?;
+    // Refuse smart games (they have their own integration) and blacklisted
+    // non-games (browsers, launchers, Hako itself) — the picker shouldn't turn one
+    // into a "custom game".
+    if crate::games::generic::catalog::is_excluded(&process_name) {
+        return Err(format!(
+            "\"{process_name}\" can't be added as a custom game (it's already \
+             supported or isn't a game)"
+        ));
+    }
+    // Seed the display name from the window title, falling back to the exe name.
+    let title = capture::window_title(hwnd);
+    let display_name = title.as_deref().unwrap_or(&process_name);
+    // Capture the exe's icon now (as a PNG data URL) so the list shows it even when
+    // the game isn't running. Best-effort — a missing icon just falls back to the
+    // generic glyph. Reuses the Phase-2 path table to resolve this pid's full exe.
+    let icon = crate::games::process_snapshot::processes_with_paths(std::time::Duration::from_secs(2))
+        .into_iter()
+        .find(|(p, _, _)| *p == pid)
+        .and_then(|(_, _, path)| crate::core::audio::exe_icon_data_url(&path));
+    let library = app.state::<LibraryState>();
+    let lib = library.0.lock().map_err(|_| "library poisoned")?;
+    let row = lib.add_custom_game(
+        &process_name,
+        display_name,
+        None,
+        title.as_deref(),
+        icon.as_deref(),
+    )?;
+    tracing::info!(
+        "custom game added: \"{}\" ({})",
+        row.display_name,
+        row.process_name
+    );
+    Ok(row)
+}
+
+/// Remove a custom game from the list (stops auto-recording it).
+#[tauri::command]
+pub fn remove_custom_game(library: State<LibraryState>, id: i64) -> Result<(), String> {
+    library
+        .0
+        .lock()
+        .map_err(|_| "library poisoned")?
+        .remove_custom_game(id)
+}
+
+/// Enable/disable a custom game (kept in the list either way).
+#[tauri::command]
+pub fn set_custom_game_enabled(
+    library: State<LibraryState>,
+    id: i64,
+    enabled: bool,
+) -> Result<(), String> {
+    library
+        .0
+        .lock()
+        .map_err(|_| "library poisoned")?
+        .set_custom_game_enabled(id, enabled)
 }
 
 /// Active microphone / capture endpoints for the "Microphone Source" picker.

@@ -1,9 +1,11 @@
 import { useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Crosshair,
   GameController,
   CaretDown,
   Check,
+  Trash,
   type Icon,
 } from "@phosphor-icons/react";
 
@@ -11,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { SectionHero, Panel, PresetCard } from "@/components/settings/primitives";
+import { RequestGameDialog } from "@/components/settings/sections/request-game-dialog";
 import {
   CAPTURE_MODES,
   GAME_MODE_LABELS,
@@ -23,15 +26,29 @@ import {
 } from "@/components/settings/config";
 import { useValorantAssets } from "@/hooks/use-valorant-assets";
 import { GAMES, gameMeta, type GameId, type GameMeta } from "@/games/registry";
+import {
+  listCustomGames,
+  removeCustomGame,
+  setCustomGameEnabled,
+  type CustomGame,
+} from "@/lib/api";
 import type {
   AutoCaptureMode,
   EventTiming,
   EventToggles,
   GameModeToggles,
   LolEventToggles,
+  OtherGamesSettings,
   RematchEventToggles,
   Settings,
 } from "@/lib/api";
+
+/** The generic bucket has no event feed, so Highlights is omitted from its modes. */
+const OTHER_CAPTURE_MODES = CAPTURE_MODES.filter((m) => m.key !== "highlights");
+
+/** The smart games (everything but the generic "other" bucket), in registry order. */
+const SMART_GAMES = GAMES.filter((g) => g.id !== "other");
+type SmartGameId = Exclude<GameId, "other">;
 
 /* -------------------------------------------------------------------------- */
 /* Per-game auto descriptor — the modular seam                                */
@@ -154,18 +171,20 @@ function TimingRow({
   );
 }
 
-/** Mode-card grid shared by both games. */
+/** Mode-card grid shared by every game (generic passes a filtered mode list). */
 function ModeCards({
   value,
   onSelect,
+  modes = CAPTURE_MODES,
 }: {
   value: AutoCaptureMode;
   onSelect: (mode: AutoCaptureMode) => void;
+  modes?: typeof CAPTURE_MODES;
 }) {
   return (
     <Panel title="Mode">
       <div className="grid grid-cols-2 gap-3 pt-1">
-        {CAPTURE_MODES.map((m) => (
+        {modes.map((m) => (
           <PresetCard
             key={m.key}
             title={m.label}
@@ -407,6 +426,211 @@ function GameAutoCard({ model }: { model: GameAutoModel }) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Other Games (generic "record any game") card                              */
+/* -------------------------------------------------------------------------- */
+
+/** A custom game's captured exe icon, with the generic glyph as a fallback (no
+ * icon captured, or the data URL fails to decode). */
+function CustomGameIcon({ icon }: { icon: string | null }) {
+  const [failed, setFailed] = useState(false);
+  const box =
+    "flex size-8 shrink-0 items-center justify-center rounded bg-secondary/60 text-muted-foreground";
+  if (!icon || failed) {
+    return (
+      <span className={box}>
+        <GameController className="size-4" />
+      </span>
+    );
+  }
+  return (
+    <span className={box}>
+      <img
+        src={icon}
+        alt=""
+        draggable={false}
+        onError={() => setFailed(true)}
+        className="size-5 object-contain"
+      />
+    </span>
+  );
+}
+
+/** A labeled on/off row (used for the generic detection toggles). */
+function ToggleRow({
+  label,
+  hint,
+  checked,
+  onCheckedChange,
+}: {
+  label: string;
+  hint: string;
+  checked: boolean;
+  onCheckedChange: (v: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-6 py-3 first:pt-1 last:pb-0">
+      <div className="min-w-0">
+        <div className="text-sm font-medium">{label}</div>
+        <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p>
+      </div>
+      <Switch checked={checked} onCheckedChange={onCheckedChange} />
+    </div>
+  );
+}
+
+/**
+ * The generic "record any game" card. Unlike the smart-game cards it has no
+ * events — just a capture mode (Manual / Full session / Full match), the
+ * auto-detection toggles, and the managed list of user-added games with a
+ * "+ Add a game" picker (Medal's Request-a-Game). Detected games record
+ * generically and are tagged with their real title.
+ */
+function OtherGamesCard({
+  other,
+  setMode,
+  setDisabled,
+  setDetect,
+}: {
+  other: OtherGamesSettings;
+  setMode: (mode: AutoCaptureMode) => void;
+  setDisabled: (disabled: boolean) => void;
+  setDetect: (key: "detect_steam" | "detect_curated", value: boolean) => void;
+}) {
+  const meta = gameMeta("other");
+  const enabled = !other.disabled;
+  const [open, setOpen] = useState(enabled);
+  const qc = useQueryClient();
+
+  const { data: games = [] } = useQuery({
+    queryKey: ["custom-games"],
+    queryFn: listCustomGames,
+  });
+  const refresh = () => qc.invalidateQueries({ queryKey: ["custom-games"] });
+  const toggle = useMutation({
+    mutationFn: ({ id, on }: { id: number; on: boolean }) =>
+      setCustomGameEnabled(id, on),
+    onSettled: refresh,
+  });
+  const remove = useMutation({
+    mutationFn: (id: number) => removeCustomGame(id),
+    onSettled: refresh,
+  });
+
+  const toggleEnabled = () => {
+    const next = !enabled;
+    setDisabled(!next);
+    if (next) setOpen(true);
+  };
+
+  return (
+    <section
+      className={cn(
+        "overflow-hidden rounded-xl border transition-colors",
+        enabled ? "border-border/70 bg-card/40" : "border-border/50 bg-card/20"
+      )}
+    >
+      {/* Header — always visible. */}
+      <div className="flex items-center gap-3 p-4">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="flex min-w-0 flex-1 items-center gap-3 text-left"
+        >
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-secondary/60">
+            <GameLogo meta={meta} className="size-6 object-contain" />
+          </span>
+          <span className="min-w-0">
+            <span className="block truncate text-sm font-semibold">{meta.label}</span>
+            <span className="block truncate text-xs text-muted-foreground">
+              {enabled
+                ? OTHER_CAPTURE_MODES.find((m) => m.key === other.auto_capture_mode)
+                    ?.label ?? "On"
+                : "Off — not captured"}
+            </span>
+          </span>
+          {enabled && (
+            <CaretDown
+              weight="bold"
+              className={cn(
+                "ml-1 size-4 text-muted-foreground transition-transform",
+                open ? "rotate-0" : "-rotate-90"
+              )}
+            />
+          )}
+        </button>
+        <Switch checked={enabled} onCheckedChange={toggleEnabled} />
+      </div>
+
+      {/* Body — config, shown when expanded and enabled. */}
+      {open && enabled && (
+        <div className="flex flex-col gap-4 border-t border-border/60 p-4">
+          <ModeCards
+            value={other.auto_capture_mode}
+            onSelect={setMode}
+            modes={OTHER_CAPTURE_MODES}
+          />
+
+          <Panel title="Auto-detect games">
+            <ToggleRow
+              label="Detect Steam games automatically"
+              hint="Recognize any game launched from your Steam library"
+              checked={other.detect_steam}
+              onCheckedChange={(v) => setDetect("detect_steam", v)}
+            />
+            <ToggleRow
+              label="Detect known games"
+              hint="Recognize popular non-Steam games (Fortnite, Apex, Roblox…)"
+              checked={other.detect_curated}
+              onCheckedChange={(v) => setDetect("detect_curated", v)}
+            />
+          </Panel>
+
+          <Panel title="Your games">
+            <p className="-mt-1 pb-2 text-xs text-muted-foreground">
+              Add any game not detected automatically — point Hako at its window
+              once and it auto-records from then on.
+            </p>
+            <div className="flex flex-col gap-1.5">
+              {games.map((g: CustomGame) => (
+                <div
+                  key={g.id}
+                  className="flex items-center gap-3 rounded-lg border border-border/60 bg-card/30 px-3 py-2"
+                >
+                  <CustomGameIcon icon={g.icon} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium">
+                      {g.display_name}
+                    </span>
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {g.process_name}
+                    </span>
+                  </span>
+                  <Switch
+                    checked={g.enabled}
+                    onCheckedChange={(on) => toggle.mutate({ id: g.id, on })}
+                  />
+                  <button
+                    type="button"
+                    aria-label={`Remove ${g.display_name}`}
+                    onClick={() => remove.mutate(g.id)}
+                    className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                  >
+                    <Trash className="size-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="pt-3">
+              <RequestGameDialog onAdded={refresh} />
+            </div>
+          </Panel>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
 /* Section                                                                   */
 /* -------------------------------------------------------------------------- */
 
@@ -427,6 +651,9 @@ export function AutoSection({
   toggleRematchEvent,
   setRematchTimingLocal,
   commitRematchTiming,
+  setOtherMode,
+  setOtherDisabled,
+  setOtherDetect,
 }: {
   draft: Settings;
   set: SettingsSet;
@@ -452,6 +679,9 @@ export function AutoSection({
     field: "before" | "after",
     value: number
   ) => void;
+  setOtherMode: (mode: AutoCaptureMode) => void;
+  setOtherDisabled: (disabled: boolean) => void;
+  setOtherDetect: (key: "detect_steam" | "detect_curated", value: boolean) => void;
 }) {
   const assets = useValorantAssets();
 
@@ -460,7 +690,7 @@ export function AutoSection({
   // these builders; the card UI above is fully generic.
   const lol = draft.games.lol;
   const rematch = draft.games.rematch;
-  const models: Record<GameId, GameAutoModel> = {
+  const models: Record<SmartGameId, GameAutoModel> = {
     valorant: {
       meta: gameMeta("valorant"),
       mode: draft.auto_capture_mode,
@@ -517,9 +747,15 @@ export function AutoSection({
       />
 
       <div className="flex flex-col gap-3">
-        {GAMES.map((g) => (
-          <GameAutoCard key={g.id} model={models[g.id]} />
+        {SMART_GAMES.map((g) => (
+          <GameAutoCard key={g.id} model={models[g.id as SmartGameId]} />
         ))}
+        <OtherGamesCard
+          other={draft.games.other}
+          setMode={setOtherMode}
+          setDisabled={setOtherDisabled}
+          setDetect={setOtherDetect}
+        />
       </div>
     </>
   );

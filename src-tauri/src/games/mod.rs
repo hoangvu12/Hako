@@ -21,6 +21,7 @@
 //! placed clip windows handed to one cut routine.
 
 pub mod event;
+pub mod generic;
 pub mod lockfile;
 pub mod lol;
 pub mod net;
@@ -47,6 +48,11 @@ pub enum GameId {
     Valorant,
     Lol,
     Rematch,
+    /// The generic "any other game" bucket — a single arbiter/settings key shared
+    /// by every non-integrated game we detect + record generically (Steam /
+    /// curated / user-added). Individual clips are still tagged with the *real*
+    /// detected game name, not this bucket label (see [`generic`]).
+    Other,
 }
 
 #[allow(dead_code)] // `as_str`/`from_str` are part of the GameId API surface.
@@ -57,6 +63,7 @@ impl GameId {
             GameId::Valorant => "valorant",
             GameId::Lol => "lol",
             GameId::Rematch => "rematch",
+            GameId::Other => "other",
         }
     }
 
@@ -66,6 +73,9 @@ impl GameId {
             GameId::Valorant => "Valorant",
             GameId::Lol => "League of Legends",
             GameId::Rematch => "Rematch",
+            // The generic *bucket* label. A live generic clip/status uses the real
+            // detected title instead (see `commands::recorder_status_snapshot`).
+            GameId::Other => "Other Games",
         }
     }
 
@@ -75,6 +85,7 @@ impl GameId {
             "valorant" => Some(GameId::Valorant),
             "lol" | "leagueoflegends" | "league_of_legends" => Some(GameId::Lol),
             "rematch" => Some(GameId::Rematch),
+            "other" => Some(GameId::Other),
             _ => None,
         }
     }
@@ -123,6 +134,9 @@ pub fn registry() -> &'static [Arc<dyn GameIntegration>] {
             Arc::new(valorant::Integration) as Arc<dyn GameIntegration>,
             Arc::new(lol::Integration),
             Arc::new(rematch::Integration),
+            // Registered LAST so the three smart integrations win the single-capture
+            // arbiter: if a smart game is up, the generic bucket stands down.
+            Arc::new(generic::Integration),
         ]
     })
 }

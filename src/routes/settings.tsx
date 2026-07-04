@@ -356,6 +356,35 @@ function SettingsPage() {
     if (d) persist(rematchTimingNext(d, key, field, value));
   };
 
+  // --- Other Games (generic "record any game") handlers, on games.other ------
+  const setOtherMode = (mode: AutoCaptureMode) => {
+    const d = draftRef.current;
+    if (d)
+      persist({
+        ...d,
+        games: { ...d.games, other: { ...d.games.other, auto_capture_mode: mode } },
+      });
+  };
+  const setOtherDisabled = (disabled: boolean) => {
+    const d = draftRef.current;
+    if (d)
+      persist({
+        ...d,
+        games: { ...d.games, other: { ...d.games.other, disabled } },
+      });
+  };
+  const setOtherDetect = (
+    key: "detect_steam" | "detect_curated",
+    value: boolean
+  ) => {
+    const d = draftRef.current;
+    if (d)
+      persist({
+        ...d,
+        games: { ...d.games, other: { ...d.games.other, [key]: value } },
+      });
+  };
+
   const q = navQuery.trim().toLowerCase();
   // Single pass: filter each group's items and keep only non-empty groups in one
   // reduce, instead of mapping then filtering over the group list twice.
@@ -446,6 +475,9 @@ function SettingsPage() {
               toggleRematchEvent={toggleRematchEvent}
               setRematchTimingLocal={setRematchTimingLocal}
               commitRematchTiming={commitRematchTiming}
+              setOtherMode={setOtherMode}
+              setOtherDisabled={setOtherDisabled}
+              setOtherDetect={setOtherDetect}
             />
           )}
 

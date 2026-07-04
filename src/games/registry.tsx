@@ -19,8 +19,10 @@ import {
  * hard-coding "valorant"/"lol".
  */
 
-/** Stable lowercase id, matching the clip DB's `game` column + settings keys. */
-export type GameId = "valorant" | "lol" | "rematch";
+/** Stable lowercase id, matching the clip DB's `game` column + settings keys.
+ * `other` is the generic "record any game" bucket (its settings + arbiter key);
+ * individual generic clips store the *real* game title, not `other`. */
+export type GameId = "valorant" | "lol" | "rematch" | "other";
 
 export interface GameMeta {
   id: GameId;
@@ -70,6 +72,17 @@ export const GAMES: GameMeta[] = [
       "runtimeclient-wingdk-shipping.exe",
     ],
   },
+  // The generic "record any game" bucket — kept LAST (mirrors the backend
+  // registry order). Detected games are added via the picker / auto-scan; this
+  // entry styles the Auto-Capture "Other Games" card, not per-game detection.
+  {
+    id: "other",
+    label: "Other Games",
+    logo: "/games/_default.svg",
+    Icon: GameController,
+    accent: "#8b8b8b",
+    processNames: [],
+  },
 ];
 
 const BY_ID = new Map(GAMES.map((g) => [g.id, g]));
@@ -90,12 +103,17 @@ export function gameMeta(id: GameId): GameMeta {
 }
 
 /**
- * The `GameId` a clip belongs to. Clips predating multi-game support stored
- * `null` and are treated as Valorant; unknown ids also fall back to Valorant so
- * the UI never drops a clip.
+ * The `GameId` bucket a clip belongs to. Clips predating multi-game support
+ * stored `null` and are treated as Valorant (the only game then; the backfill
+ * also labels them "valorant"). Generic "record any game" clips store their
+ * **real title** (e.g. "Elden Ring"), which is none of the smart ids → they
+ * bucket under `"other"` so they filter + present under "Other Games" instead of
+ * masquerading as Valorant.
  */
 export function clipGame(game: string | null | undefined): GameId {
+  if (!game) return "valorant"; // legacy null (backfilled to Valorant)
   if (game === "lol") return "lol";
   if (game === "rematch") return "rematch";
-  return "valorant";
+  if (game === "valorant") return "valorant";
+  return "other";
 }

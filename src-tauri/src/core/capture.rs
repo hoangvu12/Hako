@@ -546,21 +546,38 @@ impl Drop for RunningCapture {
     }
 }
 
-/// Enumerate visible top-level windows with a title (for the capture picker).
+/// Enumerate visible top-level windows with a title (for the "Add a game" picker).
+///
+/// Windows owned by a process we'd never record — the smart games, the non-game
+/// blacklist (browsers, Discord, launchers, the shell…), and Hako itself — are
+/// filtered out, so the picker only lists plausible targets (Medal's
+/// `GetAllActiveWindows` does the same). This mirrors the exclusion the generic
+/// scan and `add_custom_game` already apply, so a window shown here can actually
+/// be added. Windows whose owning process can't be resolved are kept (benefit of
+/// the doubt).
 pub fn list_windows() -> Vec<WindowTarget> {
-    let mut out: Vec<WindowTarget> = Vec::new();
-    // SAFETY: `out` outlives the EnumWindows call; the callback only touches it.
+    use crate::games::process_snapshot;
+
+    let mut raw: Vec<(i64, String, u32)> = Vec::new();
+    // SAFETY: `raw` outlives the EnumWindows call; the callback only touches it.
     unsafe {
         let _ = EnumWindows(
             Some(enum_proc),
-            LPARAM(&mut out as *mut Vec<WindowTarget> as isize),
+            LPARAM(&mut raw as *mut Vec<(i64, String, u32)> as isize),
         );
     }
-    out
+    raw.into_iter()
+        .filter(|(_, _, pid)| {
+            process_snapshot::name_for_pid(*pid, process_snapshot::DEFAULT_MAX_AGE)
+                .map(|name| !crate::games::generic::catalog::is_excluded(&name))
+                .unwrap_or(true)
+        })
+        .map(|(hwnd, title, _)| WindowTarget { hwnd, title })
+        .collect()
 }
 
 unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    let out = &mut *(lparam.0 as *mut Vec<WindowTarget>);
+    let out = &mut *(lparam.0 as *mut Vec<(i64, String, u32)>);
     if IsWindowVisible(hwnd).as_bool() {
         let len = GetWindowTextLengthW(hwnd);
         if len > 0 {
@@ -569,10 +586,9 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
             if n > 0 {
                 let title = String::from_utf16_lossy(&buf[..n as usize]);
                 if !title.is_empty() {
-                    out.push(WindowTarget {
-                        hwnd: hwnd.0 as i64,
-                        title,
-                    });
+                    let mut pid: u32 = 0;
+                    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+                    out.push((hwnd.0 as i64, title, pid));
                 }
             }
         }
@@ -667,6 +683,28 @@ pub fn pid_for_hwnd(hwnd_raw: i64) -> Option<u32> {
         GetWindowThreadProcessId(HWND(hwnd_raw as *mut c_void), Some(&mut pid));
     }
     (pid != 0).then_some(pid)
+}
+
+/// The window title (caption) of `hwnd_raw`, trimmed, or `None` if it has none.
+/// Used by `add_custom_game` to seed a picked game's display name from its window
+/// title (Medal's Request-a-Game captures the caption too).
+pub fn window_title(hwnd_raw: i64) -> Option<String> {
+    let hwnd = HWND(hwnd_raw as *mut c_void);
+    // SAFETY: reads the caption of a window handle; a stale HWND yields length 0.
+    unsafe {
+        let len = GetWindowTextLengthW(hwnd);
+        if len <= 0 {
+            return None;
+        }
+        let mut buf = vec![0u16; len as usize + 1];
+        let n = GetWindowTextW(hwnd, &mut buf);
+        if n <= 0 {
+            return None;
+        }
+        let title = String::from_utf16_lossy(&buf[..n as usize]);
+        let title = title.trim();
+        (!title.is_empty()).then(|| title.to_string())
+    }
 }
 
 /// The mouse cursor's current screen position (physical pixels), or `None` if the

@@ -277,6 +277,54 @@ impl AutoCaptureMode {
 pub struct GamesSettings {
     pub lol: LolGameSettings,
     pub rematch: RematchGameSettings,
+    /// The generic "record any game" bucket (Steam / curated / user-added). Unlike
+    /// the smart games it has no events — just a capture mode + detection toggles.
+    pub other: OtherGamesSettings,
+}
+
+fn default_other_mode() -> String {
+    // Manual (buffer + save-hotkey) is the only meaningful default for a game with
+    // no events — Highlights would have nothing to cut.
+    "manual".into()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Generic-capture ("Other Games") config. No per-event toggles/timings — a
+/// generic game has no event feed, so it records only in Manual / Session /
+/// Full-match modes. Forward/back-compatible via `#[serde(default)]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OtherGamesSettings {
+    /// `manual` (default) | `full_match` | `session` (see [`AutoCaptureMode`]).
+    /// Highlights is meaningless here (no events) and folds to Manual.
+    #[serde(default = "default_other_mode")]
+    pub auto_capture_mode: String,
+    /// When true, Hako never auto-attaches to a generic game (no buffer, no
+    /// auto-record). The master off switch for the whole bucket. Defaults off.
+    #[serde(default)]
+    pub disabled: bool,
+    /// Auto-detect Steam games from their `steamapps\common` install (Phase 2).
+    /// Defaults on.
+    #[serde(default = "default_true")]
+    pub detect_steam: bool,
+    /// Auto-detect known non-Steam games from the bundled curated list (Phase 3).
+    /// Defaults on.
+    #[serde(default = "default_true")]
+    pub detect_curated: bool,
+}
+
+impl Default for OtherGamesSettings {
+    fn default() -> Self {
+        OtherGamesSettings {
+            auto_capture_mode: default_other_mode(),
+            disabled: false,
+            detect_steam: true,
+            detect_curated: true,
+        }
+    }
 }
 
 /// League of Legends auto-capture config (mirrors the Valorant flat fields, but
@@ -541,6 +589,15 @@ impl Settings {
 
     pub fn rematch_auto_mode(&self) -> AutoCaptureMode {
         AutoCaptureMode::parse(&self.games.rematch.auto_capture_mode)
+    }
+
+    /// The generic-capture ("Other Games") auto mode. Highlights isn't valid for
+    /// an event-less game, so it's normalized to Manual.
+    pub fn other_auto_mode(&self) -> AutoCaptureMode {
+        match AutoCaptureMode::parse(&self.games.other.auto_capture_mode) {
+            AutoCaptureMode::Highlights => AutoCaptureMode::Manual,
+            other => other,
+        }
     }
 
     /// Seconds the save-clip hotkey should capture: the configured `clip_seconds`

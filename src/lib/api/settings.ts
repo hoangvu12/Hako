@@ -145,10 +145,27 @@ export interface RematchGameSettings {
   event_timings: RematchEventTimings;
 }
 
+/**
+ * Generic "record any game" config (mirrors Rust `OtherGamesSettings`). No
+ * per-event toggles — a generic game has no event feed, so it records only in
+ * Manual / Full match / Full session modes (never Highlights).
+ */
+export interface OtherGamesSettings {
+  /** "manual" (default) | "full_match" | "session". Highlights folds to Manual. */
+  auto_capture_mode: AutoCaptureMode;
+  /** Master off switch — when true, Hako never auto-attaches to a generic game. */
+  disabled: boolean;
+  /** Auto-detect Steam games from their install path (Phase 2). Defaults on. */
+  detect_steam: boolean;
+  /** Auto-detect known non-Steam games from the curated list (Phase 3). Defaults on. */
+  detect_curated: boolean;
+}
+
 /** Per-game settings for non-Valorant games (mirrors Rust `GamesSettings`). */
 export interface GamesSettings {
   lol: LolGameSettings;
   rematch: RematchGameSettings;
+  other: OtherGamesSettings;
 }
 
 /** Mirrors the Rust `Settings` (src-tauri/src/settings.rs). */

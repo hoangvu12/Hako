@@ -5,6 +5,7 @@
  */
 export * from "./events";
 export * from "./recorder";
+export * from "./custom-games";
 export * from "./clips";
 export * from "./audio";
 export * from "./settings";

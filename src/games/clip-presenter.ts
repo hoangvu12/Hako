@@ -119,10 +119,28 @@ const rematch: GamePresenter = {
   },
 };
 
+const other: GamePresenter = {
+  // Generic "record any game" clips carry no match context — just the real game
+  // title (in `clip.game`, surfaced elsewhere). No portrait, badges, or K/D/A.
+  cardBadges() {
+    return badges({ label: "" });
+  },
+  detail(clip) {
+    return {
+      icon: undefined,
+      name: null,
+      fallback: clip.game ?? "Game",
+      sub: "",
+      showKda: false,
+    };
+  },
+};
+
 const GAME_PRESENTERS: Record<GameId, GamePresenter> = {
   valorant,
   lol,
   rematch,
+  other,
 };
 
 /** The presenter for a clip's source game (falls back to Valorant like the rest). */

@@ -146,6 +146,10 @@ fn main() {
             commands::gpu_info,
             commands::ffmpeg_info,
             commands::list_windows,
+            commands::list_custom_games,
+            commands::add_custom_game,
+            commands::remove_custom_game,
+            commands::set_custom_game_enabled,
             commands::list_audio_inputs,
             commands::list_audio_outputs,
             commands::list_active_audio_sessions,
@@ -258,6 +262,10 @@ fn main() {
             // matches, and auto-cuts highlight clips on match end (Mode B).
             // Degrades to manual clips if the game API/capture aren't available.
             games::orchestrator::spawn(app.handle().clone());
+            // Refresh the "record any game" curated list from the repo (best-effort,
+            // conditional GET). Updates the known-games table without an app release;
+            // silently keeps the bundled list if offline / unreachable.
+            games::generic::curated::spawn_refresh(app.handle().clone());
             // In-game overlay: warn on the overlay when the clips drive runs low
             // (edge-triggered, only while capturing).
             overlay::spawn_disk_monitor(app.handle().clone());

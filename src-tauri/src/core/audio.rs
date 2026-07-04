@@ -377,6 +377,14 @@ fn cached_exe_icon(exe: &std::path::Path) -> Option<String> {
     icon
 }
 
+/// The exe's icon as a PNG `data:` URL (memoized by path), for callers outside the
+/// audio-source list — e.g. the "record any game" custom-games list, which stores
+/// it on the row so the game's real icon shows even when it isn't running. Best-
+/// effort: `None` if the file has no icon or extraction failed.
+pub(crate) fn exe_icon_data_url(exe: &std::path::Path) -> Option<String> {
+    cached_exe_icon(exe)
+}
+
 /// Extract `exe`'s associated icon and encode it as a `data:image/png;base64,…`
 /// URL. Best-effort: returns `None` on any failure. Uses `SHGetFileInfoW` to get
 /// the `HICON`, then GDI (`GetIconInfo`/`GetDIBits`) to read its 32-bit pixels.
