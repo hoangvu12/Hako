@@ -29,6 +29,25 @@ use crate::events;
 use crate::games::event::EventKind;
 use crate::games::{CaptureOwner, GameId, GameIntegration};
 use crate::library::db::{EventMark, NewClip};
+use crate::settings::AutoCaptureMode;
+
+/// The user's configured auto-capture mode for `game`, read from the shared
+/// settings state. Defaults to Highlights when settings are momentarily
+/// unavailable (e.g. an IPC call racing startup) — the historical default. One
+/// helper for every smart game instead of a `current_auto_mode` per integration.
+pub fn game_auto_mode(app: &AppHandle, game: GameId) -> AutoCaptureMode {
+    app.try_state::<commands::SettingsState>()
+        .and_then(|s| s.0.lock().ok().map(|g| g.game_auto_mode(game)))
+        .unwrap_or(AutoCaptureMode::Highlights)
+}
+
+/// Whether the user has fully disabled Hako for `game` (no buffer, no
+/// auto-record). Defaults to enabled when settings are unavailable.
+pub fn game_capture_disabled(app: &AppHandle, game: GameId) -> bool {
+    app.try_state::<commands::SettingsState>()
+        .and_then(|s| s.0.lock().ok().map(|g| g.game_disabled(game)))
+        .unwrap_or(false)
+}
 
 // ===========================================================================
 // GameCtx — the per-game handle into the shared recording machinery

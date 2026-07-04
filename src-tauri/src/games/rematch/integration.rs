@@ -20,8 +20,8 @@ use crate::commands::SettingsState;
 use crate::core::clock::TICKS_PER_SECOND;
 use crate::games::event::EventKind;
 use crate::games::recording::{
-    clip_window_span, cut_placed_windows, save_whole_session, AutoCaptureState, CutWindows,
-    GameCtx, RecordingSession,
+    clip_window_span, cut_placed_windows, game_auto_mode, game_capture_disabled,
+    save_whole_session, AutoCaptureState, CutWindows, GameCtx, RecordingSession,
 };
 use crate::games::rematch::context::RematchContext;
 use crate::games::rematch::detect;
@@ -107,13 +107,13 @@ async fn run(ctx: GameCtx) {
         // "Disabled" fully ignores Rematch: no buffer auto-attach, and forcing
         // Manual below tears down any in-flight auto-recording via the paths that
         // already handle a mid-match mode change.
-        let disabled = current_capture_disabled(&app);
+        let disabled = game_capture_disabled(&app, ctx.id());
         ctx.auto_manage_capture(&mut autocap, disabled);
 
         let mode = if disabled {
             AutoCaptureMode::Manual
         } else {
-            current_auto_mode(&app)
+            game_auto_mode(&app, ctx.id())
         };
         let (toggles, timings) = current_rematch_config(&app);
         manage_full_session(&ctx, mode, &mut full_session);
@@ -388,21 +388,6 @@ fn finish_full_session(app: &AppHandle, fs: RecordingSession) {
         }
         let _ = std::fs::remove_file(&path);
     });
-}
-
-/// The user's configured auto-capture mode for Rematch (per-game settings).
-fn current_auto_mode(app: &AppHandle) -> AutoCaptureMode {
-    app.try_state::<SettingsState>()
-        .and_then(|s| s.0.lock().ok().map(|g| g.rematch_auto_mode()))
-        .unwrap_or(AutoCaptureMode::Highlights)
-}
-
-/// Whether the user has fully disabled Hako for Rematch ("don't capture this
-/// game at all"). Defaults to enabled when settings are unavailable.
-fn current_capture_disabled(app: &AppHandle) -> bool {
-    app.try_state::<SettingsState>()
-        .and_then(|s| s.0.lock().ok().map(|g| g.games.rematch.disabled))
-        .unwrap_or(false)
 }
 
 /// The user's Rematch event toggles + timings (defaults when unavailable).

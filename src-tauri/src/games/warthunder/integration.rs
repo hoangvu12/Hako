@@ -20,8 +20,8 @@ use crate::commands::SettingsState;
 use crate::core::clock::{now_ticks, TICKS_PER_SECOND};
 use crate::games::event::EventKind;
 use crate::games::recording::{
-    clip_window_span, cut_placed_windows, save_whole_session, AutoCaptureState, CutWindows,
-    GameCtx, RecordingSession,
+    clip_window_span, cut_placed_windows, game_auto_mode, game_capture_disabled,
+    save_whole_session, AutoCaptureState, CutWindows, GameCtx, RecordingSession,
 };
 use crate::games::warthunder::api::{Vehicle, WarThunderApi};
 use crate::games::warthunder::detect;
@@ -90,13 +90,13 @@ async fn run(ctx: GameCtx) {
     loop {
         tokio::time::sleep(poll).await;
 
-        let disabled = current_capture_disabled(&app);
+        let disabled = game_capture_disabled(&app, ctx.id());
         ctx.auto_manage_capture(&mut autocap, disabled);
 
         let mode = if disabled {
             AutoCaptureMode::Manual
         } else {
-            current_auto_mode(&app)
+            game_auto_mode(&app, ctx.id())
         };
         let (toggles, timings) = current_warthunder_config(&app);
         let nickname = current_nickname(&app);
@@ -344,20 +344,6 @@ fn finish_full_session(app: &AppHandle, fs: RecordingSession) {
         }
         let _ = std::fs::remove_file(&path);
     });
-}
-
-/// The user's configured auto-capture mode for War Thunder (per-game settings).
-fn current_auto_mode(app: &AppHandle) -> AutoCaptureMode {
-    app.try_state::<SettingsState>()
-        .and_then(|s| s.0.lock().ok().map(|g| g.warthunder_auto_mode()))
-        .unwrap_or(AutoCaptureMode::Highlights)
-}
-
-/// Whether the user has fully disabled Hako for War Thunder. Defaults to enabled.
-fn current_capture_disabled(app: &AppHandle) -> bool {
-    app.try_state::<SettingsState>()
-        .and_then(|s| s.0.lock().ok().map(|g| g.games.warthunder.disabled))
-        .unwrap_or(false)
 }
 
 /// The user's War Thunder event toggles + timings (defaults when unavailable).

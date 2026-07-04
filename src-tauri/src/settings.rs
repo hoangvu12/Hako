@@ -16,6 +16,7 @@ use crate::games::pubg::events::{PubgEventTimings, PubgEventToggles};
 use crate::games::warthunder::events::{WarThunderEventTimings, WarThunderEventToggles};
 use crate::games::lol::events::{LolEventTimings, LolEventToggles};
 use crate::games::rematch::events::{RematchEventTimings, RematchEventToggles};
+use crate::games::GameId;
 use crate::valorant::model::GameModeToggles;
 use crate::valorant::reconcile::{EventTimings, EventToggles};
 
@@ -707,29 +708,36 @@ impl Settings {
         AutoCaptureMode::parse(&self.auto_capture_mode)
     }
 
-    /// The League auto-capture mode (from the per-game settings bundle).
-    pub fn lol_auto_mode(&self) -> AutoCaptureMode {
-        AutoCaptureMode::parse(&self.games.lol.auto_capture_mode)
+    /// The auto-capture mode for any game, keyed by [`GameId`] — one accessor
+    /// for every game instead of a near-identical method each. Valorant reads
+    /// its flat field; `Other` normalizes Highlights→Manual (no event feed).
+    pub fn game_auto_mode(&self, game: GameId) -> AutoCaptureMode {
+        let raw = match game {
+            GameId::Valorant => &self.auto_capture_mode,
+            GameId::Lol => &self.games.lol.auto_capture_mode,
+            GameId::Rematch => &self.games.rematch.auto_capture_mode,
+            GameId::Cs2 => &self.games.cs2.auto_capture_mode,
+            GameId::Dota2 => &self.games.dota2.auto_capture_mode,
+            GameId::WarThunder => &self.games.warthunder.auto_capture_mode,
+            GameId::Pubg => &self.games.pubg.auto_capture_mode,
+            GameId::Other => return self.other_auto_mode(),
+        };
+        AutoCaptureMode::parse(raw)
     }
 
-    pub fn rematch_auto_mode(&self) -> AutoCaptureMode {
-        AutoCaptureMode::parse(&self.games.rematch.auto_capture_mode)
-    }
-
-    pub fn cs2_auto_mode(&self) -> AutoCaptureMode {
-        AutoCaptureMode::parse(&self.games.cs2.auto_capture_mode)
-    }
-
-    pub fn warthunder_auto_mode(&self) -> AutoCaptureMode {
-        AutoCaptureMode::parse(&self.games.warthunder.auto_capture_mode)
-    }
-
-    pub fn pubg_auto_mode(&self) -> AutoCaptureMode {
-        AutoCaptureMode::parse(&self.games.pubg.auto_capture_mode)
-    }
-
-    pub fn dota2_auto_mode(&self) -> AutoCaptureMode {
-        AutoCaptureMode::parse(&self.games.dota2.auto_capture_mode)
+    /// Whether Hako is fully disabled for a game (no buffer, no auto-record),
+    /// keyed by [`GameId`]. Valorant reads its flat `auto_capture_disabled`.
+    pub fn game_disabled(&self, game: GameId) -> bool {
+        match game {
+            GameId::Valorant => self.auto_capture_disabled,
+            GameId::Lol => self.games.lol.disabled,
+            GameId::Rematch => self.games.rematch.disabled,
+            GameId::Cs2 => self.games.cs2.disabled,
+            GameId::Dota2 => self.games.dota2.disabled,
+            GameId::WarThunder => self.games.warthunder.disabled,
+            GameId::Pubg => self.games.pubg.disabled,
+            GameId::Other => self.games.other.disabled,
+        }
     }
 
     /// The generic-capture ("Other Games") auto mode. Highlights isn't valid for
@@ -898,7 +906,7 @@ mod tests {
         // default toggles) so League auto-clip works out of the box.
         let legacy = r#"{ "target_fps": 60, "auto_capture_mode": "highlights" }"#;
         let s: Settings = serde_json::from_str(legacy).unwrap();
-        assert_eq!(s.lol_auto_mode(), AutoCaptureMode::Highlights);
+        assert_eq!(s.game_auto_mode(GameId::Lol), AutoCaptureMode::Highlights);
         assert!(s.games.lol.events.pentakill); // a default-on League event
                                                // And the nested bundle round-trips through disk.
         let json = serde_json::to_string(&s).unwrap();
