@@ -41,7 +41,8 @@ import {
   STREAM_SCHEME,
   type TrackCtl,
 } from "./clip-viewer/constants";
-import { fmtClock, fmtTime, rulerStep } from "./clip-viewer/format";
+import { fmtClock, rulerStep } from "./clip-viewer/format";
+import { formatTime } from "@/lib/format";
 import {
   CtrlButton,
   NavArrow,
@@ -669,7 +670,7 @@ function ViewerStage({
                     className="pointer-events-none absolute top-0 -translate-x-1/2 font-sans text-[11px] font-medium tabular-nums text-white"
                     style={{ left: `${(t / duration) * 100}%` }}
                   >
-                    {fmtTime(t)}
+                    {formatTime(t)}
                   </span>
                 ))}
                 {/* measure strip — a contained "tape" surface so the ticks read

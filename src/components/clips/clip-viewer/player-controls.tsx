@@ -18,7 +18,8 @@ import {
 } from "@/components/ui/popover";
 import type { EventMark } from "@/lib/api";
 import { SPEED_OPTIONS } from "./constants";
-import { eventIconFor, fmtClock, fmtTime } from "./format";
+import { eventIconFor, fmtClock } from "./format";
+import { formatTime } from "@/lib/format";
 import { useVideoTime } from "./use-video-time";
 
 /** Live `0:03 / 0:12` readout — isolated so it, not the player, ticks. */
@@ -32,7 +33,7 @@ export function TimeReadout({
   const current = useVideoTime(videoRef);
   return (
     <span className="font-mono text-xs tabular-nums text-white/85">
-      {fmtTime(current)} / {fmtTime(duration)}
+      {formatTime(current)} / {formatTime(duration)}
     </span>
   );
 }
@@ -57,7 +58,7 @@ export function Playhead({
       aria-valuemin={0}
       aria-valuemax={Math.round(duration)}
       aria-valuenow={Math.round(current)}
-      aria-valuetext={fmtTime(current)}
+      aria-valuetext={formatTime(current)}
       className="pointer-events-auto absolute -top-2 -bottom-2 z-40 flex w-5 -translate-x-1/2 cursor-ew-resize justify-center touch-none"
       style={{ left: `${progress}%` }}
     >

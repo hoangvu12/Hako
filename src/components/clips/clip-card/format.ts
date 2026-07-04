@@ -1,20 +1,9 @@
+/** Clip length as `m:ss`, rounded to the nearest second (not floored like the
+ * playhead's `formatTime` — a 90.6s clip reads "1:31", not "1:30"). */
 export function fmtDuration(secs: number): string {
   const s = Math.round(secs);
   const m = Math.floor(s / 60);
   return `${m}:${String(s % 60).padStart(2, "0")}`;
-}
-
-export function fmtTime(secs: number): string {
-  if (!Number.isFinite(secs) || secs < 0) secs = 0;
-  const s = Math.floor(secs);
-  const m = Math.floor(s / 60);
-  return `${m}:${String(s % 60).padStart(2, "0")}`;
-}
-
-export function fmtSize(bytes: number): string {
-  if (bytes >= 1 << 20) return `${(bytes / (1 << 20)).toFixed(1)} MB`;
-  if (bytes >= 1 << 10) return `${(bytes / (1 << 10)).toFixed(0)} KB`;
-  return `${bytes} B`;
 }
 
 export function timeAgo(unixMs: number): string {

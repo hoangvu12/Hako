@@ -15,7 +15,8 @@ import { useGameAssets } from "@/games/use-game-assets";
 import { clipPresenter } from "@/games/clip-presenter";
 import { revealClip } from "@/lib/api";
 import type { ClipRecord } from "@/lib/api";
-import { fmtDate, fmtSize, fmtTime } from "./format";
+import { fmtDate } from "./format";
+import { formatBytes, formatTime } from "@/lib/format";
 
 function EditableTitle({
   title,
@@ -109,9 +110,9 @@ export const DetailsPanel = React.memo(function DetailsPanel({
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
           <span>{fmtDate(clip.created_unix_ms)}</span>
           <span className="size-[3px] rounded-full bg-muted-foreground/40" />
-          <span className="font-mono tabular-nums">{fmtSize(clip.size_bytes)}</span>
+          <span className="font-mono tabular-nums">{formatBytes(clip.size_bytes)}</span>
           <span className="size-[3px] rounded-full bg-muted-foreground/40" />
-          <span className="font-mono tabular-nums">{fmtTime(clip.duration_secs)}</span>
+          <span className="font-mono tabular-nums">{formatTime(clip.duration_secs)}</span>
           <span className="size-[3px] rounded-full bg-muted-foreground/40" />
           <span className="font-mono tabular-nums">
             {clip.width}×{clip.height}

@@ -14,7 +14,8 @@ import {
 import { cn } from "@/lib/utils";
 import { useClipRemoteUrl } from "@/hooks/use-cloud";
 import type { ClipRecord } from "@/lib/api";
-import { fmtDuration, fmtTime } from "./format";
+import { fmtDuration } from "./format";
+import { formatTime } from "@/lib/format";
 
 // Dwell time before a hovered card mounts + autoplays its preview video.
 // Scrolling sweeps the cursor across many cards; without a dwell gate each
@@ -324,7 +325,7 @@ export function ClipPreview({ clip }: { clip: ClipRecord }) {
               )}
             </button>
             <span className="font-mono text-xs tabular-nums text-white/80">
-              {fmtTime(current)} / {fmtTime(duration)}
+              {formatTime(current)} / {formatTime(duration)}
             </span>
             <span className="flex-1" />
             <button

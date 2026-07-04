@@ -10,7 +10,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { SectionHero, Panel, Row } from "@/components/settings/primitives";
-import { estBufferBytes, fmtBytes, RAM_WARN_BYTES } from "@/components/settings/format";
+import { estBufferBytes, fmtBytesCoarse, RAM_WARN_BYTES } from "@/components/settings/format";
 import type { SettingsSet } from "@/components/settings/config";
 import type { Settings } from "@/lib/api";
 
@@ -32,7 +32,7 @@ function BufferRamHint({
       )}
     >
       {heavy ? <Warning weight="fill" className="size-3.5 shrink-0" /> : null}
-      Replay buffer holds ~{fmtBytes(bytes)} in RAM ({bufferSeconds}s × {bitrateMbps}{" "}
+      Replay buffer holds ~{fmtBytesCoarse(bytes)} in RAM ({bufferSeconds}s × {bitrateMbps}{" "}
       Mbps)
       {heavy ? ". Lower the bitrate or buffer length to use less." : "."}
     </p>

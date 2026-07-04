@@ -9,23 +9,14 @@ import {
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
 
-export function fmtTime(secs: number): string {
-  if (!Number.isFinite(secs) || secs < 0) secs = 0;
-  const s = Math.floor(secs);
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-}
+import { formatTime } from "@/lib/format";
 
+/** A playhead timestamp with tenths, e.g. "1:07.4" — for the trim selection. */
 export function fmtClock(secs: number): string {
   if (!Number.isFinite(secs) || secs < 0) secs = 0;
   const whole = Math.floor(secs);
   const tenth = Math.floor((secs - whole) * 10);
-  return `${fmtTime(whole)}.${tenth}`;
-}
-
-export function fmtSize(bytes: number): string {
-  if (bytes >= 1 << 20) return `${(bytes / (1 << 20)).toFixed(1)} MB`;
-  if (bytes >= 1 << 10) return `${(bytes / (1 << 10)).toFixed(0)} KB`;
-  return `${bytes} B`;
+  return `${formatTime(whole)}.${tenth}`;
 }
 
 export function fmtDate(unixMs: number): string {

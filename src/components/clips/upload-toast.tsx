@@ -4,7 +4,8 @@ import { CloudArrowUp, CloudCheck, X } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 import { useActiveUploads, useCancelUpload } from "@/hooks/use-cloud";
 import { useClips } from "@/hooks/use-library";
-import { fmtBytes, fmtRate, pctOf } from "./cloud-format";
+import { fmtRate, pctOf } from "./cloud-format";
+import { formatBytes } from "@/lib/format";
 
 /** Linger after the last upload finishes so "complete" is actually seen. */
 const COMPLETE_LINGER_MS = 4000;
@@ -93,7 +94,7 @@ export function UploadToast() {
             <span>
               {current.status === "queued"
                 ? "Queued…"
-                : `${fmtBytes(current.sent)} / ${fmtBytes(current.total)}`}
+                : `${formatBytes(current.sent)} / ${formatBytes(current.total)}`}
             </span>
             <span>
               {current.status === "uploading"

@@ -6,7 +6,10 @@ export function estBufferBytes(bitrateMbps: number, bufferSeconds: number): numb
   return ((bitrateMbps * 1_000_000) / 8) * bufferSeconds;
 }
 
-export function fmtBytes(bytes: number): string {
+/** Coarse size for the RAM/storage gauges — whole MB, or GB with one decimal
+ * past 1 GiB. Deliberately blunter than the shared `formatBytes` (no KB/B tier,
+ * MB rounded) so the buffer/quota readouts stay stable and glanceable. */
+export function fmtBytesCoarse(bytes: number): string {
   if (bytes >= 1 << 30) return `${(bytes / (1 << 30)).toFixed(1)} GB`;
   return `${Math.round(bytes / (1 << 20))} MB`;
 }

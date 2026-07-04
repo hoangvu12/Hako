@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/select";
 import { SectionHero, Panel, Row } from "@/components/settings/primitives";
 import { CloudProviders } from "@/components/settings/cloud-providers";
-import { fmtBytes } from "@/components/settings/format";
+import { fmtBytesCoarse } from "@/components/settings/format";
 import type { SettingsSet } from "@/components/settings/config";
 import {
   useCloudProviders,
@@ -152,7 +152,7 @@ export function CloudSection({
             <span className="font-medium">Local clips</span>
             <span className="tabular-nums text-muted-foreground">
               {stats
-                ? `${fmtBytes(stats.local_bytes)} of ${fmtBytes(stats.budget_bytes)} · ${stats.local_count} clip${stats.local_count === 1 ? "" : "s"}`
+                ? `${fmtBytesCoarse(stats.local_bytes)} of ${fmtBytesCoarse(stats.budget_bytes)} · ${stats.local_count} clip${stats.local_count === 1 ? "" : "s"}`
                 : "—"}
             </span>
           </div>
@@ -169,7 +169,7 @@ export function CloudSection({
             <p className="text-xs text-muted-foreground">
               {freeUp.data
                 ? freeUp.data.evicted_count > 0
-                  ? `Freed ${fmtBytes(freeUp.data.freed_bytes)} from ${freeUp.data.evicted_count} clip${freeUp.data.evicted_count === 1 ? "" : "s"}.`
+                  ? `Freed ${fmtBytesCoarse(freeUp.data.freed_bytes)} from ${freeUp.data.evicted_count} clip${freeUp.data.evicted_count === 1 ? "" : "s"}.`
                   : "Already under budget, nothing to evict."
                 : "Deletes local copies of the oldest uploaded clips."}
             </p>

@@ -13,7 +13,8 @@ import { ClipPreview } from "./clip-card/clip-preview";
 import { ClipBadges, ClipResultBadge } from "./clip-card/clip-badges";
 import { ClipActionsMenu } from "./clip-card/clip-actions-menu";
 import { SelectCheckbox } from "./clip-card/select-checkbox";
-import { fmtSize, timeAgo } from "./clip-card/format";
+import { timeAgo } from "./clip-card/format";
+import { formatBytes } from "@/lib/format";
 
 function Dot() {
   return <span className="size-[3px] shrink-0 rounded-full bg-secondary" />;
@@ -106,7 +107,7 @@ export const ClipCard = React.memo(function ClipCard({
           ) : null}
           <span className="shrink-0">{timeAgo(clip.created_unix_ms)}</span>
           <Dot />
-          <span className="shrink-0">{fmtSize(clip.size_bytes)}</span>
+          <span className="shrink-0">{formatBytes(clip.size_bytes)}</span>
         </div>
       </div>
 
