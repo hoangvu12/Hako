@@ -49,6 +49,54 @@ pub fn game_capture_disabled(app: &AppHandle, game: GameId) -> bool {
         .unwrap_or(false)
 }
 
+/// Session-mode continuous recording: start a rolling full-session recording
+/// while capture is live and the mode is Session, and stop (persist) it when it
+/// isn't. Shared by every game's run loop — the only per-game difference was the
+/// session-name label, now derived from the game id.
+pub fn manage_full_session(
+    ctx: &GameCtx,
+    mode: AutoCaptureMode,
+    slot: &mut Option<RecordingSession>,
+) {
+    let want = mode == AutoCaptureMode::Session && ctx.is_capturing();
+    match (want, slot.is_some()) {
+        (true, false) => {
+            let name = format!("{}_fullsession", ctx.id().as_str());
+            if let Some(fs) = ctx.open_session(&name, true) {
+                tracing::info!("session-record: rolling → {}", fs.session_path.display());
+                *slot = Some(fs);
+            }
+        }
+        (false, true) => {
+            if let Some(fs) = slot.take() {
+                finish_full_session(&ctx.app, fs);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Persist a completed full-session recording as one "Full Session" clip, then
+/// remove the temp file. The blocking save runs off the async runtime.
+pub fn finish_full_session(app: &AppHandle, fs: RecordingSession) {
+    let Some((path, _output)) = fs.finish() else {
+        return;
+    };
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(e) = save_whole_session(
+            &app,
+            &path,
+            "Full Session",
+            "Full Session",
+            crate::library::db::NewClip::default(),
+        ) {
+            tracing::warn!("session-record: save failed: {e}");
+        }
+        let _ = std::fs::remove_file(&path);
+    });
+}
+
 // ===========================================================================
 // GameCtx — the per-game handle into the shared recording machinery
 // ===========================================================================

@@ -22,8 +22,9 @@ use crate::games::dota2::gsi::Dota2Gsi;
 use crate::games::dota2::payload;
 use crate::games::event::EventKind;
 use crate::games::recording::{
-    clip_window_span, cut_placed_windows, game_auto_mode, game_capture_disabled,
-    save_whole_session, AutoCaptureState, CutWindows, GameCtx, RecordingSession,
+    clip_window_span, cut_placed_windows, finish_full_session, game_auto_mode,
+    game_capture_disabled, manage_full_session, save_whole_session, AutoCaptureState, CutWindows,
+    GameCtx, RecordingSession,
 };
 use crate::games::{GameId, GameIntegration};
 use crate::settings::AutoCaptureMode;
@@ -267,43 +268,6 @@ fn end_match(
             &placed,
             &marks,
         );
-        let _ = std::fs::remove_file(&path);
-    });
-}
-
-fn manage_full_session(ctx: &GameCtx, mode: AutoCaptureMode, slot: &mut Option<RecordingSession>) {
-    let want = mode == AutoCaptureMode::Session && ctx.is_capturing();
-    match (want, slot.is_some()) {
-        (true, false) => {
-            if let Some(fs) = ctx.open_session("dota2_fullsession", true) {
-                tracing::info!("session-record: rolling → {}", fs.session_path.display());
-                *slot = Some(fs);
-            }
-        }
-        (false, true) => {
-            if let Some(fs) = slot.take() {
-                finish_full_session(&ctx.app, fs);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn finish_full_session(app: &AppHandle, fs: RecordingSession) {
-    let Some((path, _output)) = fs.finish() else {
-        return;
-    };
-    let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        if let Err(e) = save_whole_session(
-            &app,
-            &path,
-            "Full Session",
-            "Full Session",
-            crate::library::db::NewClip::default(),
-        ) {
-            tracing::warn!("session-record: save failed: {e}");
-        }
         let _ = std::fs::remove_file(&path);
     });
 }
