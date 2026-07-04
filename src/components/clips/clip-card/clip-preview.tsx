@@ -196,10 +196,7 @@ export function ClipPreview({ clip }: { clip: ClipRecord }) {
           playsInline
           autoPlay
           preload="metadata"
-          className={cn(
-            "size-full bg-black",
-            fullscreen ? "object-contain" : "object-cover",
-          )}
+          className={cn("size-full bg-black", fullscreen ? "object-contain" : "object-cover")}
           onLoadedMetadata={(e) => {
             const d = e.currentTarget.duration;
             if (Number.isFinite(d) && d > 0) setVideoDuration(d);
@@ -287,10 +284,7 @@ export function ClipPreview({ clip }: { clip: ClipRecord }) {
             className="group/bar relative h-4 cursor-pointer touch-none"
           >
             <div className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full bg-white/25">
-              <div
-                className="h-full rounded-full bg-primary"
-                style={{ width: `${progress}%` }}
-              />
+              <div className="h-full rounded-full bg-primary" style={{ width: `${progress}%` }} />
             </div>
             <div
               className="absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary opacity-0 shadow transition-opacity group-hover/bar:opacity-100"

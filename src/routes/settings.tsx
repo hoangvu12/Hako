@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { createLazyRoute, useSearch } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MagnifyingGlass, CircleNotch } from "@phosphor-icons/react";
+import { MagnifyingGlass } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
+import { Spinner } from "@/components/ui/spinner";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -28,12 +29,7 @@ import {
   type Settings,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
-import {
-  NAV,
-  PRESETS,
-  isSectionKey,
-  type SectionKey,
-} from "@/components/settings/config";
+import { NAV, PRESETS, isSectionKey, type SectionKey } from "@/components/settings/config";
 import { ClipSection } from "@/components/settings/sections/clip-section";
 import { VideoSection } from "@/components/settings/sections/video-section";
 import { CaptureSection } from "@/components/settings/sections/capture-section";
@@ -50,7 +46,7 @@ export const Route = createLazyRoute("/settings")({
   component: SettingsPage,
 });
 
-function SettingsPage() {
+export function SettingsPage() {
   const { data } = useSettings();
   // `mutate`/`error` are pulled out individually: `mutate` is referentially
   // stable (react-query), so the mutators below stay stable too.
@@ -75,7 +71,7 @@ function SettingsPage() {
     draftRef.current = draft;
   }, [draft]);
   const [active, setActive] = useState<SectionKey>(
-    isSectionKey(search.section) ? search.section : "clip"
+    isSectionKey(search.section) ? search.section : "clip",
   );
   const [navQuery, setNavQuery] = useState("");
   // "Move existing clips to the new folder?" prompt, shown after the clip folder
@@ -96,30 +92,33 @@ function SettingsPage() {
     },
   });
 
-  // Initialise the draft once; instant-apply edits keep it in sync afterwards.
-  useEffect(() => {
-    if (data && !draft) setDraft(data);
-  }, [data, draft]);
+  // Initialise the draft once (render-phase init, not an effect, so it can't
+  // cascade an extra commit); instant-apply edits keep it in sync afterwards.
+  if (data && !draft) setDraft(data);
 
   // A failed save rolls the cache back to the last persisted settings; mirror
   // that into the draft so the UI stops showing the value that didn't save.
   // Keyed on the error edge (not `data`) so it can't clobber in-flight edits.
+  // This reacts to a save-error *event* and reads the query cache, so it stays
+  // an effect rather than a render-phase adjustment.
   useEffect(() => {
     if (!saveError) return;
     const persisted = qc.getQueryData<Settings>(queryKeys.settings);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- error-driven rollback, not a render sync
     if (persisted) setDraft(persisted);
   }, [saveError, qc]);
 
   // Deep-link: jump to a section when navigated with `?section=` (e.g. from the
-  // recorder popover) — including while the page is already mounted.
-  useEffect(() => {
+  // recorder popover) — including while the page is already mounted. Edge-detect
+  // during render so syncing to the URL param can't cascade an extra commit.
+  const [prevSection, setPrevSection] = useState(search.section);
+  if (search.section !== prevSection) {
+    setPrevSection(search.section);
     if (isSectionKey(search.section)) setActive(search.section);
-  }, [search.section]);
+  }
 
   if (!draft) {
-    return (
-      <div className="p-8 text-sm text-muted-foreground">Loading settings…</div>
-    );
+    return <div className="p-8 text-sm text-muted-foreground">Loading settings…</div>;
   }
 
   // All mutators read the live draft from `draftRef` rather than the `draft`
@@ -150,8 +149,7 @@ function SettingsPage() {
   // previous folder. New clips already save to the new folder regardless.
   const changeStorageDir = (next: string | null) => {
     const value = next?.trim() ? next : null;
-    const prev =
-      qc.getQueryData<Settings>(queryKeys.settings)?.storage_dir?.trim() || null;
+    const prev = qc.getQueryData<Settings>(queryKeys.settings)?.storage_dir?.trim() || null;
     set("storage_dir", value);
     if (value === prev) return; // no real change (e.g. blur without an edit)
     void countClipsIn(prev)
@@ -162,8 +160,7 @@ function SettingsPage() {
   };
   // Commit the typed clip-folder on blur — reads the live draft so a fast
   // type-then-blur still sees the final value.
-  const onCommitStorage = () =>
-    changeStorageDir(draftRef.current?.storage_dir ?? null);
+  const onCommitStorage = () => changeStorageDir(draftRef.current?.storage_dir ?? null);
   // Apply a preset: highlight its card and write its concrete knobs at once.
   const applyPreset = (p: (typeof PRESETS)[number]) => {
     const d = draftRef.current;
@@ -200,7 +197,7 @@ function SettingsPage() {
     d: Settings,
     key: keyof EventToggles,
     field: "before" | "after",
-    value: number
+    value: number,
   ): Settings => ({
     ...d,
     event_timings: {
@@ -208,19 +205,11 @@ function SettingsPage() {
       [key]: { ...d.event_timings[key], [field]: value },
     },
   });
-  const setTimingLocal = (
-    key: keyof EventToggles,
-    field: "before" | "after",
-    value: number
-  ) => {
+  const setTimingLocal = (key: keyof EventToggles, field: "before" | "after", value: number) => {
     const d = draftRef.current;
     if (d) setDraft(timingNext(d, key, field, value));
   };
-  const commitTiming = (
-    key: keyof EventToggles,
-    field: "before" | "after",
-    value: number
-  ) => {
+  const commitTiming = (key: keyof EventToggles, field: "before" | "after", value: number) => {
     const d = draftRef.current;
     if (d) persist(timingNext(d, key, field, value));
   };
@@ -258,7 +247,7 @@ function SettingsPage() {
       patchGame(d, key, {
         ...slice,
         events: { ...events, [eventKey]: !events[eventKey] },
-      } as unknown as GameSlice)
+      } as unknown as GameSlice),
     );
   };
   // Live drag applies locally (`setGameTimingLocal`, no save per pixel); release
@@ -268,7 +257,7 @@ function SettingsPage() {
     slice: GameSlice,
     eventKey: string,
     field: "before" | "after",
-    value: number
+    value: number,
   ): GameSlice => {
     const timings = slice.event_timings as unknown as Record<string, EventTiming>;
     return {
@@ -283,7 +272,7 @@ function SettingsPage() {
     key: SmartGameKey,
     eventKey: string,
     field: "before" | "after",
-    value: number
+    value: number,
   ) => {
     const d = draftRef.current;
     if (d) setDraft(patchGame(d, key, gameTimingSlice(d.games[key], eventKey, field, value)));
@@ -292,7 +281,7 @@ function SettingsPage() {
     key: SmartGameKey,
     eventKey: string,
     field: "before" | "after",
-    value: number
+    value: number,
   ) => {
     const d = draftRef.current;
     if (d) persist(patchGame(d, key, gameTimingSlice(d.games[key], eventKey, field, value)));
@@ -330,10 +319,7 @@ function SettingsPage() {
         games: { ...d.games, other: { ...d.games.other, disabled } },
       });
   };
-  const setOtherDetect = (
-    key: "detect_steam" | "detect_curated",
-    value: boolean
-  ) => {
+  const setOtherDetect = (key: "detect_steam" | "detect_curated", value: boolean) => {
     const d = draftRef.current;
     if (d)
       persist({
@@ -383,7 +369,7 @@ function SettingsPage() {
                       "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-[15px] transition-colors",
                       on
                         ? "bg-white/10 font-semibold text-foreground"
-                        : "font-medium text-foreground/90 hover:bg-accent/60 hover:text-foreground"
+                        : "font-medium text-foreground/90 hover:bg-accent/60 hover:text-foreground",
                     )}
                   >
                     <it.icon className="size-[18px]" weight={on ? "fill" : "regular"} />
@@ -393,9 +379,7 @@ function SettingsPage() {
               })}
             </div>
           ))}
-          {groups.length === 0 && (
-            <p className="px-3 text-sm text-muted-foreground">No matches.</p>
-          )}
+          {groups.length === 0 && <p className="px-3 text-sm text-muted-foreground">No matches.</p>}
         </nav>
       </aside>
 
@@ -452,9 +436,7 @@ function SettingsPage() {
 
           {active === "status" && <StatusSection />}
 
-          {saveError ? (
-            <p className="text-sm text-destructive">{String(saveError)}</p>
-          ) : null}
+          {saveError ? <p className="text-sm text-destructive">{String(saveError)}</p> : null}
         </div>
       </div>
 
@@ -470,20 +452,17 @@ function SettingsPage() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              Move {movePrompt?.count}{" "}
-              {movePrompt?.count === 1 ? "clip" : "clips"} to the new folder?
+              Move {movePrompt?.count} {movePrompt?.count === 1 ? "clip" : "clips"} to the new
+              folder?
             </AlertDialogTitle>
             <AlertDialogDescription>
               New clips already save to the new folder. Your{" "}
-              {movePrompt?.count === 1 ? "existing clip" : "existing clips"} can
-              be moved there too, or left in place — either way they stay in your
-              library.
+              {movePrompt?.count === 1 ? "existing clip" : "existing clips"} can be moved there too,
+              or left in place — either way they stay in your library.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={moveClips.isPending}>
-              Keep in place
-            </AlertDialogCancel>
+            <AlertDialogCancel disabled={moveClips.isPending}>Keep in place</AlertDialogCancel>
             <AlertDialogAction
               disabled={moveClips.isPending}
               onClick={(e) => {
@@ -492,13 +471,11 @@ function SettingsPage() {
                 if (!movePrompt) return;
                 moveClips.mutate(
                   { from: movePrompt.from, to: movePrompt.to },
-                  { onSettled: () => setMovePrompt(null) }
+                  { onSettled: () => setMovePrompt(null) },
                 );
               }}
             >
-              {moveClips.isPending ? (
-                <CircleNotch className="size-4 animate-spin" />
-              ) : null}
+              {moveClips.isPending ? <Spinner className="size-4" /> : null}
               {moveClips.isPending ? "Moving…" : "Move clips"}
             </AlertDialogAction>
           </AlertDialogFooter>

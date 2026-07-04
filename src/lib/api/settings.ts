@@ -441,11 +441,7 @@ export interface Settings {
 }
 
 /** Corner placement for the overlay toast stack (mirrors Rust `overlay_position`). */
-export type OverlayPosition =
-  | "top_left"
-  | "top_right"
-  | "bottom_left"
-  | "bottom_right";
+export type OverlayPosition = "top_left" | "top_right" | "bottom_left" | "bottom_right";
 
 /** Read persisted settings. */
 export async function getSettings(): Promise<Settings> {
@@ -481,9 +477,6 @@ export async function countClipsIn(dir: string | null): Promise<number> {
  * folder and repoint the library. Opt-in — only called after the user confirms
  * the move prompt. Runs off the UI thread; resolves with the count moved.
  */
-export async function migrateClipsTo(
-  from: string | null,
-  to: string | null
-): Promise<number> {
+export async function migrateClipsTo(from: string | null, to: string | null): Promise<number> {
   return invoke<number>("migrate_clips_to", { from, to });
 }

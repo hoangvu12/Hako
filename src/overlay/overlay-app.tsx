@@ -10,19 +10,10 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  Record as RecordIcon,
-  CheckCircle,
-  WarningCircle,
-  type Icon,
-} from "@phosphor-icons/react";
+import { Record as RecordIcon, CheckCircle, WarningCircle, type Icon } from "@phosphor-icons/react";
 
 /** Mirrors the Rust `OverlayKind` (src-tauri/src/overlay.rs); snake_case serde. */
-type OverlayKind =
-  | "recording_started"
-  | "recording_stopped"
-  | "clip_saved"
-  | "disk_low";
+type OverlayKind = "recording_started" | "recording_stopped" | "clip_saved" | "disk_low";
 
 /** Mirrors the Rust `OverlayNotice` — the `overlay-notify` event payload. */
 interface OverlayNotice {
@@ -37,11 +28,7 @@ interface Toast extends OverlayNotice {
 }
 
 /** Corner the stack sits in (mirrors Rust `overlay_position`). */
-type OverlayPosition =
-  | "top_left"
-  | "top_right"
-  | "bottom_left"
-  | "bottom_right";
+type OverlayPosition = "top_left" | "top_right" | "bottom_left" | "bottom_right";
 
 /** Mirrors the Rust `OverlayConfig` — the `overlay-config` event payload. */
 interface OverlayConfig {
@@ -154,9 +141,7 @@ function ToastPill({ toast, leaving }: { toast: Toast; leaving: boolean }) {
           <Glyph size={16} weight="fill" style={{ color: accent, flexShrink: 0 }} />
           <span style={styles.title}>{toast.title}</span>
         </div>
-        {toast.subtitle ? (
-          <div style={styles.subtitle}>{toast.subtitle}</div>
-        ) : null}
+        {toast.subtitle ? <div style={styles.subtitle}>{toast.subtitle}</div> : null}
       </div>
     </div>
   );
@@ -185,8 +170,7 @@ const styles: Record<string, CSSProperties> = {
     flexDirection: "column",
     gap: 10,
     pointerEvents: "none",
-    fontFamily:
-      '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
   },
   // The brand mascot art is the surface. A single left→right scrim in the same
   // violet hue darkens the text side and lets the artwork breathe on the right —

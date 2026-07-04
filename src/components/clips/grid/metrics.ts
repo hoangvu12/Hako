@@ -32,14 +32,11 @@ export function useGridMetrics(ref: React.RefObject<HTMLElement | null>): {
   React.useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const compute = (w: number) =>
-      Math.max(1, Math.floor((w + GAP) / (MIN_CARD + GAP)));
+    const compute = (w: number) => Math.max(1, Math.floor((w + GAP) / (MIN_CARD + GAP)));
     const apply = (w: number) =>
       setMetrics((m) => {
         const columns = compute(w);
-        return m.columns === columns && m.width === w
-          ? m
-          : { columns, width: w };
+        return m.columns === columns && m.width === w ? m : { columns, width: w };
       });
     // Measure synchronously here, before paint, so the first frame already has
     // the right column count. The ResizeObserver's initial callback is delivered
@@ -47,8 +44,7 @@ export function useGridMetrics(ref: React.RefObject<HTMLElement | null>): {
     // (e.g. returning from the clip detail). `clientWidth` minus horizontal
     // padding matches the content-box width the observer reports below.
     const style = getComputedStyle(el);
-    const padX =
-      parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+    const padX = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
     apply(el.clientWidth - padX);
     const ro = new ResizeObserver((entries) => {
       apply(entries[0]?.contentRect.width ?? 0);

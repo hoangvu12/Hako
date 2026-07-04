@@ -1,12 +1,7 @@
 import { CaretDown } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
-import {
-  Popover,
-  PopoverClose,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { Popover, PopoverClose, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { OptionRow } from "./option-row";
 import { chipActive, chipBase, chipIdle } from "./types";
 
@@ -36,7 +31,7 @@ export function SingleSelectFilter<T extends string>({
     <Popover>
       <PopoverTrigger asChild>
         <button type="button" className={cn(chipBase, active ? chipActive : chipIdle)}>
-          {active ? current?.label ?? label : label}
+          {active ? (current?.label ?? label) : label}
           <CaretDown className="size-3 opacity-60" />
         </button>
       </PopoverTrigger>

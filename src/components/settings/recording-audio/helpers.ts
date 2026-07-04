@@ -20,7 +20,7 @@ export function upsertApp(
   apps: AudioAppSel[],
   id: string,
   name: string,
-  patch: Partial<AudioAppSel>
+  patch: Partial<AudioAppSel>,
 ): AudioAppSel[] {
   const idx = apps.findIndex((a) => a.id === id);
   if (idx >= 0) {

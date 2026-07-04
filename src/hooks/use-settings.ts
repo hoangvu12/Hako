@@ -1,13 +1,7 @@
 import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
-import {
-  appHydrated,
-  Events,
-  getSettings,
-  updateSettings,
-  type Settings,
-} from "@/lib/api";
+import { appHydrated, Events, getSettings, updateSettings, type Settings } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 
 const SETTINGS_KEY = queryKeys.settings;

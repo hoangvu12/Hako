@@ -1,10 +1,5 @@
 import { useEffect } from "react";
-import {
-  useMutation,
-  useQuery,
-  useQueryClient,
-  type QueryClient,
-} from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import {
   clipAudioTracks,
@@ -88,9 +83,7 @@ export function useDeleteClip() {
     onMutate: async (id) => {
       await qc.cancelQueries({ queryKey: CLIPS_KEY });
       const prev = qc.getQueryData<ClipRecord[]>(CLIPS_KEY);
-      qc.setQueryData<ClipRecord[]>(CLIPS_KEY, (c) =>
-        c?.filter((x) => x.id !== id)
-      );
+      qc.setQueryData<ClipRecord[]>(CLIPS_KEY, (c) => c?.filter((x) => x.id !== id));
       return { prev };
     },
     onError: (_e, _id, ctx) => {
@@ -103,14 +96,13 @@ export function useDeleteClip() {
 export function useRenameClip() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, title }: { id: number; title: string }) =>
-      renameClip(id, title),
+    mutationFn: ({ id, title }: { id: number; title: string }) => renameClip(id, title),
     // Optimistically patch the title in place; roll back on failure.
     onMutate: async ({ id, title }) => {
       await qc.cancelQueries({ queryKey: CLIPS_KEY });
       const prev = qc.getQueryData<ClipRecord[]>(CLIPS_KEY);
       qc.setQueryData<ClipRecord[]>(CLIPS_KEY, (c) =>
-        c?.map((x) => (x.id === id ? { ...x, title } : x))
+        c?.map((x) => (x.id === id ? { ...x, title } : x)),
       );
       return { prev };
     },

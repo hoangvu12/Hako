@@ -44,10 +44,7 @@ export function AppAudioPanel({
     // Single pass: filter + shape the live sessions in one reduce so we don't
     // walk the session list twice.
     const live = (sessions ?? []).reduce<AudioAppSel[]>((acc, s) => {
-      if (
-        !SESSION_BLACKLIST.has(s.process_name.toLowerCase()) &&
-        !seen.has(s.process_name)
-      ) {
+      if (!SESSION_BLACKLIST.has(s.process_name.toLowerCase()) && !seen.has(s.process_name)) {
         acc.push({
           id: s.process_name,
           name: s.display_name || s.process_name,
@@ -70,10 +67,7 @@ export function AppAudioPanel({
   }, [sessions]);
 
   return (
-    <Panel
-      title="App audio"
-      hint="Additional apps appear here when they start playing audio."
-    >
+    <Panel title="App audio" hint="Additional apps appear here when they start playing audio.">
       <SourceRow
         icon={GameController}
         label="Game Audio"

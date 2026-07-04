@@ -89,14 +89,9 @@ export function AutoPreview({ draft }: { draft: Settings }) {
           </Thumb>
           <div className="min-w-0">
             <p className="truncate text-xs font-semibold">{hero.label} · auto</p>
-            <p className="text-[10px] font-medium text-success">
-              Saved to your library
-            </p>
+            <p className="text-[10px] font-medium text-success">Saved to your library</p>
           </div>
-          <Check
-            weight="fill"
-            className="hako-auto-check ml-auto size-4 shrink-0 text-success"
-          />
+          <Check weight="fill" className="hako-auto-check ml-auto size-4 shrink-0 text-success" />
         </div>
       </div>
 

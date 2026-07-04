@@ -21,11 +21,7 @@ import {
   useRenameClip,
   useTrimClip,
 } from "@/hooks/use-library";
-import {
-  useClipDownload,
-  useClipRemoteUrl,
-  useDownloadClip,
-} from "@/hooks/use-cloud";
+import { useClipDownload, useClipRemoteUrl, useDownloadClip } from "@/hooks/use-cloud";
 import type { ClipRecord, TrackVolume, TrimMode } from "@/lib/api";
 
 import { STREAM_SCHEME } from "./clip-viewer/constants";
@@ -64,15 +60,13 @@ export function ClipViewer({ clipId }: { clipId: string }) {
 
   const close = React.useCallback(() => navigate({ to: "/clips" }), [navigate]);
   const goto = React.useCallback(
-    (c?: ClipRecord) =>
-      c && navigate({ to: "/clips/$clipId", params: { clipId: String(c.id) } }),
+    (c?: ClipRecord) => c && navigate({ to: "/clips/$clipId", params: { clipId: String(c.id) } }),
     [navigate],
   );
 
   const handleDelete = React.useCallback(() => {
     if (!clip) return;
-    if (!window.confirm(`Delete "${clip.title || "Untitled"}"? This removes the file.`))
-      return;
+    if (!window.confirm(`Delete "${clip.title || "Untitled"}"? This removes the file.`)) return;
     const fallback = next ?? prev;
     del.mutate(clip.id, {
       onSuccess: () => (fallback ? goto(fallback) : close()),
@@ -148,9 +142,7 @@ export function ClipViewer({ clipId }: { clipId: string }) {
           }
           onExport={handleExport}
           exportPending={trim.isPending || remux.isPending}
-          exportError={
-            trim.error || remux.error ? String(trim.error ?? remux.error) : null
-          }
+          exportError={trim.error || remux.error ? String(trim.error ?? remux.error) : null}
         />
       )}
     </div>
@@ -308,8 +300,7 @@ function ViewerStage({
   }, []);
 
   React.useEffect(() => {
-    const onChange = () =>
-      setFullscreen(document.fullscreenElement === stageRef.current);
+    const onChange = () => setFullscreen(document.fullscreenElement === stageRef.current);
     document.addEventListener("fullscreenchange", onChange);
     return () => document.removeEventListener("fullscreenchange", onChange);
   }, []);
@@ -352,8 +343,7 @@ function ViewerStage({
   }, [duration]);
 
   const selDuration = trimEnd - trimStart;
-  const edited =
-    trimStart > 0.05 || trimEnd < duration - 0.05 || !audioEnabled || tracksEdited;
+  const edited = trimStart > 0.05 || trimEnd < duration - 0.05 || !audioEnabled || tracksEdited;
 
   return (
     <div className="relative z-10 flex min-w-0 flex-1">
@@ -399,14 +389,18 @@ function ViewerStage({
               // `useVideoTime` subscription — nothing to push here. We only
               // confine playback to the selection: loop at the out point, and
               // never play through the trimmed-away head.
-              if (!v.paused && !drag && (v.currentTime >= trimEnd - 0.02 || v.currentTime < trimStart))
+              if (
+                !v.paused &&
+                !drag &&
+                (v.currentTime >= trimEnd - 0.02 || v.currentTime < trimStart)
+              )
                 v.currentTime = trimStart;
             }}
             className={cn(
               "bg-black",
               fullscreen
-                // Fill the whole screen, cropping to fit (no letterboxing).
-                ? "absolute inset-0 size-full object-cover"
+                ? // Fill the whole screen, cropping to fit (no letterboxing).
+                  "absolute inset-0 size-full object-cover"
                 : "max-h-full max-w-full rounded-lg object-contain shadow-2xl",
             )}
           />
@@ -422,50 +416,47 @@ function ViewerStage({
               onSeek={seekToTime}
             />
             <div className="flex items-center gap-3">
-            <PlayPauseButton videoRef={videoRef} onToggle={togglePlay} />
+              <PlayPauseButton videoRef={videoRef} onToggle={togglePlay} />
 
-            <div className="group/vol flex items-center gap-2">
+              <div className="group/vol flex items-center gap-2">
+                <CtrlButton label={muted ? "Unmute" : "Mute"} onClick={() => setMuted((m) => !m)}>
+                  {muted || volume === 0 ? (
+                    <SpeakerSimpleX weight="fill" className="size-5" />
+                  ) : (
+                    <SpeakerSimpleHigh weight="fill" className="size-5" />
+                  )}
+                </CtrlButton>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={muted ? 0 : volume}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    setVolume(v);
+                    setMuted(v === 0);
+                  }}
+                  aria-label="Volume"
+                  className="h-1 w-0 cursor-pointer appearance-none rounded-full bg-white/30 opacity-0 transition-[width,opacity] duration-200 outline-none group-hover/vol:w-20 group-hover/vol:opacity-100 [&::-webkit-slider-thumb]:size-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white"
+                />
+              </div>
+
+              <TimeReadout videoRef={videoRef} duration={duration} />
+
+              <span className="flex-1" />
+
+              <SettingsButton videoRef={videoRef} />
               <CtrlButton
-                label={muted ? "Unmute" : "Mute"}
-                onClick={() => setMuted((m) => !m)}
+                label={fullscreen ? "Exit fullscreen" : "Fullscreen"}
+                onClick={toggleFullscreen}
               >
-                {muted || volume === 0 ? (
-                  <SpeakerSimpleX weight="fill" className="size-5" />
+                {fullscreen ? (
+                  <CornersIn weight="bold" className="size-5" />
                 ) : (
-                  <SpeakerSimpleHigh weight="fill" className="size-5" />
+                  <CornersOut weight="bold" className="size-5" />
                 )}
               </CtrlButton>
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.05}
-                value={muted ? 0 : volume}
-                onChange={(e) => {
-                  const v = Number(e.target.value);
-                  setVolume(v);
-                  setMuted(v === 0);
-                }}
-                aria-label="Volume"
-                className="h-1 w-0 cursor-pointer appearance-none rounded-full bg-white/30 opacity-0 transition-[width,opacity] duration-200 outline-none group-hover/vol:w-20 group-hover/vol:opacity-100 [&::-webkit-slider-thumb]:size-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white"
-              />
-            </div>
-
-            <TimeReadout videoRef={videoRef} duration={duration} />
-
-            <span className="flex-1" />
-
-            <SettingsButton videoRef={videoRef} />
-            <CtrlButton
-              label={fullscreen ? "Exit fullscreen" : "Fullscreen"}
-              onClick={toggleFullscreen}
-            >
-              {fullscreen ? (
-                <CornersIn weight="bold" className="size-5" />
-              ) : (
-                <CornersOut weight="bold" className="size-5" />
-              )}
-            </CtrlButton>
             </div>
           </div>
         </div>
@@ -545,15 +536,19 @@ function ViewerStage({
                   />
 
                   {/* Handles integrated into the frame edges */}
-                  <TrimHandle side="start" pct={startPct} onPointerDown={(e) => startHandle("start", e)} />
-                  <TrimHandle side="end" pct={endPct} onPointerDown={(e) => startHandle("end", e)} />
+                  <TrimHandle
+                    side="start"
+                    pct={startPct}
+                    onPointerDown={(e) => startHandle("start", e)}
+                  />
+                  <TrimHandle
+                    side="end"
+                    pct={endPct}
+                    onPointerDown={(e) => startHandle("end", e)}
+                  />
 
                   {/* Draggable playhead (flag + needle) */}
-                  <Playhead
-                    videoRef={videoRef}
-                    duration={duration}
-                    onPointerDown={startSeek}
-                  />
+                  <Playhead videoRef={videoRef} duration={duration} onPointerDown={startSeek} />
                 </div>
               </div>
             </div>
@@ -645,8 +640,8 @@ function ViewerStage({
                       Download to edit
                     </button>
                     <p className="max-w-sm text-center text-xs text-muted-foreground/70">
-                      Cloud-only clip. Its local copy was freed up to save space.
-                      Playing from the cloud; download it to trim or export.
+                      Cloud-only clip. Its local copy was freed up to save space. Playing from the
+                      cloud; download it to trim or export.
                     </p>
                     {download.error ? (
                       <p className="text-center text-xs text-destructive">
@@ -658,9 +653,8 @@ function ViewerStage({
               </div>
             ) : (
               <p className="mt-3 text-center text-xs text-muted-foreground/70">
-                <Kbd>I</Kbd>/<Kbd>O</Kbd> set in/out · <Kbd>Space</Kbd> play ·{" "}
-                <Kbd>←</Kbd> <Kbd>→</Kbd> browse · <Kbd>Del</Kbd> delete ·{" "}
-                <Kbd>Esc</Kbd> close
+                <Kbd>I</Kbd>/<Kbd>O</Kbd> set in/out · <Kbd>Space</Kbd> play · <Kbd>←</Kbd>{" "}
+                <Kbd>→</Kbd> browse · <Kbd>Del</Kbd> delete · <Kbd>Esc</Kbd> close
               </p>
             )}
           </div>
@@ -668,12 +662,7 @@ function ViewerStage({
       </div>
 
       {/* ---- Details panel ---- */}
-      <DetailsPanel
-        clip={clip}
-        onClose={onClose}
-        onRename={onRename}
-        onDelete={onDelete}
-      />
+      <DetailsPanel clip={clip} onClose={onClose} onRename={onRename} onDelete={onDelete} />
 
       {/* ---- Save dialog ---- */}
       {saveOpen ? (
@@ -693,9 +682,7 @@ function ViewerStage({
                     ? "all audio tracks kept"
                     : "audio kept") +
                 // Note noise cancel when it's on for a stem that'll be heard.
-                (audibleStems.some((s) => ctlOf(s.index).denoise)
-                  ? " · noise cancelled"
-                  : "")
+                (audibleStems.some((s) => ctlOf(s.index).denoise) ? " · noise cancelled" : "")
           }
           pending={exportPending}
           error={exportError}

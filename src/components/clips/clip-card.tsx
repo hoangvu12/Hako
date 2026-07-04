@@ -46,19 +46,13 @@ export const ClipCard = React.memo(function ClipCard({
 
   // Every event the clip's window covered, falling back to the headline tag for
   // clips saved before multi-event tracking (mirrors the detail panel).
-  const eventLabels = clip.events.length
-    ? clip.events
-    : clip.event
-      ? [clip.event]
-      : [];
+  const eventLabels = clip.events.length ? clip.events : clip.event ? [clip.event] : [];
 
   return (
     <div
       className={cn(
         "group relative flex flex-col overflow-hidden rounded-xl border bg-card shadow-sm transition-colors [contain-intrinsic-size:auto_280px] [content-visibility:auto]",
-        selected
-          ? "border-primary ring-2 ring-primary"
-          : "border-border/60 hover:border-border"
+        selected ? "border-primary ring-2 ring-primary" : "border-border/60 hover:border-border",
       )}
     >
       {/* Thumbnail / hover-preview, with the game-context overlay on top */}
@@ -78,10 +72,7 @@ export const ClipCard = React.memo(function ClipCard({
       {/* Meta */}
       <div className="flex flex-1 flex-col gap-1.5 p-3.5">
         <div className="flex items-center justify-between gap-2">
-          <h3
-            className="truncate text-sm font-semibold text-card-foreground"
-            title={clip.title}
-          >
+          <h3 className="truncate text-sm font-semibold text-card-foreground" title={clip.title}>
             {clip.title || "Untitled"}
           </h3>
 
@@ -94,10 +85,7 @@ export const ClipCard = React.memo(function ClipCard({
         <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
           {eventLabels.length ? (
             <>
-              <span
-                className="min-w-0 truncate text-foreground/80"
-                title={eventLabels.join(", ")}
-              >
+              <span className="min-w-0 truncate text-foreground/80" title={eventLabels.join(", ")}>
                 {eventLabels.join(", ")}
               </span>
               <Dot />

@@ -7,10 +7,7 @@ import { cn } from "@/lib/utils";
 import { Separator } from "@/components/ui/separator";
 import { useSettings, useUpdateSettings } from "@/hooks/use-settings";
 import { RecorderStatusPopover } from "@/components/layout/recorder-status-popover";
-import {
-  ClipHotkeyPopover,
-  RecordingHotkeyPopover,
-} from "@/components/layout/hotkey-popovers";
+import { ClipHotkeyPopover, RecordingHotkeyPopover } from "@/components/layout/hotkey-popovers";
 
 /** Shared style for the min/maximize/close caption buttons. */
 const CONTROL_CLS =
@@ -42,7 +39,7 @@ function NavButton({
         "flex size-6 items-center justify-center rounded transition-colors",
         enabled
           ? "text-foreground/70 hover:bg-secondary hover:text-foreground"
-          : "cursor-not-allowed text-foreground/25"
+          : "cursor-not-allowed text-foreground/25",
       )}
     >
       {children}
@@ -74,12 +71,7 @@ function AutoClipToggle() {
       className="flex h-8 items-center gap-2 rounded-lg border border-border bg-secondary/50 px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary"
     >
       <span>Auto Clip</span>
-      <span
-        className={cn(
-          "font-semibold",
-          on ? "text-success" : "text-muted-foreground"
-        )}
-      >
+      <span className={cn("font-semibold", on ? "text-success" : "text-muted-foreground")}>
         {on ? "ON" : "OFF"}
       </span>
     </button>
@@ -95,15 +87,7 @@ function RestoreGlyph({ className }: { className?: string }) {
         stroke="currentColor"
         strokeWidth="1.3"
       />
-      <rect
-        x="2"
-        y="5"
-        width="9"
-        height="9"
-        rx="1.5"
-        stroke="currentColor"
-        strokeWidth="1.3"
-      />
+      <rect x="2" y="5" width="9" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
     </svg>
   );
 }
@@ -168,18 +152,10 @@ export function WindowTitlebar() {
       {/* Left: history, game status, hotkey hints */}
       <div data-tauri-drag-region className="flex items-center gap-3">
         <div className="flex items-center gap-1">
-          <NavButton
-            label="Back"
-            enabled={canBack}
-            onClick={() => router.history.back()}
-          >
+          <NavButton label="Back" enabled={canBack} onClick={() => router.history.back()}>
             <ArrowLeft className="size-4" />
           </NavButton>
-          <NavButton
-            label="Forward"
-            enabled={canForward}
-            onClick={() => router.history.forward()}
-          >
+          <NavButton label="Forward" enabled={canForward} onClick={() => router.history.forward()}>
             <ArrowRight className="size-4" />
           </NavButton>
         </div>
@@ -195,10 +171,7 @@ export function WindowTitlebar() {
       </div>
 
       {/* Right: window controls */}
-      <div
-        data-tauri-drag-region
-        className="flex items-center gap-1 text-muted-foreground"
-      >
+      <div data-tauri-drag-region className="flex items-center gap-1 text-muted-foreground">
         <button
           type="button"
           aria-label="Minimize"
@@ -213,11 +186,7 @@ export function WindowTitlebar() {
           onClick={() => windowAction("toggleMaximize")}
           className={CONTROL_CLS}
         >
-          {maximized ? (
-            <RestoreGlyph className="size-4" />
-          ) : (
-            <Square className="size-4" />
-          )}
+          {maximized ? <RestoreGlyph className="size-4" /> : <Square className="size-4" />}
         </button>
         <button
           type="button"

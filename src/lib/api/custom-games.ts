@@ -43,9 +43,6 @@ export async function removeCustomGame(id: number): Promise<void> {
 }
 
 /** Enable/disable a custom game (kept in the list either way). */
-export async function setCustomGameEnabled(
-  id: number,
-  enabled: boolean
-): Promise<void> {
+export async function setCustomGameEnabled(id: number, enabled: boolean): Promise<void> {
   await invoke("set_custom_game_enabled", { id, enabled });
 }

@@ -1,3 +1,5 @@
+/* eslint-disable react-refresh/only-export-components --
+   The asset provider and its consumer hooks belong together in one module. */
 import * as React from "react";
 
 import { useValorantAssets } from "@/hooks/use-valorant-assets";
@@ -36,11 +38,7 @@ const GameAssetsContext = React.createContext<GameAssets | null>(null);
  */
 export function GameAssetsProvider({ children }: { children: React.ReactNode }) {
   const assets = useGameAssets();
-  return (
-    <GameAssetsContext.Provider value={assets}>
-      {children}
-    </GameAssetsContext.Provider>
-  );
+  return <GameAssetsContext.Provider value={assets}>{children}</GameAssetsContext.Provider>;
 }
 
 /** Read the provided game-asset bundle. Must be under a `GameAssetsProvider`. */

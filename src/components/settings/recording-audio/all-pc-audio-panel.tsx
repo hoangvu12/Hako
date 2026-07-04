@@ -33,8 +33,7 @@ export function AllPcAudioPanel({
     const live = (outputs ?? []).filter((d) => d.id !== AUTO_DEVICE);
     return [{ id: AUTO_DEVICE, name: "Default Output Device" }, ...live];
   }, [outputs]);
-  const deviceEnabled = (id: string) =>
-    audio.pc_audio.find((d) => d.id === id)?.enabled ?? false;
+  const deviceEnabled = (id: string) => audio.pc_audio.find((d) => d.id === id)?.enabled ?? false;
   const pcEnabled = audio.pc_audio.some((d) => d.enabled);
 
   const setDevice = (id: string, name: string, on: boolean) => {
@@ -56,9 +55,7 @@ export function AllPcAudioPanel({
     // Re-enable the default output (add it if the list was emptied).
     if (audio.pc_audio.some((d) => d.id === AUTO_DEVICE)) {
       patch({
-        pc_audio: audio.pc_audio.map((d) =>
-          d.id === AUTO_DEVICE ? { ...d, enabled: true } : d
-        ),
+        pc_audio: audio.pc_audio.map((d) => (d.id === AUTO_DEVICE ? { ...d, enabled: true } : d)),
       });
     } else {
       patch({
@@ -78,23 +75,18 @@ export function AllPcAudioPanel({
         checked={pcEnabled}
         onCheckedChange={setPcEnabled}
       >
-        <VolumeSlider
-          value={audio.master_volume}
-          onCommit={(v) => patch({ master_volume: v })}
-        />
+        <VolumeSlider value={audio.master_volume} onCommit={(v) => patch({ master_volume: v })} />
       </SourceRow>
       {/* Output device multi-select. */}
       <div className="py-3 last:pb-0">
-        <div className="mb-2 pl-7 text-xs font-medium text-muted-foreground">
-          Output devices
-        </div>
+        <div className="mb-2 pl-7 text-xs font-medium text-muted-foreground">Output devices</div>
         <div className="space-y-1">
           {devices.map((d) => (
             <label
               key={d.id}
               className={cn(
                 "flex cursor-pointer items-center gap-3 rounded-md px-7 py-1.5 hover:bg-accent/40",
-                !pcEnabled && "pointer-events-none opacity-40"
+                !pcEnabled && "pointer-events-none opacity-40",
               )}
             >
               <Checkbox

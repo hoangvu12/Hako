@@ -1,3 +1,6 @@
+/* eslint-disable react-refresh/only-export-components --
+   `formatAccelerator` is a tiny display helper co-located with the recorder it
+   serves. */
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
@@ -94,9 +97,7 @@ export function KeyCombo({
   }
   const lg = size === "lg";
   return (
-    <span
-      className={cn("inline-flex items-center", lg ? "gap-2" : "gap-1.5", className)}
-    >
+    <span className={cn("inline-flex items-center", lg ? "gap-2" : "gap-1.5", className)}>
       {keys.map((k, i) => (
         <span key={i} className={cn("inline-flex items-center", lg ? "gap-2" : "gap-1.5")}>
           {i > 0 && lg && <span className="text-sm font-normal text-muted-foreground">+</span>}
@@ -196,7 +197,7 @@ export function HotkeyRecorder({
         recording
           ? "border-primary/70 bg-primary/10 ring-2 ring-primary/30"
           : "border-border/70 bg-secondary text-foreground hover:bg-[#323236]",
-        className
+        className,
       )}
     >
       {recording ? (

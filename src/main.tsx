@@ -17,7 +17,7 @@ function mount() {
           <RouterProvider router={router} />
         </TooltipProvider>
       </QueryClientProvider>
-    </React.StrictMode>
+    </React.StrictMode>,
   );
 }
 

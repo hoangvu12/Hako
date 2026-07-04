@@ -6,9 +6,10 @@ import { Thumb, DurationBadge, SAMPLE_CLIPS } from "./shared";
 /** Clips — the real "Clip saved" toast (upload-toast.tsx style) + a keycap. */
 export function ClipsPreview({ draft }: { draft: Settings }) {
   const clip = SAMPLE_CLIPS[0];
-  const dur = `${Math.floor(draft.clip_seconds / 60)}:${String(
-    draft.clip_seconds % 60
-  ).padStart(2, "0")}`;
+  const dur = `${Math.floor(draft.clip_seconds / 60)}:${String(draft.clip_seconds % 60).padStart(
+    2,
+    "0",
+  )}`;
   return (
     <div className="flex w-full flex-col items-center gap-6">
       {/* The keycap presses + glows on a loop… */}

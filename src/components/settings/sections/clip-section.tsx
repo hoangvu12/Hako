@@ -43,10 +43,7 @@ export function ClipSection({
             allowClear={false}
           />
         </Row>
-        <Row
-          label="Clip length"
-          hint="Seconds the hotkey captures (capped at the buffer length)."
-        >
+        <Row label="Clip length" hint="Seconds the hotkey captures (capped at the buffer length).">
           <Select
             value={String(draft.clip_seconds)}
             onValueChange={(v) => set("clip_seconds", Number(v))}
@@ -55,13 +52,11 @@ export function ClipSection({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {CLIP_LENGTHS.filter((s) => s <= draft.buffer_seconds).map(
-                (s) => (
-                  <SelectItem key={s} value={String(s)}>
-                    {s}s
-                  </SelectItem>
-                )
-              )}
+              {CLIP_LENGTHS.filter((s) => s <= draft.buffer_seconds).map((s) => (
+                <SelectItem key={s} value={String(s)}>
+                  {s}s
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </Row>
@@ -72,41 +67,29 @@ export function ClipSection({
           <HotkeyRecorder
             aria-label="Long-recording hotkey"
             value={draft.long_recording_hotkey}
-            onChange={(accel) =>
-              accel && set("long_recording_hotkey", accel)
-            }
+            onChange={(accel) => accel && set("long_recording_hotkey", accel)}
             allowClear={false}
           />
         </Row>
-        <Row
-          label="Pad before"
-          hint="Extra seconds kept before the moment."
-        >
+        <Row label="Pad before" hint="Extra seconds kept before the moment.">
           <div className="flex items-center gap-2">
             <Input
               type="number"
               className="h-9 w-20 text-right"
               value={draft.pad_before_secs}
-              onChange={(e) =>
-                setLocal("pad_before_secs", Number(e.target.value))
-              }
+              onChange={(e) => setLocal("pad_before_secs", Number(e.target.value))}
               onBlur={commit}
             />
             <span className="text-sm text-muted-foreground">s</span>
           </div>
         </Row>
-        <Row
-          label="Pad after"
-          hint="Extra seconds kept after the moment."
-        >
+        <Row label="Pad after" hint="Extra seconds kept after the moment.">
           <div className="flex items-center gap-2">
             <Input
               type="number"
               className="h-9 w-20 text-right"
               value={draft.pad_after_secs}
-              onChange={(e) =>
-                setLocal("pad_after_secs", Number(e.target.value))
-              }
+              onChange={(e) => setLocal("pad_after_secs", Number(e.target.value))}
               onBlur={commit}
             />
             <span className="text-sm text-muted-foreground">s</span>

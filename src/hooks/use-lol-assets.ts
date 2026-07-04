@@ -25,10 +25,7 @@ export interface LolChampion {
 }
 
 interface ChampionApi {
-  data: Record<
-    string,
-    { id: string; key: string; name: string; image: { full: string } }
-  >;
+  data: Record<string, { id: string; key: string; name: string; image: { full: string } }>;
 }
 
 /** Internal map ids → readable map ids, mirroring Rust's `friendly_map`. */
@@ -58,7 +55,7 @@ async function fetchChampions(): Promise<LolChampion[]> {
   const ver = versions[0];
   if (!ver) throw new Error("ddragon: no versions");
   const champRes = await fetch(
-    `https://ddragon.leagueoflegends.com/cdn/${ver}/data/en_US/champion.json`
+    `https://ddragon.leagueoflegends.com/cdn/${ver}/data/en_US/champion.json`,
   );
   if (!champRes.ok) throw new Error("ddragon champion fetch failed");
   const json = (await champRes.json()) as ChampionApi;

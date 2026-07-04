@@ -28,10 +28,7 @@ const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Resolve `p`, or `fallback` if it doesn't settle within `ms`. */
 function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
-  return Promise.race([
-    p,
-    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
-  ]);
+  return Promise.race([p, new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms))]);
 }
 
 /** Resolve once the Rust core has hydrated its settings/library from disk (the
@@ -203,8 +200,7 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 0,
     padding: 28,
     boxSizing: "border-box",
-    fontFamily:
-      'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+    fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
     color: "#ededf0",
     textAlign: "center",
   },
@@ -269,5 +265,5 @@ document.head.appendChild(keyframes);
 ReactDOM.createRoot(document.getElementById("updater-root") as HTMLElement).render(
   <React.StrictMode>
     <Splash />
-  </React.StrictMode>
+  </React.StrictMode>,
 );

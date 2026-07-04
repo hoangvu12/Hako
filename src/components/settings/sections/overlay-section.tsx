@@ -13,13 +13,7 @@ import { SectionHero, Panel, Row } from "@/components/settings/primitives";
 import { OVERLAY_POSITIONS, type SettingsSet } from "@/components/settings/config";
 import { overlayTest, type Settings } from "@/lib/api";
 
-export function OverlaySection({
-  draft,
-  set,
-}: {
-  draft: Settings;
-  set: SettingsSet;
-}) {
+export function OverlaySection({ draft, set }: { draft: Settings; set: SettingsSet }) {
   return (
     <>
       <SectionHero
@@ -43,9 +37,7 @@ export function OverlaySection({
         >
           <Select
             value={draft.overlay_position}
-            onValueChange={(v) =>
-              set("overlay_position", v as Settings["overlay_position"])
-            }
+            onValueChange={(v) => set("overlay_position", v as Settings["overlay_position"])}
             disabled={!draft.overlay_enabled}
           >
             <SelectTrigger size="sm" className="w-36">
@@ -87,20 +79,14 @@ export function OverlaySection({
             onCheckedChange={(v) => set("overlay_on_capture_state", v)}
           />
         </Row>
-        <Row
-          label="Clip saved"
-          hint="When you save a clip with the hotkey or the save button."
-        >
+        <Row label="Clip saved" hint="When you save a clip with the hotkey or the save button.">
           <Switch
             checked={draft.overlay_on_clip_saved}
             disabled={!draft.overlay_enabled}
             onCheckedChange={(v) => set("overlay_on_clip_saved", v)}
           />
         </Row>
-        <Row
-          label="Storage almost full"
-          hint="When the clips drive drops below 5 GB free."
-        >
+        <Row label="Storage almost full" hint="When the clips drive drops below 5 GB free.">
           <Switch
             checked={draft.overlay_on_disk_low}
             disabled={!draft.overlay_enabled}
@@ -110,9 +96,8 @@ export function OverlaySection({
       </Panel>
 
       <p className="px-1 text-xs text-muted-foreground">
-        Overlays show in Borderless and most Fullscreen modes. If they
-        don't appear in exclusive fullscreen, switch Valorant to
-        Borderless.
+        Overlays show in Borderless and most Fullscreen modes. If they don't appear in exclusive
+        fullscreen, switch Valorant to Borderless.
       </p>
     </>
   );

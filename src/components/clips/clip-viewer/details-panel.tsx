@@ -18,13 +18,7 @@ import type { ClipRecord } from "@/lib/api";
 import { fmtDate } from "./format";
 import { formatBytes, formatTime } from "@/lib/format";
 
-function EditableTitle({
-  title,
-  onCommit,
-}: {
-  title: string;
-  onCommit: (title: string) => void;
-}) {
+function EditableTitle({ title, onCommit }: { title: string; onCommit: (title: string) => void }) {
   // `draft` doubles as the editing flag: null = not editing (render `title`
   // straight from the prop), a string = the working copy being edited. It's
   // seeded from `title` in the click handler, so no prop is copied into state on
@@ -182,16 +176,9 @@ export const DetailsPanel = React.memo(function DetailsPanel({
  */
 function ClipGameContext({ clip }: { clip: ClipRecord }) {
   const assets = useGameAssets();
-  const { icon, name, fallback, sub, showKda } = clipPresenter(clip).detail(
-    clip,
-    assets,
-  );
+  const { icon, name, fallback, sub, showKda } = clipPresenter(clip).detail(clip, assets);
   const hasResult = clip.won != null;
-  const hasKda =
-    showKda &&
-    clip.kills != null &&
-    clip.deaths != null &&
-    clip.assists != null;
+  const hasKda = showKda && clip.kills != null && clip.deaths != null && clip.assists != null;
 
   if (!name && !sub && !hasResult && !hasKda) return null;
 
@@ -210,12 +197,8 @@ function ClipGameContext({ clip }: { clip: ClipRecord }) {
             />
           ) : null}
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-semibold text-foreground">
-              {name ?? fallback}
-            </div>
-            {sub ? (
-              <div className="truncate text-xs text-muted-foreground">{sub}</div>
-            ) : null}
+            <div className="truncate text-sm font-semibold text-foreground">{name ?? fallback}</div>
+            {sub ? <div className="truncate text-xs text-muted-foreground">{sub}</div> : null}
           </div>
           {hasResult ? (
             <span

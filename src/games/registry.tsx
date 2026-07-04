@@ -27,14 +27,7 @@ import {
  * `other` is the generic "record any game" bucket (its settings + arbiter key);
  * individual generic clips store the *real* game title, not `other`. */
 export type GameId =
-  | "valorant"
-  | "lol"
-  | "rematch"
-  | "cs2"
-  | "dota2"
-  | "warthunder"
-  | "pubg"
-  | "other";
+  "valorant" | "lol" | "rematch" | "cs2" | "dota2" | "warthunder" | "pubg" | "other";
 
 export interface GameMeta {
   id: GameId;
@@ -79,10 +72,7 @@ export const GAMES: GameMeta[] = [
     logo: "/games/rematch.svg",
     Icon: SoccerBall,
     accent: "#4F9D5B",
-    processNames: [
-      "runtimeclient-win64-shipping.exe",
-      "runtimeclient-wingdk-shipping.exe",
-    ],
+    processNames: ["runtimeclient-win64-shipping.exe", "runtimeclient-wingdk-shipping.exe"],
   },
   {
     id: "cs2",

@@ -8,7 +8,7 @@ export const Route = createLazyRoute("/clips/$clipId")({
   component: ClipDetailPage,
 });
 
-function ClipDetailPage() {
+export function ClipDetailPage() {
   const { clipId } = useParams({ from: "/clips/$clipId" });
   return <ClipViewer clipId={clipId} />;
 }

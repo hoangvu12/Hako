@@ -12,8 +12,7 @@ export const KIND_LABELS: { value: Kind; label: string }[] = [
   { value: "onedrive", label: "OneDrive" },
 ];
 
-export const kindLabel = (k: Kind) =>
-  KIND_LABELS.find((x) => x.value === k)?.label ?? k;
+export const kindLabel = (k: Kind) => KIND_LABELS.find((x) => x.value === k)?.label ?? k;
 
 /** The consumer clouds added via OAuth (browser consent) rather than manual keys. */
 export const OAUTH_KINDS: readonly OAuthProviderKind[] = ["gdrive", "dropbox", "onedrive"];

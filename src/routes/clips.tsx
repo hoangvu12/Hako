@@ -15,12 +15,7 @@ import {
   setSelection,
   useSelection,
 } from "@/components/clips/use-clip-selection";
-import {
-  useClips,
-  useDeleteClip,
-  useRenameClip,
-  useSaveClip,
-} from "@/hooks/use-library";
+import { useClips, useDeleteClip, useRenameClip, useSaveClip } from "@/hooks/use-library";
 import { useUploadClip } from "@/hooks/use-cloud";
 import { useSettings } from "@/hooks/use-settings";
 import { GameAssetsProvider } from "@/games/use-game-assets";
@@ -47,11 +42,7 @@ export default function ClipsPage() {
   const clipSeconds = settings?.clip_seconds ?? 30;
   // Destructure the (referentially stable) mutate fns so the handlers below can
   // be memoized without re-binding when a mutation's state changes.
-  const {
-    mutate: saveClip,
-    isPending: saving,
-    error: saveError,
-  } = useSaveClip();
+  const { mutate: saveClip, isPending: saving, error: saveError } = useSaveClip();
   const { mutate: deleteClip } = useDeleteClip();
   const { mutate: renameClip } = useRenameClip();
   const { mutate: uploadClip, isPending: uploading } = useUploadClip();
@@ -71,10 +62,9 @@ export default function ClipsPage() {
   // set for "select all".
   const filteredIds = React.useMemo(
     () => sections.flatMap((s) => s.clips.map((c) => c.id)),
-    [sections]
+    [sections],
   );
-  const allSelected =
-    filteredIds.length > 0 && filteredIds.every((id) => selection.has(id));
+  const allSelected = filteredIds.length > 0 && filteredIds.every((id) => selection.has(id));
 
   // Drop selected ids for clips that no longer exist (deleted via a card's own
   // menu), so the bulk bar's count never counts phantoms.
@@ -84,10 +74,7 @@ export default function ClipsPage() {
 
   // Stable bulk handlers — they read the live selection imperatively rather than
   // closing over it, so the memoized bulk bar isn't re-rendered on scroll ticks.
-  const handleSelectAll = React.useCallback(
-    () => setSelection(filteredIds),
-    [filteredIds]
-  );
+  const handleSelectAll = React.useCallback(() => setSelection(filteredIds), [filteredIds]);
   const handleClearSelection = React.useCallback(() => clearSelection(), []);
   // Confirmation is owned by the bulk bar's alert dialog; this just performs it.
   const handleBulkDelete = React.useCallback(() => {
@@ -115,16 +102,12 @@ export default function ClipsPage() {
     return Math.round((cardWidth * 9) / 16) + CARD_CHROME;
   }, [width, columns]);
 
-  const rows = React.useMemo(
-    () => flattenSections(sections, columns),
-    [sections, columns]
-  );
+  const rows = React.useMemo(() => flattenSections(sections, columns), [sections, columns]);
 
   const rowVirtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: (i) =>
-      rows[i]?.type === "header" ? EST_HEADER_ROW : clipRowHeight,
+    estimateSize: (i) => (rows[i]?.type === "header" ? EST_HEADER_ROW : clipRowHeight),
     overscan: 4,
     getItemKey: (i) => rows[i]?.key ?? i,
   });
@@ -188,12 +171,9 @@ export default function ClipsPage() {
       const next = window.prompt("Rename clip", clip.title);
       if (next && next !== clip.title) renameClip({ id: clip.id, title: next });
     },
-    [renameClip]
+    [renameClip],
   );
-  const handleDelete = React.useCallback(
-    (clip: ClipRecord) => deleteClip(clip.id),
-    [deleteClip]
-  );
+  const handleDelete = React.useCallback((clip: ClipRecord) => deleteClip(clip.id), [deleteClip]);
   const handleSave = React.useCallback(() => saveClip(undefined), [saveClip]);
 
   const noClipsAtAll = !isLoading && allClips.length === 0;
@@ -202,99 +182,97 @@ export default function ClipsPage() {
   return (
     <GameAssetsProvider>
       <div className="flex h-full flex-col">
-      {selectionActive ? (
-        <ClipsBulkBar
-          selectedCount={selection.size}
-          allSelected={allSelected}
-          onSelectAll={handleSelectAll}
-          onClear={handleClearSelection}
-          onDelete={handleBulkDelete}
-          onUpload={handleBulkUpload}
-          uploading={uploading}
-        />
-      ) : (
-        <ClipsToolbar
-          clipSeconds={clipSeconds}
-          onSave={handleSave}
-          saving={saving}
-          total={total}
-          filters={filters}
-          facets={facets}
-          activeCount={activeCount}
-          update={update}
-          toggle={toggle}
-          reset={reset}
-        />
-      )}
+        {selectionActive ? (
+          <ClipsBulkBar
+            selectedCount={selection.size}
+            allSelected={allSelected}
+            onSelectAll={handleSelectAll}
+            onClear={handleClearSelection}
+            onDelete={handleBulkDelete}
+            onUpload={handleBulkUpload}
+            uploading={uploading}
+          />
+        ) : (
+          <ClipsToolbar
+            clipSeconds={clipSeconds}
+            onSave={handleSave}
+            saving={saving}
+            total={total}
+            filters={filters}
+            facets={facets}
+            activeCount={activeCount}
+            update={update}
+            toggle={toggle}
+            reset={reset}
+          />
+        )}
 
-      {saveError ? (
-        <p className="shrink-0 bg-panel px-6 pb-2 text-sm text-destructive">
-          {String(saveError)}
-        </p>
-      ) : null}
+        {saveError ? (
+          <p className="shrink-0 bg-panel px-6 pb-2 text-sm text-destructive">
+            {String(saveError)}
+          </p>
+        ) : null}
 
-      {/* Grid (virtualized, grouped by date). `group/grid` + `data-selecting`
+        {/* Grid (virtualized, grouped by date). `group/grid` + `data-selecting`
           let every card's checkbox stay visible in selection mode via CSS
           alone — no card re-render when entering/leaving selection mode. */}
-      <div
-        ref={scrollRef}
-        data-selecting={selectionActive ? "" : undefined}
-        className="group/grid scrollbar-thin min-h-0 flex-1 overflow-y-auto p-6"
-      >
-        {isLoading ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
-        ) : noClipsAtAll ? (
-          <div className="rounded-xl border border-dashed border-border/60 p-10 text-center text-sm text-muted-foreground">
-            No clips yet. Press <kbd>F9</kbd> in-game or hit "Save last{" "}
-            {clipSeconds}s" to capture a highlight.
-          </div>
-        ) : noMatches ? (
-          <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-border/60 p-10 text-center">
-            <FilmStrip className="size-8 text-muted-foreground/60" />
-            <p className="text-sm text-muted-foreground">
-              No clips match your filters.
-            </p>
-            <button
-              type="button"
-              onClick={reset}
-              className="text-sm font-medium text-primary transition-opacity hover:opacity-80"
+        <div
+          ref={scrollRef}
+          data-selecting={selectionActive ? "" : undefined}
+          className="group/grid scrollbar-thin min-h-0 flex-1 overflow-y-auto p-6"
+        >
+          {isLoading ? (
+            <p className="text-sm text-muted-foreground">Loading…</p>
+          ) : noClipsAtAll ? (
+            <div className="rounded-xl border border-dashed border-border/60 p-10 text-center text-sm text-muted-foreground">
+              No clips yet. Press <kbd>F9</kbd> in-game or hit "Save last {clipSeconds}s" to capture
+              a highlight.
+            </div>
+          ) : noMatches ? (
+            <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-border/60 p-10 text-center">
+              <FilmStrip className="size-8 text-muted-foreground/60" />
+              <p className="text-sm text-muted-foreground">No clips match your filters.</p>
+              <button
+                type="button"
+                onClick={reset}
+                className="text-sm font-medium text-primary transition-opacity hover:opacity-80"
+              >
+                Clear filters
+              </button>
+            </div>
+          ) : (
+            <div
+              style={{
+                height: rowVirtualizer.getTotalSize(),
+                width: "100%",
+                position: "relative",
+              }}
             >
-              Clear filters
-            </button>
-          </div>
-        ) : (
-          <div
-            style={{
-              height: rowVirtualizer.getTotalSize(),
-              width: "100%",
-              position: "relative",
-            }}
-          >
-            {virtualItems.map((virtualRow) => {
-              const row = rows[virtualRow.index];
-              if (!row) return null;
-              return (
-                <div
-                  key={virtualRow.key}
-                  className="absolute top-0 left-0 w-full"
-                  style={{ transform: `translateY(${virtualRow.start}px)` }}
-                >
-                  {row.type === "header" ? (
-                    <HeaderRow label={row.label} count={row.count} />
-                  ) : (
-                    <ClipRow
-                      clips={row.clips}
-                      columns={columns}
-                      onDelete={handleDelete}
-                      onRename={handleRename}
-                    />
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+              {virtualItems.map((virtualRow) => {
+                const row = rows[virtualRow.index];
+                if (!row) return null;
+                return (
+                  <div
+                    key={virtualRow.key}
+                    className="absolute top-0 left-0 w-full"
+                    style={{ transform: `translateY(${virtualRow.start}px)` }}
+                  >
+                    {row.type === "header" ? (
+                      <HeaderRow label={row.label} count={row.count} />
+                    ) : (
+                      <ClipRow
+                        clips={row.clips}
+                        columns={columns}
+                        onDelete={handleDelete}
+                        onRename={handleRename}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
     </GameAssetsProvider>
   );

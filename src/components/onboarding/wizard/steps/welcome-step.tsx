@@ -12,9 +12,21 @@ export function WelcomeStep() {
       />
       <Panel title="In about a minute, you'll be able to">
         {[
-          { icon: Crosshair, label: "Capture highlights automatically", hint: "Your best rounds, saved without lifting a finger." },
-          { icon: Scissors, label: "Save any moment with a hotkey", hint: "Pull the last few seconds whenever something pops off." },
-          { icon: CloudArrowUp, label: "Keep and share your clips", hint: "Stored your way, ready to upload." },
+          {
+            icon: Crosshair,
+            label: "Capture highlights automatically",
+            hint: "Your best rounds, saved without lifting a finger.",
+          },
+          {
+            icon: Scissors,
+            label: "Save any moment with a hotkey",
+            hint: "Pull the last few seconds whenever something pops off.",
+          },
+          {
+            icon: CloudArrowUp,
+            label: "Keep and share your clips",
+            hint: "Stored your way, ready to upload.",
+          },
         ].map((it) => (
           <Row key={it.label} label={it.label} hint={it.hint}>
             <it.icon className="size-5 text-primary-text" weight="duotone" />
@@ -22,8 +34,7 @@ export function WelcomeStep() {
         ))}
       </Panel>
       <p className="px-1 text-center text-xs text-muted-foreground">
-        Takes about a minute. You can skip anything and change it all later in
-        Settings.
+        Takes about a minute. You can skip anything and change it all later in Settings.
       </p>
     </>
   );

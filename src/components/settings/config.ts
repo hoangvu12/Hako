@@ -41,15 +41,7 @@ import type {
 } from "@/lib/api";
 
 export type SectionKey =
-  | "clip"
-  | "quality"
-  | "audio"
-  | "auto"
-  | "capture"
-  | "storage"
-  | "cloud"
-  | "overlay"
-  | "status";
+  "clip" | "quality" | "audio" | "auto" | "capture" | "storage" | "cloud" | "overlay" | "status";
 
 const SECTION_KEYS = new Set<SectionKey>([
   "clip",
@@ -66,10 +58,7 @@ export const isSectionKey = (v: unknown): v is SectionKey =>
   typeof v === "string" && SECTION_KEYS.has(v as SectionKey);
 
 /** Shared signature for the page's instant-apply / local-edit settings mutators. */
-export type SettingsSet = <K extends keyof Settings>(
-  key: K,
-  value: Settings[K],
-) => void;
+export type SettingsSet = <K extends keyof Settings>(key: K, value: Settings[K]) => void;
 
 export const NAV: {
   group: string;
@@ -112,7 +101,12 @@ export const EVENT_LABELS: {
   { key: "knife", label: "Knife kill", hint: "Melee elimination", icon: Knife },
   { key: "death", label: "Death", hint: "Your deaths", icon: Skull },
   { key: "assist", label: "Assist", hint: "Assisted eliminations", icon: Handshake },
-  { key: "spike_detonated", label: "Spike detonated", hint: "A spike you planted exploded", icon: Bomb },
+  {
+    key: "spike_detonated",
+    label: "Spike detonated",
+    hint: "A spike you planted exploded",
+    icon: Bomb,
+  },
   { key: "spike_defused", label: "Spike defused", hint: "You defused the spike", icon: Wrench },
 ];
 
@@ -148,9 +142,7 @@ export const REMATCH_EVENT_LABELS: {
   label: string;
   hint: string;
   icon: Icon;
-}[] = [
-  { key: "goal", label: "Goal", hint: "A goal was scored in the match", icon: SoccerBall },
-];
+}[] = [{ key: "goal", label: "Goal", hint: "A goal was scored in the match", icon: SoccerBall }];
 
 // Counter-Strike 2 auto-clip events (mirrors Rust `Cs2EventToggles`). Derived by
 // diffing the game's GSI state — multi-kills + headshots default on.

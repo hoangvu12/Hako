@@ -1,20 +1,9 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import {
-  ArrowRight,
-  GameController,
-  GearSix,
-  SpeakerHigh,
-  Sparkle,
-} from "@phosphor-icons/react";
+import { ArrowRight, GameController, GearSix, SpeakerHigh, Sparkle } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
-import {
-  Popover,
-  PopoverClose,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { Popover, PopoverClose, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { effectiveAudioConfig } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 import { useRecorderStatus } from "@/hooks/use-recorder";
@@ -42,13 +31,7 @@ function Row({
 }
 
 /** A deep-link button styled like the popover's elevated controls. */
-function LinkButton({
-  children,
-  onClick,
-}: {
-  children: React.ReactNode;
-  onClick: () => void;
-}) {
+function LinkButton({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
   return (
     <PopoverClose asChild>
       <button
@@ -98,8 +81,7 @@ export function RecorderStatusPopover() {
   const audio = settings
     ? effectiveAudioConfig(settings)
     : { mode: "all_pc_audio", mic_enabled: false };
-  const modeLabel =
-    audio.mode === "specific_apps" ? "Specific apps" : "All PC audio";
+  const modeLabel = audio.mode === "specific_apps" ? "Specific apps" : "All PC audio";
   const audioSummary = `${modeLabel} · Mic ${audio.mic_enabled ? "on" : "off"}`;
 
   const recheck = () => {
@@ -117,7 +99,7 @@ export function RecorderStatusPopover() {
           type="button"
           className={cn(
             "flex h-8 items-center gap-2.5 rounded-lg border border-border bg-secondary/50 px-3 text-sm font-medium transition-colors hover:bg-secondary",
-            capturing || detected ? "text-foreground" : "text-foreground/90"
+            capturing || detected ? "text-foreground" : "text-foreground/90",
           )}
         >
           {capturing && !frozen ? (
@@ -159,9 +141,7 @@ export function RecorderStatusPopover() {
                     <span className="relative inline-flex size-2.5 rounded-full bg-success" />
                   </span>
                 </div>
-                <div className="text-sm font-semibold text-foreground">
-                  Now clipping {gameName}
-                </div>
+                <div className="text-sm font-semibold text-foreground">Now clipping {gameName}</div>
                 <p className="mt-0.5 text-xs text-muted-foreground">
                   {status?.message ?? "Gameplay is being buffered."}
                 </p>
@@ -171,12 +151,10 @@ export function RecorderStatusPopover() {
                 <div className="mb-1 flex items-center justify-center gap-2">
                   <span className="relative inline-flex size-2.5 rounded-full bg-amber-400" />
                 </div>
-                <div className="text-sm font-semibold text-foreground">
-                  Paused, game minimized
-                </div>
+                <div className="text-sm font-semibold text-foreground">Paused, game minimized</div>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  The game stopped presenting frames, so clipping is paused to
-                  avoid recording a frozen screen. It resumes when you return.
+                  The game stopped presenting frames, so clipping is paused to avoid recording a
+                  frozen screen. It resumes when you return.
                 </p>
               </>
             ) : detected ? (
@@ -229,9 +207,7 @@ export function RecorderStatusPopover() {
           </Row>
 
           <Row icon={SpeakerHigh} label="Audio">
-            <LinkButton onClick={() => goToSettings("audio")}>
-              {audioSummary}
-            </LinkButton>
+            <LinkButton onClick={() => goToSettings("audio")}>{audioSummary}</LinkButton>
           </Row>
         </div>
 

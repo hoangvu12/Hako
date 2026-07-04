@@ -28,24 +28,17 @@ function BufferRamHint({
     <p
       className={cn(
         "flex items-center gap-1.5 px-1 text-xs",
-        heavy ? "text-warning" : "text-muted-foreground"
+        heavy ? "text-warning" : "text-muted-foreground",
       )}
     >
       {heavy ? <Warning weight="fill" className="size-3.5 shrink-0" /> : null}
-      Replay buffer holds ~{fmtBytesCoarse(bytes)} in RAM ({bufferSeconds}s × {bitrateMbps}{" "}
-      Mbps)
+      Replay buffer holds ~{fmtBytesCoarse(bytes)} in RAM ({bufferSeconds}s × {bitrateMbps} Mbps)
       {heavy ? ". Lower the bitrate or buffer length to use less." : "."}
     </p>
   );
 }
 
-export function CaptureSection({
-  draft,
-  set,
-}: {
-  draft: Settings;
-  set: SettingsSet;
-}) {
+export function CaptureSection({ draft, set }: { draft: Settings; set: SettingsSet }) {
   return (
     <>
       <SectionHero
@@ -55,10 +48,7 @@ export function CaptureSection({
       />
 
       <Panel title="Replay buffer">
-        <Row
-          label="Buffer length"
-          hint="Seconds of gameplay held ready to save as a clip."
-        >
+        <Row label="Buffer length" hint="Seconds of gameplay held ready to save as a clip.">
           <Select
             value={String(draft.buffer_seconds)}
             onValueChange={(v) => set("buffer_seconds", Number(v))}
@@ -98,10 +88,7 @@ export function CaptureSection({
           replay-buffer RAM. Only the RAM backend spends memory — the disk
           backend spools to drive instead. */}
       {draft.buffer_storage !== "disk" && (
-        <BufferRamHint
-          bitrateMbps={draft.bitrate_mbps}
-          bufferSeconds={draft.buffer_seconds}
-        />
+        <BufferRamHint bitrateMbps={draft.bitrate_mbps} bufferSeconds={draft.buffer_seconds} />
       )}
 
       <Panel title="Performance">
@@ -116,16 +103,12 @@ export function CaptureSection({
         </Row>
       </Panel>
 
-
       <Panel title="Mouse cursor">
         <Row
           label="Record mouse cursor"
           hint="Draw your mouse pointer into clips. Games use a hardware cursor that isn't in the captured frame, so it's added on top — turn off for a clean, pointer-free recording."
         >
-          <Switch
-            checked={draft.record_cursor}
-            onCheckedChange={(v) => set("record_cursor", v)}
-          />
+          <Switch checked={draft.record_cursor} onCheckedChange={(v) => set("record_cursor", v)} />
         </Row>
       </Panel>
 

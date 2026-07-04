@@ -9,13 +9,7 @@ import {
 } from "@/components/ui/select";
 import { SectionHero, Panel, Row, PresetCard } from "@/components/settings/primitives";
 import type { Settings } from "@/lib/api";
-import {
-  PRESETS,
-  RESOLUTIONS,
-  FPS_OPTIONS,
-  BITRATE_OPTIONS,
-  type WizardSet,
-} from "../config";
+import { PRESETS, RESOLUTIONS, FPS_OPTIONS, BITRATE_OPTIONS, type WizardSet } from "../config";
 
 export function VideoStep({
   draft,
@@ -60,10 +54,7 @@ export function VideoStep({
             label="Resolution"
             hint="Output size; capture is downscaled to fit (never upscaled)."
           >
-            <Select
-              value={draft.resolution}
-              onValueChange={(v) => set("resolution", v)}
-            >
+            <Select value={draft.resolution} onValueChange={(v) => set("resolution", v)}>
               <SelectTrigger size="sm" className="w-44">
                 <SelectValue />
               </SelectTrigger>

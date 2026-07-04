@@ -115,9 +115,7 @@ export function defaultAudioConfig(): AudioConfig {
   return {
     mode: "all_pc_audio",
     master_volume: 100,
-    pc_audio: [
-      { id: AUTO_DEVICE, name: "Default Output Device", enabled: true, volume: 100 },
-    ],
+    pc_audio: [{ id: AUTO_DEVICE, name: "Default Output Device", enabled: true, volume: 100 }],
     apps: [],
     mic_enabled: false,
     mic_source: AUTO_DEVICE,
@@ -136,8 +134,7 @@ export function defaultAudioConfig(): AudioConfig {
  */
 export function effectiveAudioConfig(settings: Settings): AudioConfig {
   if (settings.audio) return settings.audio;
-  const micEnabled =
-    settings.mic_source !== "" && settings.mic_source !== "off";
+  const micEnabled = settings.mic_source !== "" && settings.mic_source !== "off";
   return {
     ...defaultAudioConfig(),
     mic_enabled: micEnabled,

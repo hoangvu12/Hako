@@ -9,10 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  processLoopbackSupported,
-  type AudioConfig,
-} from "@/lib/api";
+import { processLoopbackSupported, type AudioConfig } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 import { Panel } from "./recording-audio/primitives";
 import { AllPcAudioPanel } from "./recording-audio/all-pc-audio-panel";
@@ -47,10 +44,7 @@ export function RecordingAudio({
               Capture all system audio, or split it per application.
             </p>
           </div>
-          <Select
-            value={audio.mode}
-            onValueChange={(v) => patch({ mode: v })}
-          >
+          <Select value={audio.mode} onValueChange={(v) => patch({ mode: v })}>
             <SelectTrigger size="sm" className="w-44">
               <SelectValue />
             </SelectTrigger>
@@ -70,8 +64,8 @@ export function RecordingAudio({
         {!supportsApps && (
           <p className="flex items-start gap-2 py-3 text-xs text-muted-foreground last:pb-0">
             <Flask className="mt-0.5 size-3.5 shrink-0" weight="fill" />
-            Per-app capture needs Windows 11 (build 20348+); it isn&apos;t available
-            on this system, so recording stays on All PC audio.
+            Per-app capture needs Windows 11 (build 20348+); it isn&apos;t available on this system,
+            so recording stays on All PC audio.
           </p>
         )}
       </Panel>
@@ -80,8 +74,8 @@ export function RecordingAudio({
         <div className="flex gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-500">
           <Flask className="size-4 shrink-0" weight="fill" />
           <span>
-            Specific apps isn&apos;t supported on this PC, so capture will fall
-            back to All PC audio. Switch the mode above to clear this.
+            Specific apps isn&apos;t supported on this PC, so capture will fall back to All PC
+            audio. Switch the mode above to clear this.
           </span>
         </div>
       )}
@@ -98,8 +92,8 @@ export function RecordingAudio({
           <div className="min-w-0">
             <div className="text-sm font-medium">Separate audio tracks</div>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Save each source as its own track so you can mute them separately in
-              the editor. The clip still plays as the full mix.
+              Save each source as its own track so you can mute them separately in the editor. The
+              clip still plays as the full mix.
             </p>
           </div>
           <Switch

@@ -23,14 +23,11 @@ export function useCloudEventBridge() {
   const qc = useQueryClient();
 
   useEffect(() => {
-    const unlistenProgress = listen<CloudUploadProgress>(
-      Events.CloudUploadProgress,
-      (e) => {
-        const { clip_id, sent, total, bytes_per_sec } = e.payload;
-        progress.set(clip_id, { sent, total, bytesPerSec: bytes_per_sec });
-        emitProgress();
-      },
-    );
+    const unlistenProgress = listen<CloudUploadProgress>(Events.CloudUploadProgress, (e) => {
+      const { clip_id, sent, total, bytes_per_sec } = e.payload;
+      progress.set(clip_id, { sent, total, bytesPerSec: bytes_per_sec });
+      emitProgress();
+    });
 
     const unlistenDownloadProgress = listen<CloudDownloadProgress>(
       Events.CloudDownloadProgress,
@@ -60,20 +57,17 @@ export function useCloudEventBridge() {
       },
     );
 
-    const unlistenStatus = listen<CloudUploadStatusEvent>(
-      Events.CloudUploadStatus,
-      (e) => {
-        const { clip_id, status } = e.payload;
-        // Drop live progress once the upload leaves the in-flight states.
-        if (TERMINAL.has(status) && progress.delete(clip_id)) emitProgress();
-        // Optimistically reflect the new status, then refetch so terminal rows
-        // pull their freshly-written `remote_url` / `uploaded_at` from the DB.
-        qc.setQueryData<CloudUpload[]>(queryKeys.cloudUploads, (prev) =>
-          patchStatus(prev, e.payload),
-        );
-        void qc.invalidateQueries({ queryKey: queryKeys.cloudUploads });
-      },
-    );
+    const unlistenStatus = listen<CloudUploadStatusEvent>(Events.CloudUploadStatus, (e) => {
+      const { clip_id, status } = e.payload;
+      // Drop live progress once the upload leaves the in-flight states.
+      if (TERMINAL.has(status) && progress.delete(clip_id)) emitProgress();
+      // Optimistically reflect the new status, then refetch so terminal rows
+      // pull their freshly-written `remote_url` / `uploaded_at` from the DB.
+      qc.setQueryData<CloudUpload[]>(queryKeys.cloudUploads, (prev) =>
+        patchStatus(prev, e.payload),
+      );
+      void qc.invalidateQueries({ queryKey: queryKeys.cloudUploads });
+    });
 
     return () => {
       unlistenProgress.then((off) => off()).catch(() => {});
@@ -86,10 +80,7 @@ export function useCloudEventBridge() {
 
 /** Upsert a status event into the cached rows so the UI flips immediately,
  * before the authoritative refetch lands. */
-function patchStatus(
-  prev: CloudUpload[] | undefined,
-  ev: CloudUploadStatusEvent,
-): CloudUpload[] {
+function patchStatus(prev: CloudUpload[] | undefined, ev: CloudUploadStatusEvent): CloudUpload[] {
   const rows = prev ? [...prev] : [];
   const i = rows.findIndex((r) => r.clip_id === ev.clip_id);
   if (i >= 0) {

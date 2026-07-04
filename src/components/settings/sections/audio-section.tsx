@@ -5,13 +5,7 @@ import { RecordingAudio } from "@/components/settings/recording-audio";
 import type { SettingsSet } from "@/components/settings/config";
 import { effectiveAudioConfig, type AudioConfig, type Settings } from "@/lib/api";
 
-export function AudioSection({
-  draft,
-  set,
-}: {
-  draft: Settings;
-  set: SettingsSet;
-}) {
+export function AudioSection({ draft, set }: { draft: Settings; set: SettingsSet }) {
   return (
     <>
       <SectionHero

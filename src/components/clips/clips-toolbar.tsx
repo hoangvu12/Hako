@@ -1,11 +1,5 @@
 import * as React from "react";
-import {
-  Scissors,
-  CaretDown,
-  ArrowsDownUp,
-  MagnifyingGlass,
-  X,
-} from "@phosphor-icons/react";
+import { Scissors, CaretDown, ArrowsDownUp, MagnifyingGlass, X } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,11 +10,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useGameAssetsContext } from "@/games/use-game-assets";
-import {
-  SORTS,
-  type ClipFilters,
-  type Facets,
-} from "@/components/clips/use-clip-filters";
+import { SORTS, type ClipFilters, type Facets } from "@/components/clips/use-clip-filters";
 import { MultiSelectFilter } from "./clips-toolbar/multi-select-filter";
 import { SingleSelectFilter } from "./clips-toolbar/single-select-filter";
 import { buildFacetOptions } from "./clips-toolbar/options";
@@ -56,8 +46,10 @@ export const ClipsToolbar = React.memo(function ClipsToolbar({
   reset: () => void;
 }) {
   const assets = useGameAssetsContext();
-  const { gameOptions, agentOptions, mapOptions, modeOptions, eventOptions } =
-    buildFacetOptions(facets, assets.valorant);
+  const { gameOptions, agentOptions, mapOptions, modeOptions, eventOptions } = buildFacetOptions(
+    facets,
+    assets.valorant,
+  );
 
   // The Game facet only earns a chip once the library spans more than one game.
   const showGame = gameOptions.length > 1;
@@ -73,8 +65,7 @@ export const ClipsToolbar = React.memo(function ClipsToolbar({
   const hasFilters = hasFacets || hasSingle;
 
   const sortLabel =
-    SORTS.find((s) => s.key === filters.sort)?.label.replace(" first", "") ??
-    "Newest";
+    SORTS.find((s) => s.key === filters.sort)?.label.replace(" first", "") ?? "Newest";
 
   return (
     <div className="shrink-0 border-b border-panel-border bg-panel">
@@ -87,9 +78,7 @@ export const ClipsToolbar = React.memo(function ClipsToolbar({
           {saving ? "Saving…" : `Save last ${clipSeconds}s`}
         </Button>
 
-        {hasFilters ? (
-          <span className="mx-1.5 h-5 w-px bg-border/60" aria-hidden />
-        ) : null}
+        {hasFilters ? <span className="mx-1.5 h-5 w-px bg-border/60" aria-hidden /> : null}
 
         {/* Filter group: tight internal spacing marks it as one cluster. */}
         {hasFilters ? (
@@ -181,11 +170,7 @@ export const ClipsToolbar = React.memo(function ClipsToolbar({
                 <DropdownMenuItem
                   key={s.key}
                   onSelect={() => update({ sort: s.key })}
-                  className={
-                    filters.sort === s.key
-                      ? "text-foreground"
-                      : "text-muted-foreground"
-                  }
+                  className={filters.sort === s.key ? "text-foreground" : "text-muted-foreground"}
                 >
                   {s.label}
                 </DropdownMenuItem>

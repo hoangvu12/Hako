@@ -189,9 +189,7 @@ function TimingRow({
         onValueCommit={(v) => onCommit("after", v[0] ?? 0)}
         className="flex-1"
       />
-      <span className="w-9 shrink-0 text-xs tabular-nums text-muted-foreground">
-        {after}s
-      </span>
+      <span className="w-9 shrink-0 text-xs tabular-nums text-muted-foreground">{after}s</span>
     </div>
   );
 }
@@ -246,7 +244,7 @@ function EventCheck({
         "flex items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-colors",
         on
           ? "border-primary/40 bg-primary/10"
-          : "border-border/60 bg-card/30 hover:border-border hover:bg-accent/40"
+          : "border-border/60 bg-card/30 hover:border-border hover:bg-accent/40",
       )}
     >
       <span
@@ -254,7 +252,7 @@ function EventCheck({
           "flex size-4 shrink-0 items-center justify-center rounded border",
           on
             ? "border-primary bg-primary text-primary-foreground"
-            : "border-muted-foreground/40 bg-white/[0.03]"
+            : "border-muted-foreground/40 bg-white/[0.03]",
         )}
       >
         {on ? <Check weight="bold" className="size-3" /> : null}
@@ -320,7 +318,7 @@ function GameAutoCard({ model }: { model: GameAutoModel }) {
     <section
       className={cn(
         "overflow-hidden rounded-xl border transition-colors",
-        enabled ? "border-border/70 bg-card/40" : "border-border/50 bg-card/20"
+        enabled ? "border-border/70 bg-card/40" : "border-border/50 bg-card/20",
       )}
     >
       {/* Header — always visible. */}
@@ -337,7 +335,7 @@ function GameAutoCard({ model }: { model: GameAutoModel }) {
             <span className="block truncate text-sm font-semibold">{meta.label}</span>
             <span className="block truncate text-xs text-muted-foreground">
               {enabled
-                ? CAPTURE_MODES.find((m) => m.key === model.mode)?.label ?? "On"
+                ? (CAPTURE_MODES.find((m) => m.key === model.mode)?.label ?? "On")
                 : "Off — not captured"}
             </span>
           </span>
@@ -346,7 +344,7 @@ function GameAutoCard({ model }: { model: GameAutoModel }) {
               weight="bold"
               className={cn(
                 "ml-1 size-4 text-muted-foreground transition-transform",
-                open ? "rotate-0" : "-rotate-90"
+                open ? "rotate-0" : "-rotate-90",
               )}
             />
           )}
@@ -364,8 +362,8 @@ function GameAutoCard({ model }: { model: GameAutoModel }) {
           {showGameModes && model.gameModes && (
             <Panel title="Game modes">
               <p className="-mt-1 pb-3 text-xs text-muted-foreground">
-                Only auto-capture matches in the modes you turn on. Manual saves and
-                Full session recording aren't affected.
+                Only auto-capture matches in the modes you turn on. Manual saves and Full session
+                recording aren't affected.
               </p>
               {model.gameModes.labels.map((gm) => {
                 const icon = model.gameModes!.iconFor(gm.art);
@@ -376,11 +374,7 @@ function GameAutoCard({ model }: { model: GameAutoModel }) {
                   >
                     <div className="flex min-w-0 items-center gap-3">
                       {icon ? (
-                        <img
-                          src={icon}
-                          alt=""
-                          className="size-7 shrink-0 rounded object-contain"
-                        />
+                        <img src={icon} alt="" className="size-7 shrink-0 rounded object-contain" />
                       ) : (
                         <span className="flex size-7 shrink-0 items-center justify-center rounded bg-secondary/60 text-muted-foreground">
                           <GameController className="size-4" />
@@ -428,7 +422,7 @@ function GameAutoCard({ model }: { model: GameAutoModel }) {
                     weight="bold"
                     className={cn(
                       "size-4 transition-transform",
-                      showTiming ? "rotate-0" : "-rotate-90"
+                      showTiming ? "rotate-0" : "-rotate-90",
                     )}
                   />
                   Advanced options
@@ -449,12 +443,8 @@ function GameAutoCard({ model }: { model: GameAutoModel }) {
                             label={ev.label}
                             before={t.before}
                             after={t.after}
-                            onChange={(field, value) =>
-                              model.setTimingLocal(ev.key, field, value)
-                            }
-                            onCommit={(field, value) =>
-                              model.commitTiming(ev.key, field, value)
-                            }
+                            onChange={(field, value) => model.setTimingLocal(ev.key, field, value)}
+                            onCommit={(field, value) => model.commitTiming(ev.key, field, value)}
                           />
                         );
                       })}
@@ -556,8 +546,7 @@ function OtherGamesCard({
   });
   const refresh = () => qc.invalidateQueries({ queryKey: queryKeys.customGames });
   const toggle = useMutation({
-    mutationFn: ({ id, on }: { id: number; on: boolean }) =>
-      setCustomGameEnabled(id, on),
+    mutationFn: ({ id, on }: { id: number; on: boolean }) => setCustomGameEnabled(id, on),
     onSettled: refresh,
   });
   const remove = useMutation({
@@ -575,7 +564,7 @@ function OtherGamesCard({
     <section
       className={cn(
         "overflow-hidden rounded-xl border transition-colors",
-        enabled ? "border-border/70 bg-card/40" : "border-border/50 bg-card/20"
+        enabled ? "border-border/70 bg-card/40" : "border-border/50 bg-card/20",
       )}
     >
       {/* Header — always visible. */}
@@ -592,8 +581,8 @@ function OtherGamesCard({
             <span className="block truncate text-sm font-semibold">{meta.label}</span>
             <span className="block truncate text-xs text-muted-foreground">
               {enabled
-                ? OTHER_CAPTURE_MODES.find((m) => m.key === other.auto_capture_mode)
-                    ?.label ?? "On"
+                ? (OTHER_CAPTURE_MODES.find((m) => m.key === other.auto_capture_mode)?.label ??
+                  "On")
                 : "Off — not captured"}
             </span>
           </span>
@@ -602,7 +591,7 @@ function OtherGamesCard({
               weight="bold"
               className={cn(
                 "ml-1 size-4 text-muted-foreground transition-transform",
-                open ? "rotate-0" : "-rotate-90"
+                open ? "rotate-0" : "-rotate-90",
               )}
             />
           )}
@@ -636,8 +625,8 @@ function OtherGamesCard({
 
           <Panel title="Your games">
             <p className="-mt-1 pb-2 text-xs text-muted-foreground">
-              Add any game not detected automatically — point Hako at its window
-              once and it auto-records from then on.
+              Add any game not detected automatically — point Hako at its window once and it
+              auto-records from then on.
             </p>
             <div className="flex flex-col gap-1.5">
               {games.map((g: CustomGame) => (
@@ -647,9 +636,7 @@ function OtherGamesCard({
                 >
                   <CustomGameIcon icon={g.icon} />
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium">
-                      {g.display_name}
-                    </span>
+                    <span className="block truncate text-sm font-medium">{g.display_name}</span>
                     <span className="block truncate text-xs text-muted-foreground">
                       {g.process_name}
                     </span>
@@ -719,13 +706,13 @@ export function AutoSection({
     key: SmartGameKey,
     eventKey: string,
     field: "before" | "after",
-    value: number
+    value: number,
   ) => void;
   commitGameTiming: (
     key: SmartGameKey,
     eventKey: string,
     field: "before" | "after",
-    value: number
+    value: number,
   ) => void;
   // War Thunder's one game-specific field (its free-text nickname).
   setWarThunderNickname: (nickname: string) => void;

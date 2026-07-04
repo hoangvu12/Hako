@@ -15,11 +15,7 @@ import { SectionHero, Panel, Row } from "@/components/settings/primitives";
 import { CloudProviders } from "@/components/settings/cloud-providers";
 import { fmtBytesCoarse } from "@/components/settings/format";
 import type { SettingsSet } from "@/components/settings/config";
-import {
-  useCloudProviders,
-  useFreeUpSpace,
-  useRetentionStats,
-} from "@/hooks/use-cloud";
+import { useCloudProviders, useFreeUpSpace, useRetentionStats } from "@/hooks/use-cloud";
 import type { Settings } from "@/lib/api";
 
 /** The Cloud Upload settings section: auto-upload toggle + default provider,
@@ -76,9 +72,7 @@ export function CloudSection({
         >
           <Select
             value={draft.cloud_default_provider ?? "none"}
-            onValueChange={(v) =>
-              set("cloud_default_provider", v === "none" ? null : v)
-            }
+            onValueChange={(v) => set("cloud_default_provider", v === "none" ? null : v)}
             disabled={!hasProviders}
           >
             <SelectTrigger size="sm" className="w-56">

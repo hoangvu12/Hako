@@ -73,7 +73,7 @@ export function useClipSelected(id: number): boolean {
   return React.useSyncExternalStore(
     subscribe,
     () => snapshot.has(id),
-    () => snapshot.has(id)
+    () => snapshot.has(id),
   );
 }
 
@@ -83,7 +83,7 @@ export function useSelection(): ReadonlySet<number> {
   return React.useSyncExternalStore(
     subscribe,
     () => snapshot,
-    () => snapshot
+    () => snapshot,
   );
 }
 
@@ -95,6 +95,6 @@ export function useSelectionActive(): boolean {
   return React.useSyncExternalStore(
     subscribe,
     () => snapshot.size > 0,
-    () => snapshot.size > 0
+    () => snapshot.size > 0,
   );
 }

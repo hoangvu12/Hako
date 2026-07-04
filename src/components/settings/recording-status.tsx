@@ -1,12 +1,6 @@
 import { useRecorderStatus } from "@/hooks/use-recorder";
 import { useGpuInfo, useFfmpegInfo } from "@/hooks/use-gpu";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
 /**
@@ -17,9 +11,7 @@ export function RecordingStatus() {
   const { data, isLoading } = useRecorderStatus();
   const { data: gpu } = useGpuInfo();
   const { data: ffmpeg } = useFfmpegInfo();
-  const nvencReady = ffmpeg?.encoders.find(
-    (e) => e.name === "h264_nvenc"
-  )?.available;
+  const nvencReady = ffmpeg?.encoders.find((e) => e.name === "h264_nvenc")?.available;
 
   return (
     <div className="space-y-4">
@@ -50,9 +42,7 @@ export function RecordingStatus() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">
-              {data?.detected_game ?? "Game"}
-            </CardTitle>
+            <CardTitle className="text-base">{data?.detected_game ?? "Game"}</CardTitle>
             <CardDescription>Process / window detection</CardDescription>
           </CardHeader>
           <CardContent>
@@ -82,9 +72,7 @@ export function RecordingStatus() {
               {gpu?.device_ok && `D3D11 ${gpu.feature_level} · `}
               {ffmpeg
                 ? `FFmpeg ${
-                    ffmpeg.avcodec_version.split(".")[0] === "62"
-                      ? "8.1"
-                      : ffmpeg.avcodec_version
+                    ffmpeg.avcodec_version.split(".")[0] === "62" ? "8.1" : ffmpeg.avcodec_version
                   }`
                 : "probing FFmpeg…"}
             </p>
@@ -96,8 +84,7 @@ export function RecordingStatus() {
         <CardHeader>
           <CardTitle className="text-base">GPUs</CardTitle>
           <CardDescription>
-            DXGI adapters. The discrete GPU is preferred to avoid cross-adapter
-            copies.
+            DXGI adapters. The discrete GPU is preferred to avoid cross-adapter copies.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">
@@ -120,9 +107,7 @@ export function RecordingStatus() {
               </div>
             </div>
           ))}
-          {!gpu && (
-            <p className="text-sm text-muted-foreground">Detecting GPUs…</p>
-          )}
+          {!gpu && <p className="text-sm text-muted-foreground">Detecting GPUs…</p>}
         </CardContent>
       </Card>
     </div>

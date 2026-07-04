@@ -39,10 +39,7 @@ export function MicRow({
       onCheckedChange={(v) => patch({ mic_enabled: v })}
     >
       <div className="flex items-center gap-2">
-        <Select
-          value={audio.mic_source}
-          onValueChange={(v) => patch({ mic_source: v })}
-        >
+        <Select value={audio.mic_source} onValueChange={(v) => patch({ mic_source: v })}>
           <SelectTrigger size="sm" className="w-32">
             <SelectValue />
           </SelectTrigger>
@@ -55,10 +52,7 @@ export function MicRow({
             ))}
           </SelectContent>
         </Select>
-        <VolumeSlider
-          value={audio.mic_volume}
-          onCommit={(v) => patch({ mic_volume: v })}
-        />
+        <VolumeSlider value={audio.mic_volume} onCommit={(v) => patch({ mic_volume: v })} />
       </div>
     </SourceRow>
   );

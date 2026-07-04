@@ -21,11 +21,7 @@ export function StorageSection({
 }) {
   return (
     <>
-      <SectionHero
-        icon={HardDrives}
-        title="Storage"
-        subtitle="Where clips are written on disk."
-      />
+      <SectionHero icon={HardDrives} title="Storage" subtitle="Where clips are written on disk." />
       <Panel title="Library">
         <Row
           label="Clip folder"
@@ -36,9 +32,7 @@ export function StorageSection({
               className="w-64"
               value={draft.storage_dir ?? ""}
               placeholder="Videos/Hako"
-              onChange={(e) =>
-                setLocal("storage_dir", e.target.value || null)
-              }
+              onChange={(e) => setLocal("storage_dir", e.target.value || null)}
               onBlur={onCommitStorage}
             />
             <Button

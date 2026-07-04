@@ -1,21 +1,9 @@
 import * as React from "react";
-import {
-  CaretLeft,
-  CaretRight,
-  Play,
-  Pause,
-  Check,
-  Gauge,
-  GearSix,
-} from "@phosphor-icons/react";
+import { CaretLeft, CaretRight, Play, Pause, Check, Gauge, GearSix } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { EventMark } from "@/lib/api";
 import { SPEED_OPTIONS } from "./constants";
 import { eventIconFor, fmtClock } from "./format";
@@ -182,10 +170,7 @@ export function SettingsButton({
         >
           <GearSix
             weight="fill"
-            className={cn(
-              "size-6 transition-transform duration-200",
-              open && "rotate-45",
-            )}
+            className={cn("size-6 transition-transform duration-200", open && "rotate-45")}
           />
         </button>
       </PopoverTrigger>
@@ -217,32 +202,32 @@ export function SettingsButton({
             </button>
             <ScrollArea viewportClassName="max-h-72">
               <div className="py-1">
-              {SPEED_OPTIONS.map((s) => {
-                const active = s === speed;
-                return (
-                  <button
-                    key={s}
-                    type="button"
-                    onClick={() => {
-                      setSpeed(s);
-                      setView("main");
-                    }}
-                    className={cn(
-                      "flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-sm transition-colors hover:bg-white/5",
-                      active ? "font-semibold text-foreground" : "text-muted-foreground",
-                    )}
-                  >
-                    <Check
-                      weight="bold"
+                {SPEED_OPTIONS.map((s) => {
+                  const active = s === speed;
+                  return (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() => {
+                        setSpeed(s);
+                        setView("main");
+                      }}
                       className={cn(
-                        "size-4 text-primary-text",
-                        active ? "opacity-100" : "opacity-0",
+                        "flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-sm transition-colors hover:bg-white/5",
+                        active ? "font-semibold text-foreground" : "text-muted-foreground",
                       )}
-                    />
-                    {s === 1 ? "Normal" : `${s}×`}
-                  </button>
-                );
-              })}
+                    >
+                      <Check
+                        weight="bold"
+                        className={cn(
+                          "size-4 text-primary-text",
+                          active ? "opacity-100" : "opacity-0",
+                        )}
+                      />
+                      {s === 1 ? "Normal" : `${s}×`}
+                    </button>
+                  );
+                })}
               </div>
             </ScrollArea>
           </div>

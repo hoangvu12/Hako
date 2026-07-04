@@ -33,9 +33,9 @@ export function OnboardingWizard() {
   useEffect(() => {
     draftRef.current = draft;
   }, [draft]);
-  useEffect(() => {
-    if (data && !draft) setDraft(data);
-  }, [data, draft]);
+  // Seed the editable draft once settings load. Render-phase init (not an effect)
+  // so it can't cascade an extra commit; the `!draft` guard makes it fire once.
+  if (data && !draft) setDraft(data);
 
   const [stepIndex, setStepIndex] = useState(0);
 
@@ -106,86 +106,84 @@ export function OnboardingWizard() {
         {/* Progress header — pinned to the top of the pane. */}
         <div className="border-b border-border/60 px-6 py-4">
           <div className="mx-auto w-full max-w-xl">
-          <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
-            <span className="font-medium">
-              Step {stepIndex + 1} of {STEPS.length}
-              {step.optional && (
-                <span className="ml-2 rounded-full bg-secondary px-2 py-0.5 text-[10px] tracking-wide uppercase">
-                  Optional
-                </span>
+            <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
+              <span className="font-medium">
+                Step {stepIndex + 1} of {STEPS.length}
+                {step.optional && (
+                  <span className="ml-2 rounded-full bg-secondary px-2 py-0.5 text-[10px] tracking-wide uppercase">
+                    Optional
+                  </span>
+                )}
+              </span>
+              {!isLast && (
+                <button
+                  type="button"
+                  onClick={complete}
+                  className="font-medium text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  Skip setup
+                </button>
               )}
-            </span>
-            {!isLast && (
-              <button
-                type="button"
-                onClick={complete}
-                className="font-medium text-muted-foreground transition-colors hover:text-foreground"
-              >
-                Skip setup
-              </button>
-            )}
-          </div>
-          <div className="h-1.5 overflow-hidden rounded-full bg-secondary">
-            <div
-              className="h-full rounded-full bg-primary transition-[width] duration-300"
-              style={{ width: `${pct}%` }}
-            />
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-secondary">
+              <div
+                className="h-full rounded-full bg-primary transition-[width] duration-300"
+                style={{ width: `${pct}%` }}
+              />
+            </div>
           </div>
         </div>
-      </div>
 
         {/* Step body — scrolls between the header and footer bars. */}
         <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto w-full max-w-xl space-y-6 px-6 py-10">
-          {step.key === "welcome" && <WelcomeStep />}
-          {step.key === "storage" && (
-            <StorageStep draft={draft} set={set} setLocal={setLocal} commit={commit} />
-          )}
-          {step.key === "video" && (
-            <VideoStep draft={draft} set={set} applyPreset={applyPreset} />
-          )}
-          {step.key === "audio" && <AudioStep draft={draft} set={set} />}
-          {step.key === "clips" && <ClipsStep draft={draft} set={set} />}
-          {step.key === "auto" && (
-            <AutoStep draft={draft} set={set} toggleEvent={toggleEvent} />
-          )}
-          {step.key === "done" && <DoneStep draft={draft} />}
+            {step.key === "welcome" && <WelcomeStep />}
+            {step.key === "storage" && (
+              <StorageStep draft={draft} set={set} setLocal={setLocal} commit={commit} />
+            )}
+            {step.key === "video" && (
+              <VideoStep draft={draft} set={set} applyPreset={applyPreset} />
+            )}
+            {step.key === "audio" && <AudioStep draft={draft} set={set} />}
+            {step.key === "clips" && <ClipsStep draft={draft} set={set} />}
+            {step.key === "auto" && <AutoStep draft={draft} set={set} toggleEvent={toggleEvent} />}
+            {step.key === "done" && <DoneStep draft={draft} />}
+          </div>
         </div>
-      </div>
 
         {/* Footer nav — pinned to the bottom of the pane. */}
         <div className="border-t border-border/60 px-6 py-4">
           <div className="mx-auto flex w-full max-w-xl items-center justify-between">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={back}
-            disabled={isFirst}
-            className={cn(isFirst && "invisible")}
-          >
-            <ArrowLeft />
-            Back
-          </Button>
-          <div className="flex items-center gap-2">
-            {showFinishNow && (
-              <Button variant="secondary" size="sm" onClick={complete}>
-                Finish now
-              </Button>
-            )}
-            <Button size="sm" onClick={next}>
-              {isLast ? (
-                <>
-                  <Check />
-                  Finish
-                </>
-              ) : (
-                <>
-                  {step.key === "welcome" ? "Get started" : "Next"}
-                  <ArrowRight />
-                </>
-              )}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={back}
+              disabled={isFirst}
+              className={cn(isFirst && "invisible")}
+            >
+              <ArrowLeft />
+              Back
             </Button>
-          </div>
+            <div className="flex items-center gap-2">
+              {showFinishNow && (
+                <Button variant="secondary" size="sm" onClick={complete}>
+                  Finish now
+                </Button>
+              )}
+              <Button size="sm" onClick={next}>
+                {isLast ? (
+                  <>
+                    <Check />
+                    Finish
+                  </>
+                ) : (
+                  <>
+                    {step.key === "welcome" ? "Get started" : "Next"}
+                    <ArrowRight />
+                  </>
+                )}
+              </Button>
+            </div>
           </div>
         </div>
       </div>

@@ -26,10 +26,7 @@ export function StorageStep({
         subtitle="Pick a folder on a drive with some free space. Leave it blank to use the default."
       />
       <Panel title="Clip folder">
-        <Row
-          label="Folder"
-          hint="Browse to a folder, or paste a path. Default: Videos/Hako."
-        >
+        <Row label="Folder" hint="Browse to a folder, or paste a path. Default: Videos/Hako.">
           <div className="flex items-center gap-2">
             <Input
               className="w-56"

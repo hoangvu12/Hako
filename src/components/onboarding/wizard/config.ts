@@ -32,9 +32,33 @@ export const PRESETS: {
   fps: number;
   bitrate: number;
 }[] = [
-  { key: "low", label: "Low Quality", blurb: "Lower-end PCs & faster uploads", line: "360p · 24 FPS", resolution: "360p", fps: 24, bitrate: 3 },
-  { key: "standard", label: "Standard", blurb: "Performance & fast sharing", line: "720p · 60 FPS", resolution: "720p", fps: 60, bitrate: 10 },
-  { key: "high", label: "High Quality", blurb: "Higher quality & slower uploads", line: "1080p · 60 FPS", resolution: "1080p", fps: 60, bitrate: 15 },
+  {
+    key: "low",
+    label: "Low Quality",
+    blurb: "Lower-end PCs & faster uploads",
+    line: "360p · 24 FPS",
+    resolution: "360p",
+    fps: 24,
+    bitrate: 3,
+  },
+  {
+    key: "standard",
+    label: "Standard",
+    blurb: "Performance & fast sharing",
+    line: "720p · 60 FPS",
+    resolution: "720p",
+    fps: 60,
+    bitrate: 10,
+  },
+  {
+    key: "high",
+    label: "High Quality",
+    blurb: "Higher quality & slower uploads",
+    line: "1080p · 60 FPS",
+    resolution: "1080p",
+    fps: 60,
+    bitrate: 15,
+  },
 ];
 
 export const CLIP_LENGTHS = [10, 15, 30, 60, 90, 120, 180];
@@ -60,29 +84,28 @@ export const CAPTURE_MODES: { key: AutoCaptureMode; label: string; blurb: string
   { key: "session", label: "Full session", blurb: "Record the whole time you're in-game" },
 ];
 
-export const EVENT_LABELS: { key: keyof EventToggles; label: string; hint: string; icon: Icon }[] = [
-  { key: "victory", label: "Victory", hint: "You won the match", icon: Trophy },
-  { key: "clutch", label: "Clutch", hint: "1vX round win as the last alive", icon: Crown },
-  { key: "kill", label: "Kill", hint: "Any elimination", icon: Sword },
-  { key: "double_kill", label: "Double kill", hint: "Two in quick succession", icon: Sword },
-  { key: "triple_kill", label: "Triple kill", hint: "3K", icon: Sword },
-  { key: "quadra_kill", label: "Quadra kill", hint: "4K", icon: Sword },
-  { key: "ace", label: "Ace", hint: "Full team wipe (5K)", icon: Fire },
-  { key: "knife", label: "Knife kill", hint: "Melee elimination", icon: Knife },
-  { key: "death", label: "Death", hint: "Your deaths", icon: Skull },
-  { key: "assist", label: "Assist", hint: "Assisted eliminations", icon: Handshake },
-  { key: "spike_detonated", label: "Spike detonated", hint: "A spike you planted exploded", icon: Bomb },
-  { key: "spike_defused", label: "Spike defused", hint: "You defused the spike", icon: Wrench },
-];
+export const EVENT_LABELS: { key: keyof EventToggles; label: string; hint: string; icon: Icon }[] =
+  [
+    { key: "victory", label: "Victory", hint: "You won the match", icon: Trophy },
+    { key: "clutch", label: "Clutch", hint: "1vX round win as the last alive", icon: Crown },
+    { key: "kill", label: "Kill", hint: "Any elimination", icon: Sword },
+    { key: "double_kill", label: "Double kill", hint: "Two in quick succession", icon: Sword },
+    { key: "triple_kill", label: "Triple kill", hint: "3K", icon: Sword },
+    { key: "quadra_kill", label: "Quadra kill", hint: "4K", icon: Sword },
+    { key: "ace", label: "Ace", hint: "Full team wipe (5K)", icon: Fire },
+    { key: "knife", label: "Knife kill", hint: "Melee elimination", icon: Knife },
+    { key: "death", label: "Death", hint: "Your deaths", icon: Skull },
+    { key: "assist", label: "Assist", hint: "Assisted eliminations", icon: Handshake },
+    {
+      key: "spike_detonated",
+      label: "Spike detonated",
+      hint: "A spike you planted exploded",
+      icon: Bomb,
+    },
+    { key: "spike_defused", label: "Spike defused", hint: "You defused the spike", icon: Wrench },
+  ];
 
-export type StepKey =
-  | "welcome"
-  | "storage"
-  | "video"
-  | "audio"
-  | "clips"
-  | "auto"
-  | "done";
+export type StepKey = "welcome" | "storage" | "video" | "audio" | "clips" | "auto" | "done";
 
 // Ordered so the essentials needed for a first clip (storage → quality → audio →
 // hotkey) come first; auto-capture is `optional` and reachable via a "Finish

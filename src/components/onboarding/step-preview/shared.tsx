@@ -1,3 +1,6 @@
+/* eslint-disable react-refresh/only-export-components --
+   Shared preview primitives: sample data + helpers are deliberately co-located
+   with the small presentational components that use them. */
 import { cn } from "@/lib/utils";
 
 // The right-hand panel is purely VISUAL and mirrors the REAL app UI as closely
@@ -12,7 +15,13 @@ export type Sample = { title: string; img: string; dur: string; meta: string; wo
 export const SAMPLE_CLIPS: Sample[] = [
   { title: "Ace on Haven", img: "/onboarding/clip-1.jpg", dur: "0:18", meta: "Ace", won: true },
   { title: "1v3 Clutch", img: "/onboarding/clip-2.jpg", dur: "0:24", meta: "Clutch", won: true },
-  { title: "Triple kill", img: "/onboarding/clip-3.jpg", dur: "0:12", meta: "Triple kill", won: false },
+  {
+    title: "Triple kill",
+    img: "/onboarding/clip-3.jpg",
+    dur: "0:12",
+    meta: "Triple kill",
+    won: false,
+  },
   { title: "Spike defuse", img: "/onboarding/clip-4.jpg", dur: "0:09", meta: "Defuse", won: true },
 ];
 
@@ -21,12 +30,18 @@ export const hideOnError = (e: React.SyntheticEvent<HTMLImageElement>) => {
 };
 
 /** Card shell mirroring the real clip card / toast container. */
-export function Surface({ children, className }: { children: React.ReactNode; className?: string }) {
+export function Surface({
+  children,
+  className,
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
   return (
     <div
       className={cn(
         "w-full overflow-hidden rounded-xl border border-border/60 bg-card shadow-lg",
-        className
+        className,
       )}
     >
       {children}
@@ -71,7 +86,7 @@ export function WinPill({ won }: { won: boolean }) {
     <span
       className={cn(
         "pointer-events-none absolute top-2 right-2 rounded-full px-2 py-0.5 text-[10px] font-bold text-white",
-        won ? "bg-success/90" : "bg-destructive/90"
+        won ? "bg-success/90" : "bg-destructive/90",
       )}
     >
       {won ? "WIN" : "LOSS"}
@@ -130,13 +145,11 @@ export function Equalizer({ active }: { active: boolean }) {
           key={i}
           className={cn(
             "w-1 origin-bottom rounded-full",
-            active ? "bg-primary hako-eq-bar" : "bg-muted-foreground/30"
+            active ? "bg-primary hako-eq-bar" : "bg-muted-foreground/30",
           )}
           style={{
             height: `${b.h}%`,
-            animation: active
-              ? `hako-eq ${b.dur}ms ease-in-out ${b.d}ms infinite`
-              : undefined,
+            animation: active ? `hako-eq ${b.dur}ms ease-in-out ${b.d}ms infinite` : undefined,
           }}
         />
       ))}

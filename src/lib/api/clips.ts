@@ -140,11 +140,7 @@ export async function clipAudioTracks(id: number): Promise<AudioTrackInfo[]> {
  * `hakoclip://` streaming scheme (WebView2 blocks cross-scheme fetch by CORS;
  * the `<video>` element is exempt). `end` is clamped to the file size in Rust.
  */
-export async function readClipRange(
-  id: number,
-  start: number,
-  end: number,
-): Promise<ArrayBuffer> {
+export async function readClipRange(id: number, start: number, end: number): Promise<ArrayBuffer> {
   return invoke<ArrayBuffer>("read_clip_range", { id, start, end });
 }
 

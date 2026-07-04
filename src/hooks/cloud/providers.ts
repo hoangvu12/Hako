@@ -27,13 +27,8 @@ export function useCloudProviders() {
 export function useAddProvider() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({
-      config,
-      secrets,
-    }: {
-      config: ProviderConfig;
-      secrets: ProviderSecrets;
-    }) => cloudAddProvider(config, secrets),
+    mutationFn: ({ config, secrets }: { config: ProviderConfig; secrets: ProviderSecrets }) =>
+      cloudAddProvider(config, secrets),
     onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.cloudProviders }),
   });
 }

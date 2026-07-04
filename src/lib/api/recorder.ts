@@ -113,7 +113,7 @@ export async function listWindows(): Promise<WindowTarget[]> {
 export async function startCapture(
   hwnd: number,
   targetFps?: number,
-  adapterIndex?: number
+  adapterIndex?: number,
 ): Promise<void> {
   await invoke("start_capture", { hwnd, targetFps, adapterIndex });
 }

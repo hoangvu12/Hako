@@ -20,8 +20,7 @@ export function DoneStep({ draft }: { draft: Settings }) {
           You're all set
         </h1>
         <p className="mt-1 max-w-md text-sm text-muted-foreground duration-700 animate-in fade-in">
-          Hako is ready. Launch Valorant and your moments will be captured
-          automatically.
+          Hako is ready. Launch Valorant and your moments will be captured automatically.
         </p>
       </div>
       <Panel title="Your setup">
@@ -31,9 +30,7 @@ export function DoneStep({ draft }: { draft: Settings }) {
           </span>
         </Row>
         <Row label="Quality">
-          <span className="text-sm text-muted-foreground capitalize">
-            {draft.quality_preset}
-          </span>
+          <span className="text-sm text-muted-foreground capitalize">{draft.quality_preset}</span>
         </Row>
         <Row label="Save-clip hotkey">
           <span className="text-sm text-muted-foreground">{draft.save_hotkey}</span>

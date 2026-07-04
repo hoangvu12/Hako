@@ -13,7 +13,7 @@ export function ClipResultBadge({ clip }: { clip: ClipRecord }) {
     <span
       className={cn(
         "pointer-events-none absolute top-2 right-2 z-20 rounded-full px-2 py-0.5 text-[10px] font-bold text-white",
-        clip.won ? "bg-success/90" : "bg-destructive/90"
+        clip.won ? "bg-success/90" : "bg-destructive/90",
       )}
     >
       {clip.won ? "WIN" : "LOSS"}
@@ -42,11 +42,7 @@ export function ClipBadges({ clip }: { clip: ClipRecord }) {
             className="flex items-center gap-1 rounded-full bg-black/70 py-0.5 pr-2 pl-0.5 text-[10px] font-semibold text-white"
           >
             {badge.icon ? (
-              <img
-                src={badge.icon}
-                alt=""
-                className="size-4 rounded-full object-cover"
-              />
+              <img src={badge.icon} alt="" className="size-4 rounded-full object-cover" />
             ) : (
               <span className="size-4" />
             )}
@@ -59,7 +55,7 @@ export function ClipBadges({ clip }: { clip: ClipRecord }) {
           >
             {badge.label}
           </span>
-        )
+        ),
       )}
     </>
   );

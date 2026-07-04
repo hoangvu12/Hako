@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { CloudArrowUp, CloudCheck, X } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
@@ -27,13 +27,16 @@ export function UploadToast() {
   // drive this effect — together with the early return skipping the ref update —
   // is what made the "complete" toast re-flash forever every linger cycle.
   const [done, setDone] = useState(false);
-  const prevActive = useRef(0);
-  useEffect(() => {
-    const prev = prevActive.current;
-    prevActive.current = active.length;
-    if (prev > 0 && active.length === 0) setDone(true); // queue just drained
+  // Edge-detect during render (not in an effect) so the transition can't cascade
+  // an extra commit. `prevActive` always records the previous count, so once it's
+  // seen the drain it won't re-fire.
+  const [prevActive, setPrevActive] = useState(0);
+  if (prevActive !== active.length) {
+    setPrevActive(active.length);
+    if (prevActive > 0 && active.length === 0)
+      setDone(true); // queue just drained
     else if (active.length > 0) setDone(false); // new activity → drop the flash
-  }, [active.length]);
+  }
 
   // Auto-dismiss the completion flash after the linger. Separate from the edge
   // detector so its `done` transitions can't retrigger the flash.
@@ -47,9 +50,7 @@ export function UploadToast() {
 
   // The clip the toast headlines: the one actually streaming, else the next up.
   const current = active[0];
-  const title = current
-    ? clips?.find((c) => c.id === current.clipId)?.title || "Clip"
-    : null;
+  const title = current ? clips?.find((c) => c.id === current.clipId)?.title || "Clip" : null;
   const queued = Math.max(0, active.length - 1);
 
   return (
@@ -61,13 +62,8 @@ export function UploadToast() {
       {current ? (
         <>
           <div className="flex items-center gap-2">
-            <CloudArrowUp
-              weight="fill"
-              className="size-4 shrink-0 text-primary-text"
-            />
-            <span className="min-w-0 flex-1 truncate text-sm font-medium">
-              {title}
-            </span>
+            <CloudArrowUp weight="fill" className="size-4 shrink-0 text-primary-text" />
+            <span className="min-w-0 flex-1 truncate text-sm font-medium">{title}</span>
             {queued > 0 && (
               <span className="shrink-0 rounded-full bg-secondary px-1.5 py-0.5 text-[10px] font-semibold text-secondary-foreground">
                 +{queued}
@@ -96,11 +92,7 @@ export function UploadToast() {
                 ? "Queued…"
                 : `${formatBytes(current.sent)} / ${formatBytes(current.total)}`}
             </span>
-            <span>
-              {current.status === "uploading"
-                ? fmtRate(current.bytesPerSec)
-                : ""}
-            </span>
+            <span>{current.status === "uploading" ? fmtRate(current.bytesPerSec) : ""}</span>
           </div>
         </>
       ) : (
@@ -113,13 +105,7 @@ export function UploadToast() {
   );
 }
 
-function ProgressBar({
-  pct,
-  indeterminate,
-}: {
-  pct: number;
-  indeterminate: boolean;
-}) {
+function ProgressBar({ pct, indeterminate }: { pct: number; indeterminate: boolean }) {
   return (
     <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-secondary">
       <div

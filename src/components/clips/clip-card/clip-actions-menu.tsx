@@ -28,11 +28,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { revealClip, type ClipRecord } from "@/lib/api";
-import {
-  useCancelUpload,
-  useClipUpload,
-  useUploadClip,
-} from "@/hooks/use-cloud";
+import { useCancelUpload, useClipUpload, useUploadClip } from "@/hooks/use-cloud";
 
 // Shared trigger styling for the "⋯" actions affordance, whether it's the cheap
 // placeholder button or the real Radix trigger.
@@ -98,10 +94,7 @@ export function ClipActionsMenu({
           </DropdownMenuItem>
           {/* Open the confirm dialog rather than deleting outright — the menu
               closes and the alert dialog takes focus. */}
-          <DropdownMenuItem
-            variant="destructive"
-            onSelect={() => setConfirmDelete(true)}
-          >
+          <DropdownMenuItem variant="destructive" onSelect={() => setConfirmDelete(true)}>
             <Trash />
             Delete
           </DropdownMenuItem>
@@ -113,16 +106,13 @@ export function ClipActionsMenu({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete clip?</AlertDialogTitle>
             <AlertDialogDescription>
-              “{clip.title || "Untitled"}” will be permanently removed from your
-              library. This can't be undone.
+              “{clip.title || "Untitled"}” will be permanently removed from your library. This can't
+              be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              onClick={() => onDelete(clip)}
-            >
+            <AlertDialogAction variant="destructive" onClick={() => onDelete(clip)}>
               Delete
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -168,9 +158,7 @@ function CloudUploadItems({ clip }: { clip: ClipRecord }) {
           {upload?.remoteUrl ? (
             <DropdownMenuItem
               onSelect={() => {
-                void navigator.clipboard
-                  .writeText(upload.remoteUrl as string)
-                  .catch(() => {});
+                void navigator.clipboard.writeText(upload.remoteUrl as string).catch(() => {});
               }}
             >
               <LinkSimple />

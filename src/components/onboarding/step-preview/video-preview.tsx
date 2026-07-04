@@ -23,10 +23,7 @@ export function VideoPreview({ draft }: { draft: Settings }) {
   const imgStyle: React.CSSProperties =
     blur || lowBitrate
       ? {
-          filter: [
-            blur ? `blur(${blur}px)` : "",
-            lowBitrate ? "contrast(0.92) saturate(0.85)" : "",
-          ]
+          filter: [blur ? `blur(${blur}px)` : "", lowBitrate ? "contrast(0.92) saturate(0.85)" : ""]
             .filter(Boolean)
             .join(" "),
           // Scale up slightly so the blur doesn't reveal the muted edges.
@@ -53,7 +50,9 @@ export function VideoPreview({ draft }: { draft: Settings }) {
           <div className="mt-0.5 flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
             <span>{clip.meta}</span>
             <Dot />
-            <span>{draft.bitrate_mbps} Mbps {draft.codec.toUpperCase()}</span>
+            <span>
+              {draft.bitrate_mbps} Mbps {draft.codec.toUpperCase()}
+            </span>
           </div>
         </div>
       </div>

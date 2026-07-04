@@ -8,9 +8,7 @@ import * as React from "react";
  * details panel) no longer re-renders ~10×/sec while a clip plays; only the
  * playhead, the time readout, and the overlay seek bar do.
  */
-export function useVideoTime(
-  videoRef: React.RefObject<HTMLVideoElement | null>,
-): number {
+export function useVideoTime(videoRef: React.RefObject<HTMLVideoElement | null>): number {
   const [time, setTime] = React.useState(0);
   React.useEffect(() => {
     const v = videoRef.current;

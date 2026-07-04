@@ -43,12 +43,7 @@ export const ClipRow = React.memo(function ClipRow({
       style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
     >
       {clips.map((clip) => (
-        <ClipCard
-          key={clip.id}
-          clip={clip}
-          onDelete={onDelete}
-          onRename={onRename}
-        />
+        <ClipCard key={clip.id} clip={clip} onDelete={onDelete} onRename={onRename} />
       ))}
     </div>
   );

@@ -29,7 +29,7 @@ export function SelectCheckbox({ id, selected }: { id: number; selected: boolean
         "absolute top-2 left-2 z-30 flex size-6 items-center justify-center rounded-full border-2 outline-none transition-[opacity,background-color,border-color] [filter:drop-shadow(0_1px_2px_rgb(0_0_0/0.55))] focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/60",
         selected
           ? "border-primary bg-primary text-primary-foreground opacity-100"
-          : "border-white bg-transparent text-transparent opacity-0 group-hover:opacity-100 group-data-[selecting]/grid:opacity-100"
+          : "border-white bg-transparent text-transparent opacity-0 group-hover:opacity-100 group-data-[selecting]/grid:opacity-100",
       )}
     >
       <Check weight="bold" className="size-4" />

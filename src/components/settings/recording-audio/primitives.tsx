@@ -16,9 +16,7 @@ export function Panel({
 }) {
   return (
     <section className="rounded-xl border border-border/70 bg-card/40 p-5">
-      {title && (
-        <h2 className="text-sm font-semibold text-foreground">{title}</h2>
-      )}
+      {title && <h2 className="text-sm font-semibold text-foreground">{title}</h2>}
       {hint && <p className="mt-0.5 mb-1 text-xs text-muted-foreground">{hint}</p>}
       <div className="mt-2 divide-y divide-border/60">{children}</div>
     </section>
@@ -100,36 +98,21 @@ export function SourceRow({
         <img
           src={iconUrl}
           alt=""
-          className={cn(
-            "size-4 shrink-0 rounded-[3px] object-contain",
-            !checked && "opacity-60"
-          )}
+          className={cn("size-4 shrink-0 rounded-[3px] object-contain", !checked && "opacity-60")}
         />
       ) : (
         <Icon
-          className={cn(
-            "size-4 shrink-0",
-            checked ? "text-primary-text" : "text-muted-foreground"
-          )}
+          className={cn("size-4 shrink-0", checked ? "text-primary-text" : "text-muted-foreground")}
           weight="fill"
         />
       )}
       <div className="min-w-0 flex-1">
-        <div
-          className={cn(
-            "truncate text-sm font-medium",
-            !checked && "text-foreground/70"
-          )}
-        >
+        <div className={cn("truncate text-sm font-medium", !checked && "text-foreground/70")}>
           {label}
         </div>
-        {hint && (
-          <p className="truncate text-xs text-muted-foreground">{hint}</p>
-        )}
+        {hint && <p className="truncate text-xs text-muted-foreground">{hint}</p>}
       </div>
-      <div className={cn("shrink-0", !checked && "pointer-events-none opacity-40")}>
-        {children}
-      </div>
+      <div className={cn("shrink-0", !checked && "pointer-events-none opacity-40")}>{children}</div>
     </div>
   );
 }

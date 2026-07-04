@@ -6,11 +6,7 @@ import type { OverlayPosition } from "./settings";
  * Kind of in-game overlay toast (mirrors Rust `OverlayKind`, snake_case serde).
  * Drives the toast's icon + accent color in the overlay window.
  */
-export type OverlayKind =
-  | "recording_started"
-  | "recording_stopped"
-  | "clip_saved"
-  | "disk_low";
+export type OverlayKind = "recording_started" | "recording_stopped" | "clip_saved" | "disk_low";
 
 /**
  * One in-game overlay toast (mirrors Rust `OverlayNotice`). Payload of the

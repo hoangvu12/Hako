@@ -87,8 +87,8 @@ export const ClipsBulkBar = React.memo(function ClipsBulkBar({
                   Delete {selectedCount} clip{selectedCount > 1 ? "s" : ""}?
                 </AlertDialogTitle>
                 <AlertDialogDescription>
-                  {selectedCount > 1 ? "These clips" : "This clip"} will be
-                  permanently removed from your library. This can't be undone.
+                  {selectedCount > 1 ? "These clips" : "This clip"} will be permanently removed from
+                  your library. This can't be undone.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>

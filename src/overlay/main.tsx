@@ -10,5 +10,5 @@ import { OverlayApp } from "./overlay-app";
 ReactDOM.createRoot(document.getElementById("overlay-root") as HTMLElement).render(
   <React.StrictMode>
     <OverlayApp />
-  </React.StrictMode>
+  </React.StrictMode>,
 );

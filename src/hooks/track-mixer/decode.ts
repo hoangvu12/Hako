@@ -16,8 +16,7 @@ import { readClipRange } from "@/lib/api";
 export function createStemInput(clipId: number, fileSize: number): Input {
   return new Input({
     source: new CustomSource({
-      read: (start, end) =>
-        readClipRange(clipId, start, end).then((b) => new Uint8Array(b)),
+      read: (start, end) => readClipRange(clipId, start, end).then((b) => new Uint8Array(b)),
       getSize: () => fileSize,
       // Audio is finely interleaved with 20 Mbps video, so decoding a stem
       // touches byte ranges spanning the *whole* file. mediabunny's default

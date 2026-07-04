@@ -2,11 +2,7 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import { MonitorPlay, Gear, type Icon } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 type RailEntry = {
   icon: Icon;
@@ -15,21 +11,16 @@ type RailEntry = {
   exact?: boolean;
 };
 
-const TOP: RailEntry[] = [
-  { icon: MonitorPlay, label: "Clips", to: "/clips" },
-];
+const TOP: RailEntry[] = [{ icon: MonitorPlay, label: "Clips", to: "/clips" }];
 
-const BOTTOM: RailEntry[] = [
-  { icon: Gear, label: "Settings", to: "/settings" },
-];
+const BOTTOM: RailEntry[] = [{ icon: Gear, label: "Settings", to: "/settings" }];
 
 function RailItem({ entry }: { entry: RailEntry }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const Icon = entry.icon;
 
   const active =
-    entry.to != null &&
-    (entry.exact ? pathname === entry.to : pathname.startsWith(entry.to));
+    entry.to != null && (entry.exact ? pathname === entry.to : pathname.startsWith(entry.to));
 
   return (
     <Tooltip>
@@ -41,13 +32,10 @@ function RailItem({ entry }: { entry: RailEntry }) {
             "group relative mx-2 flex items-center justify-center rounded-xl py-2.5 transition-colors",
             active
               ? "bg-white/10 text-foreground"
-              : "text-sidebar-foreground hover:bg-sidebar-accent/60 hover:text-foreground"
+              : "text-sidebar-foreground hover:bg-sidebar-accent/60 hover:text-foreground",
           )}
         >
-          <Icon
-            className="size-6 transition-colors"
-            weight={active ? "fill" : "regular"}
-          />
+          <Icon className="size-6 transition-colors" weight={active ? "fill" : "regular"} />
         </Link>
       </TooltipTrigger>
       <TooltipContent side="right">{entry.label}</TooltipContent>
@@ -64,12 +52,7 @@ export function AppSidebar() {
           aria-label="Hako home"
           className="mx-auto mb-3 flex size-9 items-center justify-center"
         >
-          <img
-            src="/logo.png"
-            alt="Hako"
-            draggable={false}
-            className="size-8 rounded-lg"
-          />
+          <img src="/logo.png" alt="Hako" draggable={false} className="size-8 rounded-lg" />
         </Link>
         {TOP.map((entry) => (
           <RailItem key={entry.label} entry={entry} />

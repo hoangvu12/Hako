@@ -2,12 +2,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { ArrowRight, Info } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
-import {
-  Popover,
-  PopoverClose,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { Popover, PopoverClose, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -24,13 +19,7 @@ import type { Settings } from "@/lib/api";
 const CLIP_LENGTHS = [10, 15, 30, 60, 90, 120, 180];
 
 /** The interactive titlebar pill that opens a hotkey popover. */
-function PillTrigger({
-  children,
-  active,
-}: {
-  children: React.ReactNode;
-  active?: boolean;
-}) {
+function PillTrigger({ children, active }: { children: React.ReactNode; active?: boolean }) {
   return (
     <PopoverTrigger asChild>
       <button
@@ -39,7 +28,7 @@ function PillTrigger({
           "flex h-8 items-center gap-1.5 rounded-lg border px-3 text-xs font-medium transition-colors",
           active
             ? "border-border bg-secondary text-foreground"
-            : "border-border bg-secondary/50 text-foreground hover:bg-secondary"
+            : "border-border bg-secondary/50 text-foreground hover:bg-secondary",
         )}
       >
         {children}
@@ -49,13 +38,7 @@ function PillTrigger({
 }
 
 /** Popover header: section label on the left, "Manage Hotkeys →" on the right. */
-function PopoverHeader({
-  label,
-  onManage,
-}: {
-  label: string;
-  onManage: () => void;
-}) {
+function PopoverHeader({ label, onManage }: { label: string; onManage: () => void }) {
   return (
     <div className="flex items-center justify-between">
       <span className="text-xs font-semibold tracking-wider text-muted-foreground/80 uppercase">
@@ -121,8 +104,8 @@ export function ClipHotkeyPopover() {
         />
         <div className="mt-3">
           <PopoverNote>
-            Press your clip hotkey to instantly save the last few seconds of
-            gameplay. The replay buffer uses no disk space until you clip.
+            Press your clip hotkey to instantly save the last few seconds of gameplay. The replay
+            buffer uses no disk space until you clip.
           </PopoverNote>
         </div>
         <div className="mt-4 flex items-stretch gap-2">
@@ -178,8 +161,8 @@ export function RecordingHotkeyPopover() {
         />
         <div className="mt-3">
           <PopoverNote>
-            Begin and end a recording of any length. Manual long recording is
-            coming soon. The hotkey is saved and ready.
+            Begin and end a recording of any length. Manual long recording is coming soon. The
+            hotkey is saved and ready.
           </PopoverNote>
         </div>
         <div className="mt-4">

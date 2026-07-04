@@ -62,10 +62,7 @@ const valorant: GamePresenter = {
     const agent = a.valorant.agentFor(clip);
     const name = agent?.name ?? clip.agent ?? "";
     const map = a.valorant.mapFor(clip.map)?.name ?? mapNameFromPath(clip.map);
-    return badges(
-      { label: name, icon: agent?.icon, portrait: true },
-      { label: map }
-    );
+    return badges({ label: name, icon: agent?.icon, portrait: true }, { label: map });
   },
   detail(clip, a) {
     const agent = a.valorant.agentFor(clip);
@@ -86,10 +83,7 @@ const lol: GamePresenter = {
     // League's map is fixed by the queue, so the mode ("ARAM") reads better than
     // the map; fall back to the (prettified) map when the mode is unknown.
     const mode = clip.mode || friendlyLolMap(clip.map);
-    return badges(
-      { label: clip.agent ?? "", icon: champ?.icon, portrait: true },
-      { label: mode }
-    );
+    return badges({ label: clip.agent ?? "", icon: champ?.icon, portrait: true }, { label: mode });
   },
   detail(clip, a) {
     return {

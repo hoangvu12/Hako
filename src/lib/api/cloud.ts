@@ -49,12 +49,7 @@ export interface ProviderSecrets {
 }
 
 /** Cloud-upload status values (mirrors Rust `cloud_status`). */
-export type CloudUploadState =
-  | "queued"
-  | "uploading"
-  | "done"
-  | "error"
-  | "canceled";
+export type CloudUploadState = "queued" | "uploading" | "done" | "error" | "canceled";
 
 /** One `cloud_uploads` row (mirrors Rust `CloudUpload`). */
 export interface CloudUpload {
@@ -164,10 +159,7 @@ export async function cloudConnectOAuth(
 }
 
 /** Enqueue a clip for upload. `providerId` defaults to `cloud_default_provider`. */
-export async function cloudUploadClip(
-  clipId: number,
-  providerId?: string,
-): Promise<void> {
+export async function cloudUploadClip(clipId: number, providerId?: string): Promise<void> {
   await invoke("cloud_upload_clip", { clipId, providerId: providerId ?? null });
 }
 

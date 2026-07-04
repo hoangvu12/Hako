@@ -48,8 +48,7 @@ export function useClipKeyboard({
   React.useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable))
-        return;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
       if (saveOpen) {
         if (e.key === "Escape") setSaveOpen(false);
         return;
@@ -96,9 +95,23 @@ export function useClipKeyboard({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [
-    hasPrev, hasNext, onPrev, onNext, onClose, onDelete, togglePlay,
-    toggleFullscreen, saveOpen, trimStart, trimEnd,
+    hasPrev,
+    hasNext,
+    onPrev,
+    onNext,
+    onClose,
+    onDelete,
+    togglePlay,
+    toggleFullscreen,
+    saveOpen,
+    trimStart,
+    trimEnd,
     // setters + videoRef are stable; listed deps mirror the original effect.
-    setSaveOpen, setTrimStart, setTrimEnd, setTouched, setMuted, videoRef,
+    setSaveOpen,
+    setTrimStart,
+    setTrimEnd,
+    setTouched,
+    setMuted,
+    videoRef,
   ]);
 }

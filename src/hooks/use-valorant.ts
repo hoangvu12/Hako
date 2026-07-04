@@ -1,12 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
-import {
-  Events,
-  valorantStatus,
-  type MatchStatePayload,
-  type MatchSummary,
-} from "@/lib/api";
+import { Events, valorantStatus, type MatchStatePayload, type MatchSummary } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 
 /**
@@ -32,9 +27,8 @@ export function useMatchState() {
   const [state, setState] = useState<MatchStatePayload | null>(null);
 
   useEffect(() => {
-    const unlisten = listen<MatchStatePayload>(
-      Events.MatchStateChanged,
-      (e) => setState(e.payload)
+    const unlisten = listen<MatchStatePayload>(Events.MatchStateChanged, (e) =>
+      setState(e.payload),
     );
     return () => {
       unlisten.then((off) => off()).catch(() => {});
@@ -53,9 +47,7 @@ export function useMatchSummary() {
   const [summary, setSummary] = useState<MatchSummary | null>(null);
 
   useEffect(() => {
-    const unlisten = listen<MatchSummary>(Events.MatchSummary, (e) =>
-      setSummary(e.payload)
-    );
+    const unlisten = listen<MatchSummary>(Events.MatchSummary, (e) => setSummary(e.payload));
     return () => {
       unlisten.then((off) => off()).catch(() => {});
     };

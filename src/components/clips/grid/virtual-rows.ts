@@ -8,7 +8,7 @@ export type VirtualRow =
 
 export function flattenSections(
   sections: { key: string; label: string; clips: ClipRecord[] }[],
-  columns: number
+  columns: number,
 ): VirtualRow[] {
   const rows: VirtualRow[] = [];
   for (const sec of sections) {

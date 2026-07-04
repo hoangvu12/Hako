@@ -34,8 +34,7 @@ export function eventIconFor(label: string): { Icon: PhosphorIcon; tint: string 
   if (l.includes("clutch")) return { Icon: Fire, tint: "text-warning" };
   if (l.includes("knife")) return { Icon: Knife, tint: "text-white" };
   if (l.includes("defus")) return { Icon: ShieldCheck, tint: "text-info" };
-  if (l.includes("spike") || l.includes("detonat"))
-    return { Icon: Bomb, tint: "text-destructive" };
+  if (l.includes("spike") || l.includes("detonat")) return { Icon: Bomb, tint: "text-destructive" };
   if (l.includes("death")) return { Icon: Skull, tint: "text-destructive" };
   if (l.includes("assist")) return { Icon: Handshake, tint: "text-info" };
   // Kills (single + multi-kill + ace) and anything unrecognised.

@@ -1,18 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 
-import {
-  cloudUploadStatus,
-  type CloudUpload,
-  type CloudUploadState,
-} from "@/lib/api";
+import { cloudUploadStatus, type CloudUpload, type CloudUploadState } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 import { useClipProgress, useProgressMap, type LiveProgress } from "./upload-store";
 
-export const TERMINAL: ReadonlySet<CloudUploadState> = new Set([
-  "done",
-  "error",
-  "canceled",
-]);
+export const TERMINAL: ReadonlySet<CloudUploadState> = new Set(["done", "error", "canceled"]);
 
 /** A clip's upload as the UI needs it: the persisted row merged with live bytes
  * and throughput while it's streaming. */

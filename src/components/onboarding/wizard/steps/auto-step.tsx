@@ -38,10 +38,7 @@ export function AutoStep({
         <Panel title="Auto-captured events">
           {EVENT_LABELS.map((ev) => (
             <Row key={ev.key} label={ev.label} hint={ev.hint}>
-              <Switch
-                checked={draft.events[ev.key]}
-                onCheckedChange={() => toggleEvent(ev.key)}
-              />
+              <Switch checked={draft.events[ev.key]} onCheckedChange={() => toggleEvent(ev.key)} />
             </Row>
           ))}
         </Panel>

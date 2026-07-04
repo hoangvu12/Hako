@@ -29,10 +29,7 @@ export function ClipsStep({ draft, set }: { draft: Settings; set: WizardSet }) {
             allowClear={false}
           />
         </Row>
-        <Row
-          label="Clip length"
-          hint="Seconds the hotkey captures (capped at the buffer length)."
-        >
+        <Row label="Clip length" hint="Seconds the hotkey captures (capped at the buffer length).">
           <Select
             value={String(draft.clip_seconds)}
             onValueChange={(v) => set("clip_seconds", Number(v))}

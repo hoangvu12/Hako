@@ -15,8 +15,7 @@ import { queryKeys } from "@/lib/query-keys";
  * the returned CDN URLs — the app has no CSP restriction (`csp: null`).
  */
 
-const AGENTS_URL =
-  "https://valorant-api.com/v1/agents?isPlayableCharacter=true";
+const AGENTS_URL = "https://valorant-api.com/v1/agents?isPlayableCharacter=true";
 const MAPS_URL = "https://valorant-api.com/v1/maps";
 const GAMEMODES_URL = "https://valorant-api.com/v1/gamemodes";
 
@@ -112,11 +111,8 @@ async function fetchAssets(): Promise<AssetData> {
     // backgroundGradientColors are 8-digit hex without "#" (RGBA); the webview
     // is Chromium, so #RRGGBBAA is fine. Build a diagonal sweep of the agent's
     // signature colors.
-    const cols = (a.backgroundGradientColors ?? [])
-      .filter(Boolean)
-      .map((c) => `#${c}`);
-    const gradient =
-      cols.length >= 2 ? `linear-gradient(135deg, ${cols.join(", ")})` : "";
+    const cols = (a.backgroundGradientColors ?? []).filter(Boolean).map((c) => `#${c}`);
+    const gradient = cols.length >= 2 ? `linear-gradient(135deg, ${cols.join(", ")})` : "";
     return {
       uuid: a.uuid,
       name: a.displayName,

@@ -1,11 +1,7 @@
 import { CaretDown, Check } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { OptionRow } from "./option-row";
 import { chipActive, chipBase, chipIdle, type Option } from "./types";
@@ -38,10 +34,7 @@ export function MultiSelectFilter({
           <CaretDown className="size-3 opacity-60" />
         </button>
       </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        className={cn("p-1.5", hasArt ? "w-64" : "w-56")}
-      >
+      <PopoverContent align="start" className={cn("p-1.5", hasArt ? "w-64" : "w-56")}>
         <ScrollArea viewportClassName="max-h-80">
           <div className="flex flex-col gap-0.5">
             {options.map((o) => {
@@ -76,7 +69,7 @@ export function MultiSelectFilter({
                           fit,
                           // Over a gradient the image is the agent-select
                           // texture: keep it faint so the colors carry.
-                          gradient && "opacity-40 mix-blend-overlay"
+                          gradient && "opacity-40 mix-blend-overlay",
                         )}
                       />
                     ) : null}
@@ -89,7 +82,7 @@ export function MultiSelectFilter({
                         "relative flex size-4 shrink-0 items-center justify-center rounded border",
                         on
                           ? "border-primary bg-primary text-primary-foreground"
-                          : "border-white/60 bg-black/30"
+                          : "border-white/60 bg-black/30",
                       )}
                     >
                       {on ? <Check weight="bold" className="size-3" /> : null}

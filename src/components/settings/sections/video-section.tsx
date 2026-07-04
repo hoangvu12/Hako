@@ -37,8 +37,7 @@ export function VideoSection({
       />
       <Panel title="Recording Quality">
         <p className="pb-4 text-xs text-muted-foreground">
-          Higher settings use more resources. If you have issues, try a
-          lower one.
+          Higher settings use more resources. If you have issues, try a lower one.
         </p>
         {/* Preset cards: Low / Standard / High / Custom. */}
         <div className="grid grid-cols-2 gap-3 pb-4">
@@ -63,11 +62,11 @@ export function VideoSection({
         {/* Custom-only knobs — for a preset these are implied by the card. */}
         {draft.quality_preset === "custom" && (
           <>
-            <Row label="Resolution" hint="Output size; capture is downscaled to fit (never upscaled).">
-              <Select
-                value={draft.resolution}
-                onValueChange={(v) => set("resolution", v)}
-              >
+            <Row
+              label="Resolution"
+              hint="Output size; capture is downscaled to fit (never upscaled)."
+            >
+              <Select value={draft.resolution} onValueChange={(v) => set("resolution", v)}>
                 <SelectTrigger size="sm" className="w-44">
                   <SelectValue />
                 </SelectTrigger>
@@ -155,10 +154,7 @@ export function VideoSection({
           </Select>
         </Row>
         <Row label="Codec" hint="Video codec for saved clips.">
-          <Select
-            value={draft.codec}
-            onValueChange={(v) => set("codec", v)}
-          >
+          <Select value={draft.codec} onValueChange={(v) => set("codec", v)}>
             <SelectTrigger size="sm" className="w-28">
               <SelectValue />
             </SelectTrigger>

@@ -1,9 +1,4 @@
-import {
-  createRootRoute,
-  createRoute,
-  createRouter,
-  redirect,
-} from "@tanstack/react-router";
+import { createRootRoute, createRoute, createRouter, redirect } from "@tanstack/react-router";
 
 import { AppLayout } from "@/components/app-layout";
 // `clips` is the landing route, so it stays eager (in the boot bundle). The
@@ -43,12 +38,7 @@ const settingsRoute = createRoute({
     typeof search.section === "string" ? { section: search.section } : {},
 }).lazy(() => import("@/routes/settings").then((d) => d.Route));
 
-const routeTree = rootRoute.addChildren([
-  indexRoute,
-  clipsRoute,
-  clipDetailRoute,
-  settingsRoute,
-]);
+const routeTree = rootRoute.addChildren([indexRoute, clipsRoute, clipDetailRoute, settingsRoute]);
 
 export const router = createRouter({
   routeTree,

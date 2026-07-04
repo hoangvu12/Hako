@@ -32,7 +32,7 @@ export function OptionRow({
             // disappears on the dark popover.
             on
               ? "border-primary bg-primary text-primary-foreground"
-              : "border-muted-foreground/40 bg-white/[0.03]"
+              : "border-muted-foreground/40 bg-white/[0.03]",
           )}
         >
           {on ? <Check weight="bold" className="size-3" /> : null}
@@ -42,13 +42,7 @@ export function OptionRow({
           {on ? <Check weight="bold" className="size-3.5" /> : null}
         </span>
       )}
-      {icon ? (
-        <img
-          src={icon}
-          alt=""
-          className="size-5 shrink-0 rounded object-cover"
-        />
-      ) : null}
+      {icon ? <img src={icon} alt="" className="size-5 shrink-0 rounded object-cover" /> : null}
       <span className="truncate">{label}</span>
     </>
   );

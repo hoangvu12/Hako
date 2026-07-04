@@ -27,18 +27,10 @@ export function SectionHero({
 
 /** A bordered card grouping related rows, with an optional heading. Children are
  * divided by hairlines (use <Row> for each). */
-export function Panel({
-  title,
-  children,
-}: {
-  title?: string;
-  children: React.ReactNode;
-}) {
+export function Panel({ title, children }: { title?: string; children: React.ReactNode }) {
   return (
     <section className="rounded-xl border border-border/70 bg-card/40 p-5">
-      {title && (
-        <h2 className="mb-2 text-sm font-semibold text-foreground">{title}</h2>
-      )}
+      {title && <h2 className="mb-2 text-sm font-semibold text-foreground">{title}</h2>}
       <div className="divide-y divide-border/60">{children}</div>
     </section>
   );
@@ -88,14 +80,11 @@ export function PresetCard({
         "relative flex flex-col rounded-lg border p-3 text-left transition-colors",
         selected
           ? "border-primary bg-primary/10"
-          : "border-border/70 bg-card/40 hover:border-border hover:bg-accent/40"
+          : "border-border/70 bg-card/40 hover:border-border hover:bg-accent/40",
       )}
     >
       {selected && (
-        <Check
-          weight="bold"
-          className="absolute top-2.5 right-2.5 size-4 text-primary-text"
-        />
+        <Check weight="bold" className="absolute top-2.5 right-2.5 size-4 text-primary-text" />
       )}
       <span className="text-sm font-semibold">{title}</span>
       <span className="mt-1 text-xs text-muted-foreground">{blurb}</span>

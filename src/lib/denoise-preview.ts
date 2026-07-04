@@ -56,9 +56,7 @@ let rnnoisePromise: Promise<Rnnoise> | null = null;
 
 /** Lazy-load (and cache) the RNNoise wasm module on first use. */
 function loadRnnoise(): Promise<Rnnoise> {
-  return (rnnoisePromise ??= import("@shiguredo/rnnoise-wasm").then((m) =>
-    m.Rnnoise.load(),
-  ));
+  return (rnnoisePromise ??= import("@shiguredo/rnnoise-wasm").then((m) => m.Rnnoise.load()));
 }
 
 /**

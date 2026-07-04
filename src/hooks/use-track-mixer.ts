@@ -116,8 +116,7 @@ export function useTrackMixer({
         // Use the cleaned buffer when this stem is noise-cancelled and its
         // denoised version is ready; otherwise fall back to the raw decode.
         const buffer =
-          (denoiseSetRef.current.has(idx) && denoisedRef.current.get(idx)) ||
-          rawBuffer;
+          (denoiseSetRef.current.has(idx) && denoisedRef.current.get(idx)) || rawBuffer;
         if (!gain || startMedia >= buffer.duration) continue;
         const node = graph.ctx.createBufferSource();
         node.buffer = buffer;
@@ -135,8 +134,12 @@ export function useTrackMixer({
   // --- Decode stems, build the graph, engage live mixing. Re-runs per clip. ---
   React.useEffect(() => {
     if (!hasStems) {
+      // This effect is inherently side-effectful (async decode + audio graph),
+      // so the no-stems reset can't move to render phase.
+      /* eslint-disable react-hooks/set-state-in-effect */
       setActive(false);
       setDecoding(false);
+      /* eslint-enable react-hooks/set-state-in-effect */
       return;
     }
     let cancelled = false;
@@ -204,6 +207,9 @@ export function useTrackMixer({
       }
     })();
 
+    // Capture the (stable, never-reassigned) denoise cache now so the cleanup
+    // doesn't read `denoisedRef.current` after it may have changed.
+    const denoised = denoisedRef.current;
     return () => {
       cancelled = true;
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
@@ -218,7 +224,7 @@ export function useTrackMixer({
       input?.dispose();
       // Denoised buffers belong to the closing context — drop them so the next
       // clip recomputes against its own graph.
-      denoisedRef.current.clear();
+      denoised.clear();
       (built?.ctx ?? ctx)?.close().catch(() => {});
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -241,9 +247,7 @@ export function useTrackMixer({
     let cancelled = false;
 
     // Stems that still need their cleaned buffer computed — the ones to spin on.
-    const todo = indices.filter(
-      (idx) => !denoisedRef.current.has(idx) && graph.buffers.has(idx),
-    );
+    const todo = indices.filter((idx) => !denoisedRef.current.has(idx) && graph.buffers.has(idx));
     setDenoisingIdx(todo);
 
     (async () => {
@@ -286,7 +290,10 @@ export function useTrackMixer({
     const onPlay = () => {
       const ctx = graphRef.current?.ctx;
       if (!ctx) return;
-      ctx.resume().then(() => resync(v.currentTime)).catch(() => {});
+      ctx
+        .resume()
+        .then(() => resync(v.currentTime))
+        .catch(() => {});
     };
     const onPause = () => {
       stopSources();

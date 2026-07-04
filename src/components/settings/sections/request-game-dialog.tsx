@@ -15,12 +15,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { queryKeys } from "@/lib/query-keys";
-import {
-  addCustomGame,
-  listWindows,
-  type CustomGame,
-  type WindowTarget,
-} from "@/lib/api";
+import { addCustomGame, listWindows, type CustomGame, type WindowTarget } from "@/lib/api";
 
 /**
  * "Request a Game" picker (Medal's RAG): list the open windows Hako doesn't
@@ -58,9 +53,7 @@ export function RequestGameDialog({
   });
 
   const q = query.trim().toLowerCase();
-  const filtered = q
-    ? windows.filter((w) => w.title.toLowerCase().includes(q))
-    : windows;
+  const filtered = q ? windows.filter((w) => w.title.toLowerCase().includes(q)) : windows;
 
   return (
     <>
@@ -82,8 +75,8 @@ export function RequestGameDialog({
           <AlertDialogHeader className="sm:items-start sm:text-left">
             <AlertDialogTitle>Add a game</AlertDialogTitle>
             <AlertDialogDescription>
-              Pick the game's window. Hako will record it now and auto-record it
-              whenever it's running.
+              Pick the game's window. Hako will record it now and auto-record it whenever it's
+              running.
             </AlertDialogDescription>
           </AlertDialogHeader>
 
@@ -129,7 +122,7 @@ export function RequestGameDialog({
                   onClick={() => add.mutate(w.hwnd)}
                   className={cn(
                     "flex w-full items-center gap-2 border-b border-border/40 px-3 py-2.5 text-left text-sm transition-colors last:border-b-0",
-                    "hover:bg-accent/50 disabled:cursor-not-allowed disabled:opacity-50"
+                    "hover:bg-accent/50 disabled:cursor-not-allowed disabled:opacity-50",
                   )}
                 >
                   <span className="min-w-0 flex-1 truncate">{w.title}</span>
