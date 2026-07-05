@@ -8,6 +8,34 @@ batch of "collapse the scattered duplicates" cleanups surfaced by two survey age
 Everything below is **committed on `main`** and verified (tsc + `vite build` for
 frontend; `cargo check` + 202 tests + clippy for Rust). Working tree is clean.
 
+## Capture session — HDR / mid-session format changes (`v1.9.0`)
+
+Investigated a report that Rematch smart capture produced **no clips** for a full
+HDR session. From the logs: the game encoded fine for ~5 min, then every frame was
+rejected 18 ms after a **swapchain recreation** entering a match — 162k identical
+`encode error` warnings (20 MB) and zero clips. Root cause: the pipeline (staging
+pool + converter + encoder) is pinned to the **first frame's format**, and the
+resize-follow restarted only on a **size** change. A same-size **format** change
+(HDR toggle / fullscreen transition) slipped through, and `CopySubresourceRegion`
+returns `void`, so the mismatched copy failed silently and wedged the encoder.
+
+| Commit | What |
+|--------|------|
+| `5568703` | `fix(capture):` restart on backbuffer **format** change (not just size); rate-limit encode errors + surface a real diagnostic instead of a silent 20 MB log; HDR-aware converter color space (HDR10 PQ/BT.2020, scRGB) with a one-time **SDR fallback** when the driver can't tone-map (this NVIDIA GPU returns `E_NOTIMPL`). Mirrors the usable-SDR outcome of Medal's `PREFER_HICOLOR` path. |
+
+Verified on NVIDIA hardware: new `convert::tests::tonemaps_hdr10_to_nv12` (a real
+10-bit `R10G10B10A2` surface now converts to NV12 via the fallback — the exact path
+that died), `nvenc_encodes_nv12_from_convert` unregressed, `cargo check
+--all-targets` + clippy clean.
+
+> **⚠ Open verification for the next session:** the **format-change restart** is
+> verified by compile + mirroring the proven resize-restart path, **not** by a live
+> HDR match (needs the actual game toggling HDR mid-session). If auto-capture still
+> drops an HDR session, the new rate-limited `ERROR` line names the cause in one
+> line instead of 162k. Separately, the logs showed hako's core **starting twice**
+> (~43s apart, two capture pipelines) — not the encode-failure trigger, left as a
+> follow-up; it doubles GPU load.
+
 ## Follow-up session (branch `refactor/integration-engine`)
 
 Picked up #7 and #8. Net outcome: **#7 fully implemented** (engine + finalizer) and
