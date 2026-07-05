@@ -870,23 +870,31 @@ fn hook_capture_thread(
         Ok(mut running) => {
             let _ = ready_tx.send(Ok(()));
             emit_loop(&app, target_fps, &stop, &shared);
+            // Snapshot whether the USER stopped the capture *before* teardown: the
+            // pipeline shares its `stop` flag with this session handle, and
+            // `teardown()` sets it to end the source/encode threads — so a read after
+            // teardown always looks stopped and could never tell a user stop from an
+            // internal restart request. (This was a latent bug: it silently disabled
+            // every restart below, since `!stop.load()` was always false post-teardown.)
+            let user_stopped = stop.load(Ordering::Acquire);
             running.teardown();
             log_capture_health(&app, target_fps, &shared, started.elapsed());
-            // The source loop asks for a restart when the game changed resolution
-            // mid-capture, so the new clip records at the game's native size. Do it
-            // from a detached thread: the restart's `stop_capture_with` joins THIS
-            // capture thread, so this thread must be free to return first.
-            // `start_capture_with` re-detects the new size and builds a fresh clip
-            // buffer. A pending user stop wins (don't resurrect a stopped capture).
-            if shared.resize_restart.load(Ordering::Acquire) && !stop.load(Ordering::Acquire) {
+            // A restart is requested when the game changed resolution/format mid-
+            // capture (source loop) or the hardware encoder wedged and needs a fresh
+            // session (encode thread self-heal). Rebuild from a detached thread: the
+            // restart's `stop_capture_with` joins THIS capture thread, so this thread
+            // must be free to return first. `start_capture_with` re-detects the game's
+            // current size/format and builds a fresh clip buffer + encoder. A pending
+            // user stop wins (don't resurrect a capture the user ended).
+            if shared.resize_restart.load(Ordering::Acquire) && !user_stopped {
                 let app = app.clone();
                 std::thread::spawn(move || {
                     crate::commands::stop_capture_with(&app);
                     match crate::commands::start_capture_with(&app, hwnd_raw, None, None) {
-                        Ok(()) => tracing::info!("capture: restarted at the game's new resolution"),
-                        Err(e) => {
-                            tracing::warn!("capture: restart after resolution change failed: {e}")
-                        }
+                        Ok(()) => tracing::info!(
+                            "capture: pipeline rebuilt (resolution/format change or encoder recovery)"
+                        ),
+                        Err(e) => tracing::warn!("capture: pipeline rebuild failed: {e}"),
                     }
                 });
             }
@@ -2066,8 +2074,21 @@ fn encode_thread(
     // rarely, and shout once when it's clear the whole session is being dropped.
     let mut enc_ok: u64 = 0;
     let mut enc_err: u64 = 0;
+    // Consecutive failures with no success between them. Reset on any encoded frame.
+    // A sustained run means the hardware encoder is *wedged* (a swapchain recreation
+    // entering a match, or a driver hiccup, left it rejecting every submit — NVENC
+    // returns EINVAL once then EAGAIN forever because a failed `avcodec_send_frame`
+    // never drained the queue). Unlike `declared_dead` (gated on lifetime `enc_ok ==
+    // 0`), this catches a wedge that strikes *after* a long healthy stretch — the
+    // real-world case: encoded fine for 7 min, then a mid-match swapchain recreate
+    // wedged it and produced zero clips for the rest of the session.
+    let mut consecutive_enc_err: u64 = 0;
     let mut warned_encode = false;
     let mut declared_dead = false;
+    // Ask for exactly one pipeline rebuild per encode-thread instance (each rebuild
+    // spins up a fresh instance with this reset), so a persistent failure can't spin
+    // a tight restart loop.
+    let mut self_healed = false;
 
     while let Ok((staging, ts)) = filled_rx.recv() {
         let nv12 = nv12_ring[idx % nv12_ring.len()].clone();
@@ -2143,6 +2164,7 @@ fn encode_thread(
                     match encoder.encode(prev, fill) {
                         Ok(pkts) => {
                             enc_ok += 1;
+                            consecutive_enc_err = 0;
                             record(pkts);
                         }
                         Err(e) => note_encode_error(
@@ -2150,9 +2172,12 @@ fn encode_thread(
                             "gap-fill encode",
                             &shared,
                             enc_ok,
+                            fps,
                             &mut enc_err,
+                            &mut consecutive_enc_err,
                             &mut warned_encode,
                             &mut declared_dead,
+                            &mut self_healed,
                         ),
                     }
                     fill += 1;
@@ -2163,6 +2188,7 @@ fn encode_thread(
         match encoder.encode(&nv12, pts) {
             Ok(pkts) => {
                 enc_ok += 1;
+                consecutive_enc_err = 0;
                 record(pkts);
             }
             Err(e) => note_encode_error(
@@ -2170,9 +2196,12 @@ fn encode_thread(
                 "encode",
                 &shared,
                 enc_ok,
+                fps,
                 &mut enc_err,
+                &mut consecutive_enc_err,
                 &mut warned_encode,
                 &mut declared_dead,
+                &mut self_healed,
             ),
         }
         last_pts = Some(pts);
@@ -2193,7 +2222,7 @@ fn encode_thread(
     tracing::info!("hako-encode thread exiting");
 }
 
-/// Record and rate-limit a hardware-encode failure from the encode thread.
+/// Record and rate-limit a hardware-encode failure, and self-heal a wedged encoder.
 ///
 /// A wedged encoder can reject every frame; without rate-limiting that buried one
 /// session in 162k identical warnings (20 MB) while silently producing empty
@@ -2201,17 +2230,29 @@ fn encode_thread(
 /// clear the whole session is being dropped (many errors, zero successes) — logs a
 /// single ERROR naming the likely cause. `enc_errors` on `Shared` also lets the
 /// health summary flag the failure.
+///
+/// Beyond logging, a sustained run of `consecutive` failures (no encoded frame
+/// between them) means the encoder is genuinely wedged — commonly a mid-match
+/// swapchain recreation (a game entering a match / toggling HDR or fullscreen)
+/// that left NVENC returning EINVAL-then-EAGAIN with no way to drain. We then set
+/// `resize_restart` once to rebuild the whole pipeline with a fresh encoder
+/// session, which clears the wedge. This fires even after a long healthy stretch
+/// (it counts a *run*, not lifetime successes), unlike the zero-successes check.
 #[allow(clippy::too_many_arguments)]
 fn note_encode_error(
     err: &str,
     context: &str,
     shared: &Shared,
     enc_ok: u64,
+    fps: u32,
     enc_err: &mut u64,
+    consecutive: &mut u64,
     warned: &mut bool,
     declared_dead: &mut bool,
+    self_healed: &mut bool,
 ) {
     *enc_err += 1;
+    *consecutive += 1;
     shared.enc_errors.fetch_add(1, Ordering::Relaxed);
     if !*warned {
         tracing::warn!(
@@ -2229,10 +2270,25 @@ fn note_encode_error(
             dropped_frames = *enc_err,
             "capture: the hardware encoder has rejected every frame so far and produced none — \
              clips for this session will be EMPTY. This typically follows a backbuffer format / HDR \
-             change the encoder couldn't consume, or a GPU/driver encode failure. The pipeline now \
-             restarts on format changes; if this persists the encoder or driver is refusing the input."
+             change the encoder couldn't consume, or a GPU/driver encode failure. The pipeline \
+             self-heals below; if it persists the encoder or driver is refusing the input."
         );
         *declared_dead = true;
+    }
+    // Self-heal a wedged encoder: ~1s of unbroken failures (≥30 even at low fps) is
+    // never normal steady state — `encode()` drains after every successful send, so
+    // a healthy pipeline won't accumulate consecutive send failures. Rebuild once.
+    let heal_threshold = (fps as u64).max(30);
+    if !*self_healed && *consecutive >= heal_threshold {
+        tracing::error!(
+            consecutive_errors = *consecutive,
+            "capture: hardware encoder wedged (every frame rejected for ~1s straight) — rebuilding \
+             the capture pipeline with a fresh encoder to recover. Usually follows a mid-match \
+             swapchain recreation (entering a match / HDR or fullscreen toggle) that put NVENC in a \
+             bad state; without this, clips stay empty for the rest of the session."
+        );
+        shared.resize_restart.store(true, Ordering::Release);
+        *self_healed = true;
     }
 }
 
@@ -2375,6 +2431,63 @@ fn emit_loop(app: &AppHandle, target_fps: u32, stop: &Arc<AtomicBool>, shared: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sustained run of encode failures after a healthy stretch (the real
+    /// 7-min-then-wedge case: `enc_ok` large, not zero) must request exactly one
+    /// pipeline rebuild once ~1s of unbroken failures accumulates — and a single
+    /// success in between must reset the run so a transient blip never restarts.
+    #[test]
+    fn wedged_encoder_self_heals_after_a_healthy_stretch() {
+        let shared = Shared::default();
+        let fps = 60u32;
+        let heal_at = (fps as u64).max(30);
+        let enc_ok = 20_000u64; // long healthy stretch already encoded
+        let (mut enc_err, mut consec) = (0u64, 0u64);
+        let (mut warned, mut dead, mut healed) = (false, false, false);
+
+        // A transient burst that stops short of the threshold, then a success,
+        // must NOT restart (consecutive resets on the encoded frame).
+        for _ in 0..(heal_at - 1) {
+            note_encode_error(
+                "avcodec_send_frame(nvenc): Resource temporarily unavailable",
+                "encode",
+                &shared,
+                enc_ok,
+                fps,
+                &mut enc_err,
+                &mut consec,
+                &mut warned,
+                &mut dead,
+                &mut healed,
+            );
+        }
+        assert!(!healed, "must not heal before the threshold");
+        assert!(!shared.resize_restart.load(Ordering::Acquire));
+        consec = 0; // an encoded frame landed → run resets
+
+        // Now a solid wedge: threshold consecutive failures with no success.
+        for _ in 0..heal_at {
+            note_encode_error(
+                "avcodec_send_frame(nvenc): Resource temporarily unavailable",
+                "encode",
+                &shared,
+                enc_ok,
+                fps,
+                &mut enc_err,
+                &mut consec,
+                &mut warned,
+                &mut dead,
+                &mut healed,
+            );
+        }
+        assert!(healed, "a sustained failure run must trigger the self-heal");
+        assert!(
+            shared.resize_restart.load(Ordering::Acquire),
+            "self-heal must request a pipeline rebuild"
+        );
+        // `enc_ok` never hit zero, so the empty-clip cold-start path stays quiet.
+        assert!(!dead, "declared_dead is for zero-success sessions, not this one");
+    }
 
     #[test]
     fn scaled_output_fits_by_height_and_never_upscales() {
