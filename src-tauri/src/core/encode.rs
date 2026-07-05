@@ -1028,7 +1028,16 @@ mod tests {
         }
         let bgra = bgra.unwrap();
 
-        let conv = Converter::new(&d3d_device, &ctx, w, h, w, h).expect("converter");
+        let conv = Converter::new(
+            &d3d_device,
+            &ctx,
+            w,
+            h,
+            w,
+            h,
+            windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+        )
+        .expect("converter");
 
         let mut enc = match Encoder::new_qsv(&d3d_device, &ctx, w, h, fps) {
             Ok(e) => e,
@@ -1144,7 +1153,16 @@ mod tests {
         }
         let bgra = bgra.unwrap();
 
-        let conv = Converter::new(&d3d_device, &ctx, w, h, w, h).expect("converter");
+        let conv = Converter::new(
+            &d3d_device,
+            &ctx,
+            w,
+            h,
+            w,
+            h,
+            windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+        )
+        .expect("converter");
         let mut enc = match Encoder::new_nvenc(&d3d_device, &ctx, w, h, fps) {
             Ok(e) => e,
             Err(e) => panic!("Encoder::new_nvenc failed: {e}"),

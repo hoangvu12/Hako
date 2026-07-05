@@ -43,7 +43,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::core::audio::{self, AudioCapture, AudioControl, AudioMeta};
 use crate::core::buffer::{AudioRing, BufferStats, PacketRing};
 use crate::core::clock::{MasterClock, TICKS_PER_SECOND};
-use crate::core::convert::Converter;
+use crate::core::convert::{self, Converter};
 use crate::core::cursor_overlay;
 use crate::core::device;
 use crate::core::disk_buffer::DiskPacketRing;
@@ -111,6 +111,11 @@ struct Shared {
     enc_packets: AtomicU64,
     /// Total compressed bytes produced (for the bitrate readout).
     enc_bytes: AtomicU64,
+    /// Frames the hardware encoder rejected (`avcodec_send_frame` errors). Nonzero
+    /// with `enc_packets == 0` means clips for this session are empty — surfaced
+    /// once (not per frame) so a wedged encoder can't flood the log, and read by
+    /// the health summary to flag the failure.
+    enc_errors: AtomicU64,
     /// True while the target window is minimized — the game stops presenting, so
     /// capture is necessarily frozen. Checked each tick in `hook_source_loop`.
     minimized: AtomicBool,
@@ -989,12 +994,24 @@ fn run_hook_pipeline(
     if width < 2 || height < 2 {
         return Err(format!("hook reported an unusable size ({width}x{height})"));
     }
+    // The captured/staging format (TYPELESS/sRGB backbuffers mapped to their typed
+    // UNORM equivalent). Threaded into the converter (input color space) and into
+    // the source loop (a mid-session change to it means the game toggled HDR /
+    // recreated its swapchain, so the pipeline must rebuild — like a size change).
+    let src_format = typed_capture_format(first_desc.Format);
+    let hdr = convert::is_hdr_format(src_format);
     tracing::info!(
         format = first_desc.Format.0,
+        typed_format = src_format.0,
+        hdr,
         width,
         height,
-        "hook: first backbuffer frame — format/size (note: non-BGRA/RGBA UNORM \
-         formats may be rejected by the BGRA→NV12 VideoProcessor)"
+        "hook: first backbuffer frame — format/size ({})",
+        if hdr {
+            "HDR backbuffer — tone-mapping to SDR for encode"
+        } else {
+            "SDR backbuffer"
+        }
     );
 
     // The in-frame freeze overlay needs a D2D-targetable staging format (the same
@@ -1050,6 +1067,7 @@ fn run_hook_pipeline(
                     vendor,
                     width,
                     height,
+                    src_format,
                     target_fps,
                     enc_cfg,
                     overlay_capable,
@@ -1094,6 +1112,7 @@ fn run_hook_pipeline(
                     context,
                     width,
                     height,
+                    src_format,
                     target_fps,
                     dirty_frame_skip,
                     filled_tx,
@@ -1136,6 +1155,11 @@ fn hook_source_loop(
     context: ID3D11DeviceContext,
     width: u32,
     height: u32,
+    // The typed backbuffer format the staging pool + converter were built for. A
+    // persistent change to it (an HDR toggle / swapchain recreation entering a
+    // match) means the pinned copy→convert→encode chain no longer matches, so we
+    // restart the pipeline the same way a resolution change does.
+    src_format: DXGI_FORMAT,
     fps: u32,
     dirty_frame_skip: bool,
     filled_tx: SyncSender<(ID3D11Texture2D, i64)>,
@@ -1211,13 +1235,17 @@ fn hook_source_loop(
     let mut same_frames: u64 = 0;
     let mut warned_static = false;
 
-    // Resize-follow: confirm a new backbuffer size persists for a few frames before
-    // restarting the pipeline at it, so a transient swapchain blip (alt-tab,
-    // fullscreen↔borderless toggle, a one-frame recreate) doesn't bounce capture.
-    // Mismatched frames are dropped until then.
+    // Reconfigure-follow: confirm a new backbuffer size *or format* persists for a
+    // few frames before restarting the pipeline to match, so a transient swapchain
+    // blip (alt-tab, fullscreen↔borderless toggle, a one-frame recreate) doesn't
+    // bounce capture. Mismatched frames are dropped until then. Format is tracked
+    // alongside size because an SDR↔HDR flip (10-bit HDR toggled on entering a
+    // match) recreates the swapchain with the *same* dimensions but a new format —
+    // which the pinned staging pool / converter can't consume, so the copy or the
+    // encode silently breaks until we rebuild at the new format.
     const RESIZE_CONFIRM_FRAMES: u32 = 8;
-    let mut resize_pending: Option<(u32, u32)> = None;
-    let mut resize_frames: u32 = 0;
+    let mut reconfig_pending: Option<(u32, u32, DXGI_FORMAT)> = None;
+    let mut reconfig_frames: u32 = 0;
 
     // ── Freeze-overlay keep-alive ────────────────────────────────────────────
     // While minimized the game stops presenting, so the source loop normally just
@@ -1345,43 +1373,56 @@ fn hook_source_loop(
         shared.width.store(width, Ordering::Relaxed);
         shared.height.store(height, Ordering::Relaxed);
 
-        // Follow the game's resolution. It can switch mid-capture (a 16:9 menu → a
-        // 4:3 stretched match), reopening a differently-sized backbuffer; we record
-        // at whatever size the game renders rather than padding it. The clip's
-        // dimensions are fixed once it opens (the buffer holds one resolution), so
-        // we can't change the output in place — restart the pipeline at the new
-        // size. Confirm it holds for a few frames first (a transient swapchain blip
-        // shouldn't bounce capture), and drop the mismatched frames meanwhile —
-        // copying the old-sized box out of a resized texture is what leaves a stale
-        // strip.
-        let (live_w, live_h) = {
+        // Follow the game's resolution *and* backbuffer format. Either can switch
+        // mid-capture: a 16:9 menu → a 4:3 stretched match reopens a differently-
+        // sized backbuffer, and toggling HDR (or a fullscreen transition entering a
+        // match) reopens a differently-*formatted* one (e.g. 8-bit BGRA → 10-bit
+        // R10G10B10A2). We record at whatever the game renders rather than padding
+        // or mis-converting it. The clip's dimensions/format are fixed once it opens
+        // (the buffer holds one config), so we can't change the output in place —
+        // restart the pipeline at the new one. Confirm it holds for a few frames
+        // first (a transient swapchain blip shouldn't bounce capture), and drop the
+        // mismatched frames meanwhile — copying the old-sized box out of a resized
+        // texture leaves a stale strip, and copying across a changed format is a
+        // silent no-op (CopySubresourceRegion returns void) that would otherwise
+        // wedge the encoder on garbage.
+        let (live_w, live_h, live_fmt) = {
             let mut d = D3D11_TEXTURE2D_DESC::default();
             unsafe { shared_tex.GetDesc(&mut d) };
-            (d.Width & !1, d.Height & !1)
+            (d.Width & !1, d.Height & !1, typed_capture_format(d.Format))
         };
-        if live_w >= 2 && live_h >= 2 && (live_w != width || live_h != height) {
-            match resize_pending {
-                Some((pw, ph)) if pw == live_w && ph == live_h => resize_frames += 1,
+        let size_ok = live_w >= 2 && live_h >= 2;
+        let reconfigured =
+            size_ok && (live_w != width || live_h != height || live_fmt != src_format);
+        if reconfigured {
+            match reconfig_pending {
+                Some((pw, ph, pf)) if pw == live_w && ph == live_h && pf == live_fmt => {
+                    reconfig_frames += 1
+                }
                 _ => {
-                    resize_pending = Some((live_w, live_h));
-                    resize_frames = 1;
+                    reconfig_pending = Some((live_w, live_h, live_fmt));
+                    reconfig_frames = 1;
                 }
             }
-            if resize_frames >= RESIZE_CONFIRM_FRAMES {
+            if reconfig_frames >= RESIZE_CONFIRM_FRAMES {
                 tracing::info!(
                     from_w = width,
                     from_h = height,
+                    from_format = src_format.0,
                     to_w = live_w,
                     to_h = live_h,
-                    "capture: game changed resolution mid-capture — restarting to record at new size"
+                    to_format = live_fmt.0,
+                    to_hdr = convert::is_hdr_format(live_fmt),
+                    "capture: backbuffer reconfigured mid-capture (size and/or format) \
+                     — restarting to match"
                 );
                 shared.resize_restart.store(true, Ordering::Release);
                 break;
             }
             continue;
-        } else if resize_pending.is_some() {
-            resize_pending = None;
-            resize_frames = 0;
+        } else if reconfig_pending.is_some() {
+            reconfig_pending = None;
+            reconfig_frames = 0;
         }
 
         // ── Part B: per-tick dirty probe → static watchdog + duplicate skip ──
@@ -1844,6 +1885,9 @@ fn encode_thread(
     encode_vendor: device::Vendor,
     width: u32,
     height: u32,
+    // Captured (staging) texture format — selects the converter's input color
+    // space so an HDR backbuffer is tone-mapped rather than mislabeled as SDR.
+    src_format: DXGI_FORMAT,
     fps: u32,
     enc_cfg: EncodeSettings,
     overlay_capable: bool,
@@ -1880,6 +1924,7 @@ fn encode_thread(
         height,
         out_w,
         out_h,
+        src_format,
     ) {
         Ok(c) => c,
         Err(e) => {
@@ -2014,6 +2059,15 @@ fn encode_thread(
     let mut last_pts: Option<i64> = None;
     let mut prev_nv12: Option<ID3D11Texture2D> = None;
     let mut warned_convert = false;
+    // Encode-error accounting. A wedged hardware encoder can reject *every* frame
+    // (e.g. after an unhandled backbuffer/HDR change, or a driver hiccup); logging
+    // each one buried a real 20 MB / 162k-line session in one identical warning and
+    // silently produced empty clips. Track ok/err counts, warn once, then only
+    // rarely, and shout once when it's clear the whole session is being dropped.
+    let mut enc_ok: u64 = 0;
+    let mut enc_err: u64 = 0;
+    let mut warned_encode = false;
+    let mut declared_dead = false;
 
     while let Ok((staging, ts)) = filled_rx.recv() {
         let nv12 = nv12_ring[idx % nv12_ring.len()].clone();
@@ -2087,8 +2141,19 @@ fn encode_thread(
                 let mut fill = lp + 1;
                 while fill < fill_until {
                     match encoder.encode(prev, fill) {
-                        Ok(pkts) => record(pkts),
-                        Err(e) => tracing::warn!("gap-fill encode error: {e}"),
+                        Ok(pkts) => {
+                            enc_ok += 1;
+                            record(pkts);
+                        }
+                        Err(e) => note_encode_error(
+                            &e,
+                            "gap-fill encode",
+                            &shared,
+                            enc_ok,
+                            &mut enc_err,
+                            &mut warned_encode,
+                            &mut declared_dead,
+                        ),
                     }
                     fill += 1;
                 }
@@ -2096,8 +2161,19 @@ fn encode_thread(
         }
 
         match encoder.encode(&nv12, pts) {
-            Ok(pkts) => record(pkts),
-            Err(e) => tracing::warn!("encode error: {e}"),
+            Ok(pkts) => {
+                enc_ok += 1;
+                record(pkts);
+            }
+            Err(e) => note_encode_error(
+                &e,
+                "encode",
+                &shared,
+                enc_ok,
+                &mut enc_err,
+                &mut warned_encode,
+                &mut declared_dead,
+            ),
         }
         last_pts = Some(pts);
         prev_nv12 = Some(nv12);
@@ -2107,7 +2183,57 @@ fn encode_thread(
     if let Ok(pkts) = encoder.flush() {
         record(pkts);
     }
+    if enc_err > 0 {
+        tracing::warn!(
+            encoded_ok = enc_ok,
+            encode_errors = enc_err,
+            "hako-encode thread exiting with encode errors — some or all frames were dropped"
+        );
+    }
     tracing::info!("hako-encode thread exiting");
+}
+
+/// Record and rate-limit a hardware-encode failure from the encode thread.
+///
+/// A wedged encoder can reject every frame; without rate-limiting that buried one
+/// session in 162k identical warnings (20 MB) while silently producing empty
+/// clips. This warns once, then only every 600th error, and — the first time it's
+/// clear the whole session is being dropped (many errors, zero successes) — logs a
+/// single ERROR naming the likely cause. `enc_errors` on `Shared` also lets the
+/// health summary flag the failure.
+#[allow(clippy::too_many_arguments)]
+fn note_encode_error(
+    err: &str,
+    context: &str,
+    shared: &Shared,
+    enc_ok: u64,
+    enc_err: &mut u64,
+    warned: &mut bool,
+    declared_dead: &mut bool,
+) {
+    *enc_err += 1;
+    shared.enc_errors.fetch_add(1, Ordering::Relaxed);
+    if !*warned {
+        tracing::warn!(
+            "{context} error (first occurrence; identical errors are rate-limited): {err}"
+        );
+        *warned = true;
+    } else if *enc_err % 600 == 0 {
+        tracing::warn!(
+            total_encode_errors = *enc_err,
+            "{context} still failing (rate-limited): {err}"
+        );
+    }
+    if !*declared_dead && enc_ok == 0 && *enc_err >= 120 {
+        tracing::error!(
+            dropped_frames = *enc_err,
+            "capture: the hardware encoder has rejected every frame so far and produced none — \
+             clips for this session will be EMPTY. This typically follows a backbuffer format / HDR \
+             change the encoder couldn't consume, or a GPU/driver encode failure. The pipeline now \
+             restarts on format changes; if this persists the encoder or driver is refusing the input."
+        );
+        *declared_dead = true;
+    }
 }
 
 fn log_capture_health(app: &AppHandle, target_fps: u32, shared: &Shared, elapsed: Duration) {
@@ -2116,6 +2242,7 @@ fn log_capture_health(app: &AppHandle, target_fps: u32, shared: &Shared, elapsed
     let handed = shared.handed.load(Ordering::Relaxed);
     let skipped = shared.skipped_dup.load(Ordering::Relaxed);
     let encoded = shared.enc_packets.load(Ordering::Relaxed);
+    let enc_errors = shared.enc_errors.load(Ordering::Relaxed);
     let bytes = shared.enc_bytes.load(Ordering::Relaxed);
     let elapsed_label = format!("{secs:.1}");
     let encoded_fps = encoded as f64 / secs;
@@ -2146,10 +2273,23 @@ fn log_capture_health(app: &AppHandle, target_fps: u32, shared: &Shared, elapsed
         encoded_fps = %encoded_fps_label,
         duplicate_skip_pct = %skipped_pct_label,
         encoded_mbits = %mbits_label,
+        encode_errors = enc_errors,
         background_governor = bg_governor,
         overlay_active,
         "capture health summary"
     );
+
+    // Frames arriving but nothing (or almost nothing) encoding is the empty-clip
+    // signature — flag it distinctly from a merely slow encoder so the log points
+    // at the encode path rather than looking healthy.
+    if secs >= 5.0 && enc_errors > 0 && encoded == 0 {
+        tracing::error!(
+            enc_errors,
+            handed,
+            "capture health: the encoder produced ZERO frames while rejecting {enc_errors} — \
+             clips will be empty (likely an HDR/format the encoder can't consume)"
+        );
+    }
 
     if secs >= 5.0 && encoded > 0 && encoded_fps < target_fps as f64 * 0.80 {
         tracing::warn!(

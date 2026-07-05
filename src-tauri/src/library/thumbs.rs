@@ -575,7 +575,16 @@ mod tests {
                 .expect("bgra")
         };
         let bgra = bgra.unwrap();
-        let conv = Converter::new(&dev, &ctx, w, h, w, h).expect("conv");
+        let conv = Converter::new(
+            &dev,
+            &ctx,
+            w,
+            h,
+            w,
+            h,
+            windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+        )
+        .expect("conv");
         let mut enc = Encoder::new_qsv(&dev, &ctx, w, h, fps).expect("enc");
         let mut ring = PacketRing::new(fps, 30);
         for i in 0..30i64 {
@@ -644,7 +653,16 @@ mod tests {
                 .expect("bgra")
         };
         let bgra = bgra.unwrap();
-        let conv = Converter::new(&dev, &ctx, w, h, w, h).expect("conv");
+        let conv = Converter::new(
+            &dev,
+            &ctx,
+            w,
+            h,
+            w,
+            h,
+            windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+        )
+        .expect("conv");
         let mut enc = Encoder::new_qsv(&dev, &ctx, w, h, fps).expect("enc");
         // ~2s so multiple keyframes (1s GOP) exist for the strip to sample.
         let mut ring = PacketRing::new(fps, 30);
