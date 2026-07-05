@@ -8,6 +8,46 @@ batch of "collapse the scattered duplicates" cleanups surfaced by two survey age
 Everything below is **committed on `main`** and verified (tsc + `vite build` for
 frontend; `cargo check` + 202 tests + clippy for Rust). Working tree is clean.
 
+## Capture session — self-heal a wedged encoder (`v1.9.1`)
+
+The `v1.9.0` HDR fix **worked** (logs 2026-07-05 15:04: `hdr=true`, tone-mapping to
+SDR, encoder opened, auto-capture started, encoded cleanly for ~7 min). But clips
+were **still empty** — a *different* failure. At 15:10:57–15:11:06 the game recreated
+its swapchain **3× (new shared handles), identical size (2560×1440) and format (24)**.
+The first two were survived; the third wedged NVENC (`Invalid argument` → then
+`Resource temporarily unavailable`/EAGAIN forever). Root causes:
+
+1. **No recovery from a wedge.** `Encoder::encode` sends-then-drains; when
+   `avcodec_send_frame` returns EAGAIN it returns `Err` *without* draining, so the
+   queue never clears → permanent wedge. Nothing rebuilt the encoder. The v1.9.0
+   `declared_dead` self-diagnosis is gated on `enc_ok == 0`, so after a 7-min healthy
+   stretch it can **never** fire on a mid-session wedge. None of the size/format,
+   minimize-restore, or static-watchdog restart triggers apply (geometry unchanged,
+   never minimized, content still changing).
+2. **Latent restart-guard bug** (present since `21bb1a4`): `teardown()` sets the
+   shared `stop` flag, and the restart guard read `!stop.load()` *after* teardown —
+   always false — so **no restart ever spawned**. Confirmed: "restarted at" /
+   "restarting to match" / "reconfigured mid-capture" appear **zero times** in every
+   historical log. This silently disabled the whole v1.9.0 format-change restart too.
+
+| Commit | What |
+|--------|------|
+| `31ae4d0` | `fix(capture):` self-heal a wedged encoder — track *consecutive* encode failures (reset on any success) and, after ~1s of unbroken failures, request one full pipeline rebuild (`resize_restart`) with a fresh NVENC session. Fires even after a long healthy stretch, unlike the zero-success check. Also fixes the restart guard to snapshot the **user**-stop before teardown, so an internal restart is no longer mistaken for a user stop (this re-enables the v1.9.0 format-change restart as well). |
+
+Verified: new `core::capture::tests::wedged_encoder_self_heals_after_a_healthy_stretch`
+(large `enc_ok`, sustained failures → exactly one `resize_restart`, and a success
+resets the run); all 44 `core::` tests pass incl. `tonemaps_hdr10_to_nv12` /
+`nvenc_encodes_nv12_from_convert`; `cargo check --bin hako` + clippy clean.
+
+> **⚠ Open verification:** the self-heal is verified by unit test + code path, not a
+> live wedge. Residual risk: a *permanently* un-encodable input would loop (rebuild →
+> wedge → rebuild every ~2–3s) — not the observed case (the encoder demonstrably
+> worked for 7 min, so a fresh session recovers), but if logs later show repeated
+> "hardware encoder wedged … rebuilding" ERRORs, add a global rebuild-count cap. The
+> proactive "restart on any shared-handle change" was **deliberately not** added: the
+> handle changed 3× here and 2 were survived, so restarting on each would cause *more*
+> disruption than the self-heal, which restarts only when the encoder truly dies.
+
 ## Capture session — HDR / mid-session format changes (`v1.9.0`)
 
 Investigated a report that Rematch smart capture produced **no clips** for a full
