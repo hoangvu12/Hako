@@ -1,6 +1,6 @@
 [package]
 name = "hako"
-version = "1.9.1"
+version = "1.9.2"
 description = "Performance-first game clip recorder"
 authors = ["Hako"]
 edition = "2021"
