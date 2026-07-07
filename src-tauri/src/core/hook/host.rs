@@ -25,6 +25,7 @@
 #![allow(dead_code)]
 
 use std::ffi::c_void;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -58,6 +59,18 @@ const SYNCHRONIZE: u32 = 0x0010_0000;
 const EVENT_MODIFY_STATE: u32 = 0x0002;
 /// `WAIT_OBJECT_0` — a 0-timeout wait returns this when the object is signaled.
 const WAIT_OBJECT_0: u32 = 0x0000_0000;
+
+/// `CREATE_NO_WINDOW` (`CreateProcess` flag). We spawn the vendored OBS helpers
+/// (`get-graphics-offsets64.exe`, `inject-helper64.exe`), which are **console**
+/// subsystem binaries. From our GUI process, `CreateProcess` would otherwise pop
+/// a black console window for each — and because we spawn them on every capture
+/// (re)start (including the mid-session self-heal after a resolution/format
+/// change), that window flashes and steals focus from the fullscreen game on
+/// every re-hook (e.g. each goal-replay cut in Rematch). This flag runs them
+/// with a hidden console while still leaving stdout redirectable, so
+/// `get-graphics-offsets`' output is captured unchanged. Same flag OBS/Medal use
+/// for these helpers.
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// How long to wait for the injected DLL to create its IPC objects before giving
 /// up (the loader maps the DLL asynchronously via the user32 hook).
@@ -365,6 +378,7 @@ pub fn cleanup_stale_hook_dll_copies() {
 fn get_graphics_offsets(dir: &std::path::Path) -> Result<GraphicsOffsets, String> {
     let exe = dir.join("get-graphics-offsets64.exe");
     let out = Command::new(&exe)
+        .creation_flags(CREATE_NO_WINDOW) // hide the helper's console window (see const)
         .output()
         .map_err(|e| format!("run {}: {e}", exe.display()))?;
     if !out.status.success() {
@@ -620,6 +634,7 @@ fn inject(dll: &Path, helper_dir: &Path, thread_id: u32) -> Result<(), String> {
         return Err(format!("missing {}", helper.display()));
     }
     let status = Command::new(&helper)
+        .creation_flags(CREATE_NO_WINDOW) // hide the helper's console window (see const)
         .arg(dll.as_os_str())
         .arg("1") // anti_cheat = safe SetWindowsHookEx path
         .arg(thread_id.to_string())
