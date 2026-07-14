@@ -153,6 +153,13 @@ impl GameCtx {
         commands::restart_capture_now(&self.app);
     }
 
+    /// Apply an audio-track-layout change that was deferred while a match was
+    /// recording (see [`commands::PendingAudioLayout`]) — audio-only, no video
+    /// re-hook. Cheap no-op when nothing is pending; safe to call every tick.
+    pub fn apply_pending_audio_layout(&self) {
+        commands::apply_pending_audio_layout(&self.app);
+    }
+
     /// Push the live recorder-status snapshot (drives the titlebar indicator).
     ///
     /// Gated two ways, since this fires on every game-loop tick (1–2 Hz × three

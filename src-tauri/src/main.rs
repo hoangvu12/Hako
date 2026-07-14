@@ -108,6 +108,11 @@ fn main() {
         // `update_settings` when the change lands mid-session and consumed by the
         // orchestrator (which splits the clip before restarting).
         .manage(commands::ConfigRestartSignal::default())
+        // An audio-track-layout change (separate-tracks, mic on/off, mode/device)
+        // that arrived mid-match: deferred here and applied audio-only by the
+        // orchestrator once the match ends (no video re-hook). See
+        // `commands::apply_pending_audio_layout`.
+        .manage(commands::PendingAudioLayout::default())
         // Shared live-match context (map/mode/agent) for tagging manual F9 clips;
         // kept current by the Valorant orchestrator.
         .manage(valorant::live::LiveMatchState::default())

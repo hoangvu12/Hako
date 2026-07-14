@@ -42,6 +42,17 @@ pub fn take_config_restart_request(app: &AppHandle) -> bool {
         .map_or(false, |s| s.0.swap(false, Ordering::AcqRel))
 }
 
+/// A pending audio-track-*layout* change (Separate tracks, mic on/off, mode
+/// switch, device add/remove) that arrived *while a Mode-B session was
+/// recording. A session declares its audio stream count/indices at match start
+/// and can't absorb a mid-file track-count change, so we defer: persist the
+/// setting now and apply it audio-only the moment no session is teeing (the
+/// current match ended). Coalesces multiple mid-match toggles — the apply re-reads
+/// the latest persisted config, so only a bool is needed. Never triggers a video
+/// re-hook; a video change takes the full-restart path and clears this instead.
+#[derive(Default)]
+pub struct PendingAudioLayout(pub AtomicBool);
+
 /// Snapshot of recorder state. Mirrors the `RecorderStatus` interface in
 /// `src/lib/api.ts`; serde serializes with these exact field names.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1196,15 +1207,21 @@ pub fn update_settings(
     //    mono flip that keeps the same track layout (`UpdateAudioCaptureAndProcessor`);
     //  - a video-encode change or an audio *layout* change (mic on/off, source
     //    add/remove, separate-tracks, mode switch) needs a capture RESTART.
-    let (old_hotkey, restart_needed, audio_live, freeze_changed, cursor_changed) = {
+    let (old_hotkey, restart_needed, audio_layout_changed, audio_live, freeze_changed, cursor_changed) = {
         let mut guard = settings.0.lock().map_err(|_| "settings poisoned")?;
         let prev_hotkey = guard.save_hotkey.clone();
         let old_audio = guard.effective_audio();
         let video_changed = guard.video_capture_config_differs(&next);
         let audio_changed = old_audio != new_audio;
-        // Layout-preserving change → hot-apply; layout change → restart.
-        let audio_live = audio_changed && old_audio.layout_eq(&new_audio);
-        let restart_needed = video_changed || (audio_changed && !old_audio.layout_eq(&new_audio));
+        let layout_eq = old_audio.layout_eq(&new_audio);
+        // Three tiers of capture-affecting change:
+        //  - video encode → full capture RESTART (re-hooks the game; picks up audio too);
+        //  - audio *layout* only (mic on/off, separate-tracks, mode/device add-remove)
+        //    → AUDIO-ONLY restart, video hook untouched (no game re-hook);
+        //  - layout-preserving audio (volume/mute, device swap, mono) → hot-apply live.
+        let restart_needed = video_changed;
+        let audio_layout_changed = !video_changed && audio_changed && !layout_eq;
+        let audio_live = audio_changed && layout_eq;
         // The freeze overlay is a per-frame flag — applied live, never a restart.
         let freeze_changed = guard.freeze_overlay != new_freeze_overlay;
         // "Record mouse cursor" is likewise a per-frame flag — applied live.
@@ -1213,6 +1230,7 @@ pub fn update_settings(
         (
             prev_hotkey,
             restart_needed,
+            audio_layout_changed,
             audio_live,
             freeze_changed,
             cursor_changed,
@@ -1236,7 +1254,14 @@ pub fn update_settings(
     // handed to the orchestrator for a clean clip split (see
     // `restart_capture_for_config_change` / `ConfigRestartSignal`).
     if restart_needed {
+        // A full restart rebuilds audio from persisted settings too, so any
+        // deferred audio-layout change is superseded — drop it.
+        if let Some(p) = app.try_state::<PendingAudioLayout>() {
+            p.0.store(false, Ordering::Release);
+        }
         restart_capture_for_config_change(&app);
+    } else if audio_layout_changed {
+        apply_audio_layout_change(&app, &new_audio);
     } else if audio_live {
         apply_audio_config_live(&app, &new_audio);
     }
@@ -1275,6 +1300,72 @@ fn apply_audio_config_live(app: &AppHandle, audio: &AudioConfig) {
     if let Some(running) = guard.as_ref() {
         running.reconfigure_audio(audio.clone());
         tracing::info!("settings: applied live audio reconfigure (no capture restart)");
+    }
+}
+
+/// Apply an audio-track-*layout* change (Separate tracks, mic on/off, mode switch,
+/// PC-audio device add/remove) without a video re-hook. When nothing is teeing a
+/// Mode-B session into the capture, rebuild the audio subsystem immediately
+/// (`reconfigure_audio_layout`). When a match IS recording, the session's stream
+/// count is fixed for the file, so we can't change tracks mid-write — defer via
+/// [`PendingAudioLayout`], and the orchestrator applies it the instant the match
+/// ends (see [`apply_pending_audio_layout`]). No-op when nothing is capturing (the
+/// change is persisted and picked up at the next start).
+fn apply_audio_layout_change(app: &AppHandle, audio: &AudioConfig) {
+    let state = app.state::<CaptureState>();
+    let guard = match state.0.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    let Some(running) = guard.as_ref() else {
+        return;
+    };
+    if running.has_active_session() {
+        if let Some(p) = app.try_state::<PendingAudioLayout>() {
+            p.0.store(true, Ordering::Release);
+        }
+        tracing::info!(
+            "settings: audio layout changed mid-match; deferring until the current match ends"
+        );
+    } else {
+        running.reconfigure_audio_layout(audio.clone());
+    }
+}
+
+/// If an audio-layout change was deferred while a match was recording (see
+/// [`apply_audio_layout_change`]), apply it now that no session is teeing. Called
+/// on the orchestrator's game-loop tick. Reads the *latest* persisted audio config
+/// so several mid-match toggles coalesce into one rebuild. Cheap no-op when nothing
+/// is pending — a single relaxed atomic load on the hot path.
+pub fn apply_pending_audio_layout(app: &AppHandle) {
+    let Some(pending) = app.try_state::<PendingAudioLayout>() else {
+        return;
+    };
+    if !pending.0.load(Ordering::Acquire) {
+        return;
+    }
+    let state = app.state::<CaptureState>();
+    let guard = match state.0.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    match guard.as_ref() {
+        // Still mid-match — leave the flag set; a later tick applies it once the
+        // match ends.
+        Some(running) if running.has_active_session() => {}
+        Some(running) => {
+            let audio = app
+                .try_state::<SettingsState>()
+                .and_then(|s| s.0.lock().ok().map(|g| g.effective_audio()));
+            if let Some(audio) = audio {
+                running.reconfigure_audio_layout(audio);
+                pending.0.store(false, Ordering::Release);
+                tracing::info!("settings: applied deferred audio layout change after match end");
+            }
+        }
+        // Nothing capturing — the next capture start reads persisted settings and
+        // builds the new track layout itself, so just clear the flag.
+        None => pending.0.store(false, Ordering::Release),
     }
 }
 

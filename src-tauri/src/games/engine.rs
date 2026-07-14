@@ -170,6 +170,9 @@ pub async fn run_live_feed<D: LiveDriver>(ctx: GameCtx, mut driver: D) {
             }
         }
 
+        // Audio-only layout change deferred from mid-match → apply now it's safe.
+        ctx.apply_pending_audio_layout();
+
         ctx.emit_recorder_status();
 
         // The one game-specific step: drive the event source + match lifecycle.

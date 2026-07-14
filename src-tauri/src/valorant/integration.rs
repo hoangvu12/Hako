@@ -199,6 +199,9 @@ async fn run(ctx: GameCtx) {
             }
         }
 
+        // Audio-only layout change deferred from mid-match → apply now it's safe.
+        ctx.apply_pending_audio_layout();
+
         ctx.emit_recorder_status();
 
         // Resolve presence; transient failures skip the tick.

@@ -99,6 +99,9 @@ async fn run(ctx: GameCtx) {
             ctx.restart_capture();
         }
 
+        // Audio-only layout change deferred from mid-match → apply now it's safe.
+        ctx.apply_pending_audio_layout();
+
         // Manage the whole-session recording for Session / Full-match: open one
         // while we're auto-capturing a generic game, save it when capture stops
         // (game exited / disabled / mode changed away).

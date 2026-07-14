@@ -16,7 +16,7 @@ use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -181,6 +181,20 @@ pub struct AudioTrack {
     meta: OnceLock<AudioMeta>,
 }
 
+/// Build a fresh audio-track set (one AAC ring per name, track 0 = master), each
+/// ring sized to `retention_secs`. Shared by [`ClipBuffer::new`] and the live
+/// layout swap ([`ClipBuffer::reset_audio_tracks`]).
+fn build_audio_tracks(names: &[String], retention_secs: u32) -> Vec<AudioTrack> {
+    names
+        .iter()
+        .map(|name| AudioTrack {
+            name: name.clone(),
+            ring: Mutex::new(AudioRing::new(retention_secs)),
+            meta: OnceLock::new(),
+        })
+        .collect()
+}
+
 /// The instant-replay video store: either a RAM ring or a disk-backed segment
 /// ring, chosen per the `buffer_storage` setting. Both hold compressed packets
 /// and expose the same push/slice/stats surface, so the rest of [`ClipBuffer`]
@@ -225,9 +239,16 @@ pub struct ClipBuffer {
     video: VideoStore,
     meta: OnceLock<ClipMeta>,
     /// Per-track compressed AAC rings (filled by the audio thread). Empty when
-    /// audio is disabled; track 0 is the master mix. Layout (count + names) is
-    /// fixed at construction so the muxer/session can declare the streams.
-    audio_tracks: Vec<AudioTrack>,
+    /// audio is disabled; track 0 is the master mix. The *set* is swapped
+    /// atomically on an audio-track-*layout* change (Separate tracks, mic on/off,
+    /// mode switch — see [`Self::reset_audio_tracks`]); readers load an `Arc`
+    /// snapshot so a save that races the swap sees a whole old-or-new set, never a
+    /// torn one. Only the audio thread writes it (during its own restart, when it
+    /// isn't pushing), so the swap is uncontended.
+    audio_tracks: RwLock<Arc<Vec<AudioTrack>>>,
+    /// Retention window (seconds) the per-track AAC rings are sized to — retained
+    /// so a live layout swap can size the new rings the same as the originals.
+    audio_retention_secs: u32,
     /// Wall-clock tick (100 ns) of the first captured video frame — the anchor
     /// that ties video PTS (1/fps units) to absolute audio PTS for muxing.
     video_base: OnceLock<i64>,
@@ -252,14 +273,7 @@ impl ClipBuffer {
         audio_track_names: Vec<String>,
         disk_buffer_dir: Option<PathBuf>,
     ) -> Arc<Self> {
-        let audio_tracks = audio_track_names
-            .into_iter()
-            .map(|name| AudioTrack {
-                name,
-                ring: Mutex::new(AudioRing::new(retention_secs)),
-                meta: OnceLock::new(),
-            })
-            .collect();
+        let audio_tracks = RwLock::new(Arc::new(build_audio_tracks(&audio_track_names, retention_secs)));
         let video = match disk_buffer_dir {
             Some(dir) => match DiskPacketRing::new(dir, fps, retention_secs) {
                 Ok(d) => {
@@ -277,9 +291,28 @@ impl ClipBuffer {
             video,
             meta: OnceLock::new(),
             audio_tracks,
+            audio_retention_secs: retention_secs,
             video_base: OnceLock::new(),
             session: Mutex::new(None),
         })
+    }
+
+    /// Load the current audio-track set (an `Arc` snapshot). Cheap; readers hold
+    /// the snapshot for the duration of one operation so a concurrent layout swap
+    /// can't tear it.
+    fn audio_tracks(&self) -> Arc<Vec<AudioTrack>> {
+        self.audio_tracks.read().unwrap().clone()
+    }
+
+    /// Replace the audio-track layout live for an audio-only restart (Separate
+    /// tracks, mic on/off, mode switch, device add/remove). The new rings are sized
+    /// to the same retention window as the originals. Callers MUST also stop/start
+    /// the audio thread around this and MUST NOT call it while a Mode-B session is
+    /// teeing — the session declares its stream count/indices at match start and
+    /// can't absorb a mid-file change (see `commands::apply_audio_layout_change`).
+    pub fn reset_audio_tracks(&self, names: &[String]) {
+        let fresh = Arc::new(build_audio_tracks(names, self.audio_retention_secs));
+        *self.audio_tracks.write().unwrap() = fresh;
     }
 
     /// The currently-installed session writer, if any (clones the `Arc`).
@@ -314,7 +347,7 @@ impl ClipBuffer {
         if let Some(session) = self.active_session() {
             session.push_audio(track_idx, &pkt);
         }
-        if let Some(track) = self.audio_tracks.get(track_idx) {
+        if let Some(track) = self.audio_tracks().get(track_idx) {
             if let Ok(mut r) = track.ring.lock() {
                 r.push(pkt);
             }
@@ -341,7 +374,7 @@ impl ClipBuffer {
 
     /// The **master** track's AAC stream metadata, once its encoder has opened.
     pub fn audio_meta(&self) -> Option<AudioMeta> {
-        self.audio_tracks
+        self.audio_tracks()
             .first()
             .and_then(|t| t.meta.get().cloned())
     }
@@ -356,7 +389,7 @@ impl ClipBuffer {
     /// a video-only session, leaving every auto-clip silent. See
     /// `valorant::integration::start_match`.
     pub fn audio_track_metas(&self) -> Vec<(String, AudioMeta)> {
-        self.audio_tracks
+        self.audio_tracks()
             .iter()
             .filter_map(|t| t.meta.get().map(|m| (t.name.clone(), m.clone())))
             .collect()
@@ -364,7 +397,7 @@ impl ClipBuffer {
 
     /// Number of audio tracks (0 ⇒ video-only).
     pub fn audio_track_count(&self) -> usize {
-        self.audio_tracks.len()
+        self.audio_tracks().len()
     }
 
     /// Publish the muxing metadata (once, when the encoder is ready).
@@ -375,7 +408,7 @@ impl ClipBuffer {
     /// Publish output track `idx`'s AAC stream metadata (once, when its encoder
     /// opens). No-op for an out-of-range index.
     pub fn set_audio_track_meta(&self, idx: usize, meta: AudioMeta) {
-        if let Some(track) = self.audio_tracks.get(idx) {
+        if let Some(track) = self.audio_tracks().get(idx) {
             let _ = track.meta.set(meta);
         }
     }
@@ -414,11 +447,14 @@ impl ClipBuffer {
         // named MP4 audio stream via `write_clip`.
         let fps = meta.fps.max(1) as i64;
         let video_base = self.video_base.get().copied();
+        // One snapshot of the track set for the whole slice — a concurrent layout
+        // swap can't change the count/indices out from under us mid-save.
+        let audio_tracks = self.audio_tracks();
         let mut track_slices: Vec<(usize, Vec<EncodedPacket>)> = Vec::new();
         if let Some(base) = video_base {
             let start_ticks = base + lo * TICKS_PER_SECOND / fps;
             let end_ticks = base + hi * TICKS_PER_SECOND / fps;
-            for (i, track) in self.audio_tracks.iter().enumerate() {
+            for (i, track) in audio_tracks.iter().enumerate() {
                 if track.meta.get().is_none() {
                     continue; // encoder for this stem never opened — skip
                 }
@@ -439,7 +475,7 @@ impl ClipBuffer {
         let audio: Vec<AudioClip> = track_slices
             .iter()
             .filter_map(|(i, pkts)| {
-                let track = &self.audio_tracks[*i];
+                let track = &audio_tracks[*i];
                 track.meta.get().map(|m| AudioClip {
                     meta: m,
                     name: track.name.as_str(),
@@ -480,8 +516,18 @@ pub struct RunningCapture {
     /// Live audio control: push a layout-preserving change (volume/mute or a
     /// device swap) to the running audio thread without restarting capture
     /// (Medal's `AudioCaptureVolume` / `UpdateAudioCaptureAndProcessor` paths).
-    /// Only valid for `layout_eq` configs; layout/encode changes restart instead.
+    /// Only valid for `layout_eq` configs; a layout change restarts audio-only
+    /// (see [`Self::reconfigure_audio_layout`]); an encode change restarts capture.
     audio_control: Arc<AudioControl>,
+    /// The running audio thread handle, shared with the capture thread (which
+    /// started it and tears it down at end). An audio-track-*layout* change stops
+    /// this thread, resizes the clip's track set, and starts a fresh one — the
+    /// video hook/encoder/ring stay untouched, so the game never sees a re-hook.
+    /// `None` when capturing video-only.
+    audio: Arc<Mutex<Option<AudioCapture>>>,
+    /// The captured game's process id — needed to re-derive the audio plan (the
+    /// `specific_apps` "Game Audio" source) on a live layout change.
+    game_pid: Option<u32>,
 }
 
 impl RunningCapture {
@@ -508,6 +554,41 @@ impl RunningCapture {
     /// (`AudioConfig::layout_eq`) — only device identity, mono, or levels differ.
     pub fn reconfigure_audio(&self, cfg: AudioConfig) {
         self.audio_control.reconfigure(cfg);
+    }
+
+    /// Apply an audio-track-*layout* change (Separate tracks, mic on/off, mode
+    /// switch, PC-audio device add/remove) by restarting **only** the audio
+    /// subsystem: stop the audio thread, resize the clip's track set to the new
+    /// plan, then start a fresh audio thread. The video hook, encoder, and ring are
+    /// untouched — the game never sees a re-injection. Handles 0→N (audio was off),
+    /// N→M, and N→0 (audio fully disabled).
+    ///
+    /// The caller MUST ensure no Mode-B session is teeing into the clip: a session
+    /// declares its audio stream count/indices at match start and can't absorb a
+    /// mid-file track-count change (see `commands::apply_audio_layout_change`).
+    pub fn reconfigure_audio_layout(&self, cfg: AudioConfig) {
+        let names = audio::planned_track_names(&cfg, self.game_pid);
+        let mut slot = match self.audio.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        // Stop the old thread first so it can't push into rings we're about to drop.
+        if let Some(mut a) = slot.take() {
+            a.stop();
+        }
+        // Swap the clip's track set, then seed the new config so the fresh thread
+        // reads it as its initial plan.
+        self.clip.reset_audio_tracks(&names);
+        self.audio_control.reconfigure(cfg);
+        *slot = if self.clip.audio_track_count() > 0 {
+            AudioCapture::start(self.clip.clone(), self.audio_control.clone(), self.game_pid)
+        } else {
+            None
+        };
+        tracing::info!(
+            tracks = names.len(),
+            "settings: applied live audio layout change (no capture restart)"
+        );
     }
 
     /// Toggle the in-frame freeze overlay ("tabbed out" card) on the live capture
@@ -791,6 +872,10 @@ pub fn start_hook(
     // Shared live-audio control: the audio thread reads its initial config here
     // and re-reads it on a pushed volume change (no restart).
     let audio_control = AudioControl::new(audio);
+    // The audio thread handle, shared between the capture thread (which starts it
+    // and tears it down) and `RunningCapture` (which restarts it audio-only on a
+    // layout change). `None` until the pipeline starts it (video-only ⇒ stays None).
+    let audio_slot: Arc<Mutex<Option<AudioCapture>>> = Arc::new(Mutex::new(None));
 
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<std::result::Result<(), String>>();
     let thread = {
@@ -798,6 +883,7 @@ pub fn start_hook(
         let shared = shared.clone();
         let clip = clip.clone();
         let audio_control = audio_control.clone();
+        let audio_slot = audio_slot.clone();
         std::thread::Builder::new()
             .name("hako-capture-hook".into())
             .spawn(move || {
@@ -807,6 +893,7 @@ pub fn start_hook(
                     target_fps,
                     adapter_index,
                     audio_control,
+                    audio_slot,
                     game_pid,
                     stop,
                     shared,
@@ -827,6 +914,8 @@ pub fn start_hook(
             shared,
             hwnd: hwnd_raw,
             audio_control,
+            audio: audio_slot,
+            game_pid,
         }),
         Ok(Err(e)) => {
             let _ = thread.join();
@@ -843,6 +932,7 @@ fn hook_capture_thread(
     target_fps: u32,
     adapter_index: Option<u32>,
     audio_control: Arc<AudioControl>,
+    audio_slot: Arc<Mutex<Option<AudioCapture>>>,
     game_pid: Option<u32>,
     stop: Arc<AtomicBool>,
     shared: Arc<Shared>,
@@ -857,6 +947,7 @@ fn hook_capture_thread(
         target_fps,
         adapter_index,
         audio_control,
+        audio_slot,
         game_pid,
         &stop,
         &shared,
@@ -908,12 +999,14 @@ struct RunningHookPipeline {
     source_stop: Arc<AtomicBool>,
     source_thread: Option<JoinHandle<()>>,
     encode_thread: Option<JoinHandle<()>>,
-    audio: Option<AudioCapture>,
+    /// The audio thread handle, shared with `RunningCapture` (which can restart it
+    /// audio-only on a layout change). Teardown stops it through this slot.
+    audio: Arc<Mutex<Option<AudioCapture>>>,
 }
 
 impl RunningHookPipeline {
     fn teardown(&mut self) {
-        if let Some(mut a) = self.audio.take() {
+        if let Some(mut a) = self.audio.lock().ok().and_then(|mut g| g.take()) {
             a.stop();
         }
         // Stopping the source loop drops its `filled_tx` and the `RunningHook`
@@ -934,6 +1027,7 @@ fn run_hook_pipeline(
     target_fps: u32,
     adapter_index: Option<u32>,
     audio_control: Arc<AudioControl>,
+    audio_slot: Arc<Mutex<Option<AudioCapture>>>,
     game_pid: Option<u32>,
     stop: &Arc<AtomicBool>,
     shared: &Arc<Shared>,
@@ -1132,23 +1226,24 @@ fn run_hook_pipeline(
             .map_err(|e| format!("spawn hook source thread: {e}"))?
     };
 
-    let audio = if clip.audio_track_count() > 0 {
+    if clip.audio_track_count() > 0 {
         match AudioCapture::start(clip.clone(), audio_control, game_pid) {
-            Some(a) => Some(a),
+            Some(a) => {
+                if let Ok(mut slot) = audio_slot.lock() {
+                    *slot = Some(a);
+                }
+            }
             None => {
                 tracing::warn!("audio capture requested but could not start; recording video only");
-                None
             }
         }
-    } else {
-        None
-    };
+    }
 
     Ok(RunningHookPipeline {
         source_stop: stop.clone(),
         source_thread: Some(source_thread),
         encode_thread: Some(encode_thread),
-        audio,
+        audio: audio_slot,
     })
 }
 
