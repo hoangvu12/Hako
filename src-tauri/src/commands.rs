@@ -13,7 +13,7 @@ use crate::core::encode::{self, FfmpegProbe};
 use crate::library::db::{
     rebase_marks, shift_marks, ClipRecord, CustomGame, EventMark, Library, NewClip,
 };
-use crate::settings::{AudioConfig, Settings};
+use crate::settings::{AudioConfig, CaptureChange, Settings};
 
 /// Managed state holding the currently running capture, if any.
 #[derive(Default)]
@@ -1207,34 +1207,18 @@ pub fn update_settings(
     //    mono flip that keeps the same track layout (`UpdateAudioCaptureAndProcessor`);
     //  - a video-encode change or an audio *layout* change (mic on/off, source
     //    add/remove, separate-tracks, mode switch) needs a capture RESTART.
-    let (old_hotkey, restart_needed, audio_layout_changed, audio_live, freeze_changed, cursor_changed) = {
+    let (old_hotkey, change, freeze_changed, cursor_changed) = {
         let mut guard = settings.0.lock().map_err(|_| "settings poisoned")?;
         let prev_hotkey = guard.save_hotkey.clone();
-        let old_audio = guard.effective_audio();
-        let video_changed = guard.video_capture_config_differs(&next);
-        let audio_changed = old_audio != new_audio;
-        let layout_eq = old_audio.layout_eq(&new_audio);
-        // Three tiers of capture-affecting change:
-        //  - video encode → full capture RESTART (re-hooks the game; picks up audio too);
-        //  - audio *layout* only (mic on/off, separate-tracks, mode/device add-remove)
-        //    → AUDIO-ONLY restart, video hook untouched (no game re-hook);
-        //  - layout-preserving audio (volume/mute, device swap, mono) → hot-apply live.
-        let restart_needed = video_changed;
-        let audio_layout_changed = !video_changed && audio_changed && !layout_eq;
-        let audio_live = audio_changed && layout_eq;
+        // The single restart-vs-audio-only-vs-live-vs-nothing decision (pure fn,
+        // unit-tested in `settings::tests`).
+        let change = guard.capture_change(&next);
         // The freeze overlay is a per-frame flag — applied live, never a restart.
         let freeze_changed = guard.freeze_overlay != new_freeze_overlay;
         // "Record mouse cursor" is likewise a per-frame flag — applied live.
         let cursor_changed = guard.record_cursor != new_record_cursor;
         *guard = next;
-        (
-            prev_hotkey,
-            restart_needed,
-            audio_layout_changed,
-            audio_live,
-            freeze_changed,
-            cursor_changed,
-        )
+        (prev_hotkey, change, freeze_changed, cursor_changed)
     };
     if old_hotkey != new_hotkey {
         crate::set_clip_hotkey(&app, &new_hotkey);
@@ -1253,17 +1237,18 @@ pub fn update_settings(
     // at start, so we restart against the same window. Mid-match, the restart is
     // handed to the orchestrator for a clean clip split (see
     // `restart_capture_for_config_change` / `ConfigRestartSignal`).
-    if restart_needed {
-        // A full restart rebuilds audio from persisted settings too, so any
-        // deferred audio-layout change is superseded — drop it.
-        if let Some(p) = app.try_state::<PendingAudioLayout>() {
-            p.0.store(false, Ordering::Release);
+    match change {
+        CaptureChange::FullRestart => {
+            // A full restart rebuilds audio from persisted settings too, so any
+            // deferred audio-layout change is superseded — drop it.
+            if let Some(p) = app.try_state::<PendingAudioLayout>() {
+                p.0.store(false, Ordering::Release);
+            }
+            restart_capture_for_config_change(&app);
         }
-        restart_capture_for_config_change(&app);
-    } else if audio_layout_changed {
-        apply_audio_layout_change(&app, &new_audio);
-    } else if audio_live {
-        apply_audio_config_live(&app, &new_audio);
+        CaptureChange::AudioLayout => apply_audio_layout_change(&app, &new_audio),
+        CaptureChange::AudioLive => apply_audio_config_live(&app, &new_audio),
+        CaptureChange::None => {}
     }
     // The in-frame freeze overlay ("tabbed out" card) is a per-frame flag, so a
     // change applies to the running capture immediately — no restart, even

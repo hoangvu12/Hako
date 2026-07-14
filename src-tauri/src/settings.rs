@@ -694,7 +694,49 @@ impl Default for AudioAppSel {
     }
 }
 
+/// How a settings change affects a *running* capture — the single decision the
+/// settings path acts on (see [`Settings::capture_change`] and
+/// `commands::update_settings`). Ordered by disruption; the first matching tier
+/// wins, so a video-encode change that also flips audio is one [`FullRestart`].
+///
+/// [`FullRestart`]: CaptureChange::FullRestart
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureChange {
+    /// Nothing a running capture cares about changed.
+    None,
+    /// A layout-preserving audio change (volume/mute, output/mic device swap,
+    /// mono flip): hot-applied to the running audio thread, no restart.
+    AudioLive,
+    /// An audio-track-*layout* change (mic on/off, separate-tracks, recording-mode
+    /// switch, PC-audio device or app add/remove): rebuild the audio subsystem
+    /// only — the video hook/encoder/ring stay up, so the game is never re-hooked.
+    AudioLayout,
+    /// A video-encode change (fps, resolution, bitrate, codec, encoder, GPU, or
+    /// buffer): restart the whole capture (which also re-reads the audio config).
+    FullRestart,
+}
+
 impl Settings {
+    /// Classify how switching from `self` to `next` affects a running capture.
+    /// Pure and total — the sole source of truth for the settings path's restart
+    /// vs audio-only vs live-vs-nothing decision. Video changes dominate (they
+    /// rebuild audio too); otherwise an audio change is a live push when the track
+    /// layout is preserved and an audio-only rebuild when it isn't.
+    pub fn capture_change(&self, next: &Settings) -> CaptureChange {
+        if self.video_capture_config_differs(next) {
+            return CaptureChange::FullRestart;
+        }
+        let old_audio = self.effective_audio();
+        let new_audio = next.effective_audio();
+        if old_audio == new_audio {
+            CaptureChange::None
+        } else if old_audio.layout_eq(&new_audio) {
+            CaptureChange::AudioLive
+        } else {
+            CaptureChange::AudioLayout
+        }
+    }
+
     /// True when the instant-replay buffer should be spooled to disk rather than
     /// held in RAM (Medal's "Recording buffer: Disk"). Anything other than `disk`
     /// means RAM.
@@ -1009,5 +1051,88 @@ mod tests {
         let mut extra_dev = base.clone();
         extra_dev.pc_audio.push(AudioDeviceSel::default());
         assert!(!base.layout_eq(&extra_dev));
+    }
+
+    /// Base settings with an explicit audio config, so audio tiers are exercised
+    /// through `audio` (not the synthesized legacy fallback).
+    fn settings_with_audio(audio: AudioConfig) -> Settings {
+        Settings {
+            audio: Some(audio),
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn capture_change_none_when_nothing_relevant_differs() {
+        let s = settings_with_audio(AudioConfig::default());
+        assert_eq!(s.capture_change(&s.clone()), CaptureChange::None);
+
+        // A non-capture setting (hotkey) doesn't count as a capture change.
+        let mut hotkey = s.clone();
+        hotkey.save_hotkey = "F10".into();
+        assert_eq!(s.capture_change(&hotkey), CaptureChange::None);
+    }
+
+    #[test]
+    fn capture_change_audio_live_for_layout_preserving_edits() {
+        let base = settings_with_audio(AudioConfig::default());
+
+        // Master volume.
+        let mut louder = base.clone();
+        louder.audio.as_mut().unwrap().master_volume = 40;
+        assert_eq!(base.capture_change(&louder), CaptureChange::AudioLive);
+
+        // Output-device swap (same layout, different id).
+        let mut swap = base.clone();
+        if let Some(d) = swap.audio.as_mut().unwrap().pc_audio.first_mut() {
+            d.id = "{other-endpoint}".into();
+        }
+        assert_eq!(base.capture_change(&swap), CaptureChange::AudioLive);
+    }
+
+    #[test]
+    fn capture_change_audio_layout_for_track_layout_edits() {
+        let base = settings_with_audio(AudioConfig::default());
+
+        // The reported case: Separate audio tracks.
+        let mut stems = base.clone();
+        stems.audio.as_mut().unwrap().separate_tracks = true;
+        assert_eq!(base.capture_change(&stems), CaptureChange::AudioLayout);
+
+        // Mic on/off.
+        let mut mic = base.clone();
+        mic.audio.as_mut().unwrap().mic_enabled = true;
+        assert_eq!(base.capture_change(&mic), CaptureChange::AudioLayout);
+
+        // Add a PC-audio device.
+        let mut extra = base.clone();
+        extra.audio.as_mut().unwrap().pc_audio.push(AudioDeviceSel::default());
+        assert_eq!(base.capture_change(&extra), CaptureChange::AudioLayout);
+    }
+
+    #[test]
+    fn capture_change_full_restart_for_video_edits() {
+        let base = settings_with_audio(AudioConfig::default());
+        for mutate in [
+            (|s: &mut Settings| s.target_fps = 120) as fn(&mut Settings),
+            |s: &mut Settings| s.resolution = "720p".into(),
+            |s: &mut Settings| s.bitrate_mbps = 40,
+            |s: &mut Settings| s.codec = "hevc".into(),
+        ] {
+            let mut next = base.clone();
+            mutate(&mut next);
+            assert_eq!(base.capture_change(&next), CaptureChange::FullRestart);
+        }
+    }
+
+    #[test]
+    fn capture_change_video_dominates_a_simultaneous_audio_layout_edit() {
+        // A save that flips separate-tracks AND the resolution is one full
+        // restart, not an audio-only rebuild — the restart re-reads audio anyway.
+        let base = settings_with_audio(AudioConfig::default());
+        let mut both = base.clone();
+        both.resolution = "720p".into();
+        both.audio.as_mut().unwrap().separate_tracks = true;
+        assert_eq!(base.capture_change(&both), CaptureChange::FullRestart);
     }
 }
