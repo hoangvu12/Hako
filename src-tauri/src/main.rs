@@ -262,11 +262,17 @@ fn main() {
                 .map(|s| s.save_hotkey.clone())
                 .unwrap_or_else(|_| "F9".into());
             set_clip_hotkey(app.handle(), &accel);
-            // Live game detection: spawn every registered game integration
-            // (Valorant, League). Each polls its own match state, records full
-            // matches, and auto-cuts highlight clips on match end (Mode B).
-            // Degrades to manual clips if the game API/capture aren't available.
-            games::orchestrator::spawn(app.handle().clone());
+            // Live game detection + auto-capture is deliberately NOT started here.
+            // `setup` runs concurrently with the update splash, and starting it now
+            // would let the orchestrator hook an already-running game (inject the
+            // hook, hold the keepalive mutex, spawn encoder threads) *while the
+            // updater is downloading/installing*. When `relaunch()` then fires, that
+            // live capture keeps `hako.exe` busy and the NSIS installer can fail to
+            // overwrite it. Instead we defer the orchestrator to `finish_to_main` —
+            // the point where the splash has decided NOT to update. If an update
+            // does install, `relaunch()` happens first and the orchestrator never
+            // starts, so nothing is ever hooked mid-update. See
+            // `start_game_orchestration`.
             // Refresh the "record any game" curated list from the repo (best-effort,
             // conditional GET). Updates the known-games table without an app release;
             // silently keeps the bundled list if offline / unreachable.
@@ -294,6 +300,12 @@ fn main() {
             // never be stranded behind the splash. We only *show* main (never
             // close `updater`) — closing it could abort an in-flight download,
             // and a legitimately slow download keeps main hidden until relaunch.
+            // NOTE: this path intentionally does NOT start auto-capture (that's
+            // gated on `finish_to_main` → `start_game_orchestration`). A slow
+            // download can still be in flight at 60s, and starting capture here
+            // would re-open the update-lock race this gating exists to close. In
+            // the rare "splash JS never ran at all" case auto-capture simply stays
+            // off for the session; the app is still usable and manual capture works.
             let reveal_handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_secs(60));
@@ -646,6 +658,25 @@ fn finish_to_main(app: tauri::AppHandle) {
     if let Some(updater) = app.get_webview_window("updater") {
         let _ = updater.close();
     }
+    // The splash is done and decided NOT to update (no update, up-to-date, error,
+    // or offline — an actual install `relaunch()`s and never reaches here), so it's
+    // now safe to begin auto-capture. Deferred out of `setup` so the orchestrator
+    // can never hook a game (and lock `hako.exe`) while an update is installing.
+    start_game_orchestration(&app);
+}
+
+/// Start live game detection + auto-capture (every registered game integration:
+/// Valorant, League, …). Deferred out of `setup` and gated behind the update
+/// splash finishing, so a game is never hooked while an update is downloading /
+/// installing (which would keep `hako.exe` busy and break the NSIS overwrite).
+/// Idempotent — the `Once` makes a second call (e.g. a stray `finish_to_main`)
+/// a no-op.
+fn start_game_orchestration(app: &tauri::AppHandle) {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        tracing::info!("update splash settled; starting live game detection / auto-capture");
+        games::orchestrator::spawn(app.clone());
+    });
 }
 
 fn show_main(app: &tauri::AppHandle) {
