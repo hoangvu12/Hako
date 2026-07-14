@@ -342,8 +342,26 @@ fn main() {
                 set_webview_suspended(window.app_handle(), true);
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Hako");
+        .build(tauri::generate_context!())
+        .expect("error while building Hako")
+        // Deterministic capture teardown on exit. tao terminates the process via
+        // `std::process::exit`, which skips every `Drop` — so without this the hook
+        // keepalive mutex, IPC handles, and the capture/encode/source/audio threads
+        // are only reclaimed by OS process death. Running the real stop here first
+        // signals the in-game hook to self-destruct, releases the keepalive, and
+        // joins the recorder threads, so a wedged thread (or an update-driven exit)
+        // can't leave a half-torn-down capture — and a locked `hako.exe` — behind.
+        // `RunEvent::Exit` is the one that fires for `app.exit(0)` (tray Quit);
+        // `ExitRequested` covers window-driven exits. `stop_capture_with` no-ops
+        // when nothing is running, so handling both is harmless.
+        .run(|app_handle, event| {
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                commands::stop_capture_with(app_handle);
+            }
+        });
 }
 
 /// Show a window **without giving it the foreground** — used for the update
@@ -491,8 +509,14 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                 }
                 set_webview_suspended(app, true);
             }
-            // Quit fully stops the recorder (separate from hide-to-tray).
-            "quit" => app.exit(0),
+            // Quit fully stops the recorder (separate from hide-to-tray). Stop it
+            // here synchronously before `exit` so the hook/threads are torn down in
+            // a known context; the `RunEvent::Exit` handler also enforces this, and
+            // `stop_capture_with` is idempotent, so the double call is a no-op.
+            "quit" => {
+                commands::stop_capture_with(app);
+                app.exit(0);
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
