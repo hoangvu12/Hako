@@ -75,10 +75,9 @@ unsafe fn probe(path: &Path) -> (u32, Vec<(i32, u32, Option<String>)>, usize) {
 #[test]
 fn writes_session_and_builds_timeline() {
     let gpus = device::enumerate_gpus().expect("enumerate gpus");
-    let adapter = device::default_capture_index(&gpus)
-        .map(|i| device::adapter_at(i).expect("adapter_at"));
-    let (d3d_device, ctx, _fl) =
-        device::create_device(adapter.as_ref()).expect("create device");
+    let adapter =
+        device::default_capture_index(&gpus).map(|i| device::adapter_at(i).expect("adapter_at"));
+    let (d3d_device, ctx, _fl) = device::create_device(adapter.as_ref()).expect("create device");
     let (w, h, fps) = (1280u32, 720u32, 60u32);
 
     let desc = D3D11_TEXTURE2D_DESC {
@@ -196,10 +195,9 @@ fn writes_session_and_builds_timeline() {
 #[test]
 fn writes_session_with_audio() {
     let gpus = device::enumerate_gpus().expect("enumerate gpus");
-    let adapter = device::default_capture_index(&gpus)
-        .map(|i| device::adapter_at(i).expect("adapter_at"));
-    let (d3d_device, ctx, _fl) =
-        device::create_device(adapter.as_ref()).expect("create device");
+    let adapter =
+        device::default_capture_index(&gpus).map(|i| device::adapter_at(i).expect("adapter_at"));
+    let (d3d_device, ctx, _fl) = device::create_device(adapter.as_ref()).expect("create device");
     let (w, h, fps) = (1280u32, 720u32, 60u32);
 
     let desc = D3D11_TEXTURE2D_DESC {
@@ -319,10 +317,9 @@ fn writes_session_with_audio() {
 #[test]
 fn writes_session_with_two_audio_tracks() {
     let gpus = device::enumerate_gpus().expect("enumerate gpus");
-    let adapter = device::default_capture_index(&gpus)
-        .map(|i| device::adapter_at(i).expect("adapter_at"));
-    let (d3d_device, ctx, _fl) =
-        device::create_device(adapter.as_ref()).expect("create device");
+    let adapter =
+        device::default_capture_index(&gpus).map(|i| device::adapter_at(i).expect("adapter_at"));
+    let (d3d_device, ctx, _fl) = device::create_device(adapter.as_ref()).expect("create device");
     let (w, h, fps) = (1280u32, 720u32, 60u32);
 
     let desc = D3D11_TEXTURE2D_DESC {

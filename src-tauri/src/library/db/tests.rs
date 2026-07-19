@@ -262,7 +262,9 @@ fn custom_games_crud_and_dedupe() {
     // Re-adding the same exe (any case) refreshes the name + re-enables in
     // place — no duplicate row (Medal's per-machine custom DB is keyed by exe).
     lib.set_custom_game_enabled(g.id, false).unwrap();
-    let g2 = lib.add_custom_game("gta5.exe", "GTA V", None, None, None).unwrap();
+    let g2 = lib
+        .add_custom_game("gta5.exe", "GTA V", None, None, None)
+        .unwrap();
     assert_eq!(g2.id, g.id);
     assert_eq!(g2.display_name, "GTA V");
     assert!(g2.enabled);

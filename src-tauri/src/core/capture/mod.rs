@@ -22,8 +22,8 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
-use windows::core::{Interface, Result as WinResult, BOOL};
-use windows::Win32::Foundation::{HWND, LPARAM, POINT};
+use windows::core::{Interface, Result as WinResult};
+use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct3D11::{
     ID3D11Device, ID3D11DeviceContext, ID3D11Resource, ID3D11Texture2D, D3D11_BIND_RENDER_TARGET,
     D3D11_BOX, D3D11_CPU_ACCESS_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_FLAG_DO_NOT_WAIT,
@@ -35,10 +35,7 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_R8G8B8A8_TYPELESS, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
     DXGI_SAMPLE_DESC,
 };
-use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetCursorPos, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
-    IsIconic, IsWindowVisible,
-};
+use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
 
 use crate::core::audio::{self, AudioCapture, AudioControl, AudioMeta};
 use crate::core::buffer::{AudioRing, BufferStats, PacketRing};
@@ -60,19 +57,19 @@ use crate::settings::AudioConfig;
 /// encode thread. Also bounds in-flight frames (backpressure: the source loop
 /// drops when none are free). Small — we only need to cover channel + encoder
 /// latency.
+mod window;
+pub use window::{
+    find_valorant_window, find_window_by_process, find_window_by_title, is_window_minimized,
+    list_windows, pid_for_hwnd, window_title, WindowTarget,
+};
+use window::cursor_screen_pos;
+
 const STAGING_POOL: usize = 4;
 /// NV12 textures the encode thread cycles through. Must exceed how many surfaces
 /// the encoder holds asynchronously (`async_depth` ≈ 1–2) so a reused texture is
 /// never still in flight.
 const NV12_RING: usize = 6;
 
-/// A capturable top-level window (for the UI picker).
-#[derive(Debug, Clone, Serialize)]
-pub struct WindowTarget {
-    /// HWND as an integer (passed back to `start_capture`).
-    pub hwnd: i64,
-    pub title: String,
-}
 
 /// Live capture + encode throughput, emitted as the `capture-stats` event.
 #[derive(Debug, Clone, Serialize)]
@@ -642,194 +639,6 @@ impl Drop for RunningCapture {
 /// scan and `add_custom_game` already apply, so a window shown here can actually
 /// be added. Windows whose owning process can't be resolved are kept (benefit of
 /// the doubt).
-pub fn list_windows() -> Vec<WindowTarget> {
-    use crate::games::process_snapshot;
-
-    let mut raw: Vec<(i64, String, u32)> = Vec::new();
-    // SAFETY: `raw` outlives the EnumWindows call; the callback only touches it.
-    unsafe {
-        let _ = EnumWindows(
-            Some(enum_proc),
-            LPARAM(&mut raw as *mut Vec<(i64, String, u32)> as isize),
-        );
-    }
-    raw.into_iter()
-        .filter(|(_, _, pid)| {
-            process_snapshot::name_for_pid(*pid, process_snapshot::DEFAULT_MAX_AGE)
-                .map(|name| !crate::games::generic::catalog::is_excluded(&name))
-                .unwrap_or(true)
-        })
-        .map(|(hwnd, title, _)| WindowTarget { hwnd, title })
-        .collect()
-}
-
-unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    let out = &mut *(lparam.0 as *mut Vec<(i64, String, u32)>);
-    if IsWindowVisible(hwnd).as_bool() {
-        let len = GetWindowTextLengthW(hwnd);
-        if len > 0 {
-            let mut buf = vec![0u16; len as usize + 1];
-            let n = GetWindowTextW(hwnd, &mut buf);
-            if n > 0 {
-                let title = String::from_utf16_lossy(&buf[..n as usize]);
-                if !title.is_empty() {
-                    let mut pid: u32 = 0;
-                    GetWindowThreadProcessId(hwnd, Some(&mut pid));
-                    out.push((hwnd.0 as i64, title, pid));
-                }
-            }
-        }
-    }
-    BOOL(1) // continue enumeration
-}
-
-/// Find the live VALORANT **game** window (the Unreal client, not the Riot
-/// launcher), used to auto-start capture when the game launches — the way Medal
-/// detects the game process. Matches the game window's exact title; returns its
-/// HWND or `None` if the game isn't running.
-pub fn find_valorant_window() -> Option<i64> {
-    find_window_by_title("VALORANT")
-}
-
-/// Find the first visible top-level window whose (trimmed) title matches `want`
-/// case-insensitively, returning its HWND. The game-agnostic window detector each
-/// [`crate::games`] integration uses to auto-start capture when its game appears
-/// (Valorant → "VALORANT", League → "League of Legends (TM) Client"). The exact
-/// (trimmed) compare avoids matching browser tabs like "VALORANT - YouTube".
-pub fn find_window_by_title(want: &str) -> Option<i64> {
-    let mut search = TitleSearch { want, found: 0 };
-    // SAFETY: `search` outlives the EnumWindows call; the callback only writes it.
-    unsafe {
-        let _ = EnumWindows(
-            Some(find_title_proc),
-            LPARAM(&mut search as *mut TitleSearch as isize),
-        );
-    }
-    (search.found != 0).then_some(search.found)
-}
-
-/// State threaded through [`find_title_proc`] via `EnumWindows`' `LPARAM`.
-struct TitleSearch<'a> {
-    want: &'a str,
-    found: i64,
-}
-
-/// Find the first visible top-level window owned by a process whose name matches
-/// any of `process_names` (case-insensitive), returning its HWND. Used when a
-/// game's window title is unreliable/unknown but its executable name is certain
-/// (Rematch → "RuntimeClient-Win64-Shipping.exe"). Two passes: resolve the target
-/// PIDs via `sysinfo`, then enumerate windows and match the owning PID.
-pub fn find_window_by_process(process_names: &[&str]) -> Option<i64> {
-    use crate::games::process_snapshot;
-    let pids = process_snapshot::pids_for(process_names, process_snapshot::DEFAULT_MAX_AGE);
-    if pids.is_empty() {
-        return None;
-    }
-    let mut search = ProcessSearch {
-        pids: &pids,
-        found: 0,
-    };
-    // SAFETY: `search` outlives the EnumWindows call; the callback only writes it.
-    unsafe {
-        let _ = EnumWindows(
-            Some(find_process_proc),
-            LPARAM(&mut search as *mut ProcessSearch as isize),
-        );
-    }
-    (search.found != 0).then_some(search.found)
-}
-
-/// State threaded through [`find_process_proc`] via `EnumWindows`' `LPARAM`.
-struct ProcessSearch<'a> {
-    pids: &'a std::collections::HashSet<u32>,
-    found: i64,
-}
-
-unsafe extern "system" fn find_process_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    let search = &mut *(lparam.0 as *mut ProcessSearch);
-    // Only visible, titled top-level windows (skips the game's hidden helper
-    // windows / splash so we latch the real render surface).
-    if IsWindowVisible(hwnd).as_bool() && GetWindowTextLengthW(hwnd) > 0 {
-        let mut pid: u32 = 0;
-        GetWindowThreadProcessId(hwnd, Some(&mut pid));
-        if pid != 0 && search.pids.contains(&pid) {
-            search.found = hwnd.0 as i64;
-            return BOOL(0); // stop enumeration
-        }
-    }
-    BOOL(1)
-}
-
-/// The process id that owns `hwnd_raw` (for the `specific_apps` "Game Audio"
-/// source — the capture target's PID). `None` for an invalid window.
-pub fn pid_for_hwnd(hwnd_raw: i64) -> Option<u32> {
-    let mut pid: u32 = 0;
-    // SAFETY: GetWindowThreadProcessId just reads window ownership; a stale HWND
-    // yields pid 0.
-    unsafe {
-        GetWindowThreadProcessId(HWND(hwnd_raw as *mut c_void), Some(&mut pid));
-    }
-    (pid != 0).then_some(pid)
-}
-
-/// The window title (caption) of `hwnd_raw`, trimmed, or `None` if it has none.
-/// Used by `add_custom_game` to seed a picked game's display name from its window
-/// title (Medal's Request-a-Game captures the caption too).
-pub fn window_title(hwnd_raw: i64) -> Option<String> {
-    let hwnd = HWND(hwnd_raw as *mut c_void);
-    // SAFETY: reads the caption of a window handle; a stale HWND yields length 0.
-    unsafe {
-        let len = GetWindowTextLengthW(hwnd);
-        if len <= 0 {
-            return None;
-        }
-        let mut buf = vec![0u16; len as usize + 1];
-        let n = GetWindowTextW(hwnd, &mut buf);
-        if n <= 0 {
-            return None;
-        }
-        let title = String::from_utf16_lossy(&buf[..n as usize]);
-        let title = title.trim();
-        (!title.is_empty()).then(|| title.to_string())
-    }
-}
-
-/// The mouse cursor's current screen position (physical pixels), or `None` if the
-/// query fails. Used by the source loop to un-skip a static frame when the cursor
-/// moved while "record cursor" is on.
-fn cursor_screen_pos() -> Option<(i32, i32)> {
-    let mut pt = POINT::default();
-    // SAFETY: GetCursorPos writes the current pointer position into `pt`.
-    (unsafe { GetCursorPos(&mut pt) }).ok().map(|_| (pt.x, pt.y))
-}
-
-/// Whether a window is minimized (iconic). A minimized game — common with
-/// exclusive fullscreen when alt-tabbed — usually stops presenting frames, so
-/// the graphics hook can't capture it; the auto-capture skips it until it's back
-/// on screen rather than re-injecting into a non-rendering process.
-pub fn is_window_minimized(hwnd: i64) -> bool {
-    // SAFETY: IsIconic just reads window state; a stale/invalid HWND returns false.
-    unsafe { IsIconic(HWND(hwnd as *mut c_void)).as_bool() }
-}
-
-unsafe extern "system" fn find_title_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    let search = &mut *(lparam.0 as *mut TitleSearch);
-    if IsWindowVisible(hwnd).as_bool() {
-        let len = GetWindowTextLengthW(hwnd);
-        if len > 0 {
-            let mut buf = vec![0u16; len as usize + 1];
-            let n = GetWindowTextW(hwnd, &mut buf);
-            if n > 0 {
-                let title = String::from_utf16_lossy(&buf[..n as usize]);
-                if title.trim().eq_ignore_ascii_case(search.want) {
-                    search.found = hwnd.0 as i64;
-                    return BOOL(0); // stop enumeration
-                }
-            }
-        }
-    }
-    BOOL(1)
-}
 
 // ===========================================================================
 // Game-capture (graphics-hook injection) path — captures at the game's real
