@@ -354,6 +354,31 @@ impl VideoCodec {
             VideoCodec::H264 => &[VideoCodec::H264],
         }
     }
+
+    /// The full ordered list of codecs [`Encoder::new`] will attempt: the
+    /// preference chain ([`Self::fallback_chain`], toward H.264 for
+    /// *availability*) first, then — as an **open-failure** recovery — any
+    /// remaining hardware codecs on this vendor.
+    ///
+    /// `fallback_chain` alone only degrades *toward* H.264, so a requested-H.264
+    /// encoder that is present but **won't open** (e.g. `h264_nvenc` refusing a
+    /// 10-bit / HDR backbuffer, or a wedged NVENC session after a mid-match
+    /// swapchain recreation) previously failed the entire capture — the game was
+    /// "detected" but never clipped. Appending the other codecs lets HEVC/AV1
+    /// NVENC (which *do* accept those states) take over instead. HEVC is tried
+    /// before AV1 because HEVC hardware encode is far more widely available
+    /// (NVENC HEVC since Turing; AV1 NVENC needs Ada / RTX 40-series). The
+    /// codec that actually opened is reported by [`Self::codec`] and drives the
+    /// muxer's `codec_id`, so a fallback clip is still written correctly.
+    fn candidate_chain(self) -> Vec<VideoCodec> {
+        let mut out: Vec<VideoCodec> = self.fallback_chain().to_vec();
+        for c in [VideoCodec::H264, VideoCodec::Hevc, VideoCodec::Av1] {
+            if !out.contains(&c) {
+                out.push(c);
+            }
+        }
+        out
+    }
 }
 
 impl Encoder {
@@ -388,13 +413,16 @@ impl Encoder {
             Vendor::Other => return Err("no hardware encoder for this adapter's vendor".into()),
         };
 
-        // Try the requested codec, then graceful fallbacks toward H.264. Skip any
-        // whose encoder isn't compiled into this FFmpeg build before attempting.
-        let mut last_err = String::new();
-        for &cand in codec.fallback_chain() {
+        // Try the requested codec, then its preference fallbacks, then any other
+        // hardware codec on this vendor as an open-failure recovery (see
+        // `candidate_chain`). Skip any whose encoder isn't compiled into this
+        // FFmpeg build before attempting. This turns "h264_nvenc won't open on an
+        // HDR/10-bit backbuffer" from a dead capture into a silent HEVC fallback.
+        let mut errors: Vec<String> = Vec::new();
+        for cand in codec.candidate_chain() {
             let name = backend.encoder_name(cand);
             if !encoder_exists(name) {
-                last_err = format!("{name} not available in this build");
+                errors.push(format!("{name} not available in this build"));
                 continue;
             }
             match Self::build(
@@ -409,20 +437,28 @@ impl Encoder {
             ) {
                 Ok(enc) => {
                     if cand != codec {
+                        // A fallback away from the requested codec — surface it
+                        // loudly so a "why is my clip HEVC?" is answerable from
+                        // the log, and so an HDR/NVENC open failure is visible.
                         tracing::warn!(
-                            "{} encode unavailable; fell back to {}",
-                            codec.label(),
-                            cand.label()
+                            requested = codec.label(),
+                            using = cand.label(),
+                            encoder = name,
+                            "requested codec would not open; fell back to a working hardware encoder"
                         );
                     }
                     return Ok(enc);
                 }
-                Err(e) => last_err = e,
+                Err(e) => {
+                    errors.push(format!("{name}: {e}"));
+                }
             }
         }
         Err(format!(
-            "no usable {} hardware encoder (last error: {last_err})",
-            codec.label()
+            "no usable hardware encoder for {} (tried {}): {}",
+            codec.label(),
+            errors.len(),
+            errors.join(" | ")
         ))
     }
 
@@ -964,6 +1000,36 @@ impl Drop for Encoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The open-failure recovery chain: whatever the user requested, `new` must
+    /// eventually attempt every hardware codec, so a requested codec that is
+    /// present but won't *open* on this GPU/driver/state (e.g. `h264_nvenc`
+    /// refusing an HDR/10-bit backbuffer) still finds a working encoder instead
+    /// of failing the whole capture. Requested codec first; HEVC before AV1 in
+    /// recovery (HEVC HW encode is far more widely available).
+    #[test]
+    fn candidate_chain_covers_all_codecs_requested_first() {
+        for req in [VideoCodec::H264, VideoCodec::Hevc, VideoCodec::Av1] {
+            let chain = req.candidate_chain();
+            assert_eq!(chain[0], req, "requested codec must be tried first");
+            for c in [VideoCodec::H264, VideoCodec::Hevc, VideoCodec::Av1] {
+                assert!(chain.contains(&c), "{req:?} chain missing {c:?}: {chain:?}");
+            }
+            // No duplicate attempts.
+            let mut seen = chain.clone();
+            seen.dedup();
+            assert_eq!(seen.len(), chain.len(), "duplicate in {req:?} chain: {chain:?}");
+            assert_eq!(seen.len(), 3, "chain should be exactly the 3 HW codecs");
+            // In the recovery tail, HEVC precedes AV1 (HEVC HW encode is far more
+            // widely available) — except when AV1 was explicitly requested, which
+            // is honored first by preference.
+            if req != VideoCodec::Av1 {
+                let hevc = chain.iter().position(|c| *c == VideoCodec::Hevc).unwrap();
+                let av1 = chain.iter().position(|c| *c == VideoCodec::Av1).unwrap();
+                assert!(hevc < av1, "HEVC should be tried before AV1: {chain:?}");
+            }
+        }
+    }
 
     #[test]
     fn ffmpeg_links_and_nvenc_is_available() {
