@@ -49,6 +49,7 @@ use crate::core::device;
 use crate::core::disk_buffer::DiskPacketRing;
 use crate::core::encode::{EncodeSettings, EncodedPacket, Encoder};
 use crate::core::hook::{HookCapture, RunningHook};
+use crate::core::wgc::{self, WgcCapture};
 use crate::core::mux::{self, AudioClip, ClipMeta};
 use crate::core::overlay_card;
 use crate::core::session::SessionWriter;
@@ -1022,6 +1023,171 @@ impl RunningHookPipeline {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// The capture frame source feeding [`hook_source_loop`]: either the injected
+/// OBS graphics hook (primary — captures at the game's real render rate) or
+/// Windows.Graphics.Capture (the no-injection fallback). Both hand back
+/// `(ID3D11Texture2D, ts)` where `ts` is a 100-ns timestamp in the same clock
+/// domain, so the staging→convert→encode pipeline downstream is identical for
+/// both and doesn't know which one it's fed by.
+///
+/// WGC is used only when the hook can't do the job: injection was blocked
+/// (anti-cheat), the hook injected but never presented a frame, or WGC was
+/// explicitly selected. It never displaces the hook on the games where the hook
+/// works, so it can't regress the existing capture path.
+enum FrameSource {
+    Hook(RunningHook),
+    Wgc(WgcCapture),
+}
+
+impl FrameSource {
+    /// Sample the latest frame. `device` is used by the hook path to reopen the
+    /// shared backbuffer; WGC ignores it (its pool is bound at `start`).
+    fn acquire(
+        &mut self,
+        device: &ID3D11Device,
+    ) -> std::result::Result<Option<(ID3D11Texture2D, i64)>, String> {
+        match self {
+            FrameSource::Hook(h) => h.acquire(device),
+            FrameSource::Wgc(w) => w.acquire().map_err(|e| format!("wgc acquire: {e}")),
+        }
+    }
+
+    /// Ask the source to re-establish capture of the current swapchain. The hook
+    /// re-hooks (recovering a stale shared texture). WGC has no stale-swapchain
+    /// failure mode — it keeps delivering across the minimize / fullscreen
+    /// transitions that freeze the hook — so this is a deliberate no-op for it.
+    fn request_restart(&mut self) {
+        if let FrameSource::Hook(h) = self {
+            h.request_restart();
+        }
+    }
+
+    /// Short label for logs/metrics.
+    fn kind(&self) -> &'static str {
+        match self {
+            FrameSource::Hook(_) => "hook",
+            FrameSource::Wgc(_) => "wgc",
+        }
+    }
+
+    /// Whether this is the injected graphics hook (vs the WGC fallback). The
+    /// freeze watchdog only re-hooks / escalates for the hook — WGC has no
+    /// stale-swapchain failure mode.
+    fn is_hook(&self) -> bool {
+        matches!(self, FrameSource::Hook(_))
+    }
+}
+
+/// Persisted across a pipeline rebuild: the HWND whose graphics hook was found
+/// unable to sustain capture — it kept freezing without recovering after repeated
+/// re-hooks (e.g. League of Legends' churny swapchain). The next
+/// [`start_frame_source`] for that window skips the hook and goes straight to
+/// WGC, which captures via the compositor and doesn't suffer the stale-shtex
+/// freeze. Keyed by HWND so a *different* game still tries the (cheaper, higher-
+/// rate) hook first. `0` = none. A rebuilt pipeline reads this to stay on WGC
+/// instead of re-hooking → freezing → escalating in a loop.
+static FORCE_WGC_HWND: AtomicI64 = AtomicI64::new(0);
+
+/// Mark `hwnd_raw` as hook-hostile so subsequent captures of it use WGC.
+fn force_wgc_for(hwnd_raw: i64) {
+    FORCE_WGC_HWND.store(hwnd_raw, Ordering::Release);
+}
+
+/// Whether `hwnd_raw` was previously marked hook-hostile (see [`force_wgc_for`]).
+fn wgc_forced_for(hwnd_raw: i64) -> bool {
+    hwnd_raw != 0 && FORCE_WGC_HWND.load(Ordering::Acquire) == hwnd_raw
+}
+
+/// Bring up a capture frame source for `hwnd`: try the injected graphics hook
+/// first (the primary, real-render-rate path), and fall back to
+/// Windows.Graphics.Capture when the hook can't inject or never presents a frame
+/// (anti-cheat-blocked or hook-incompatible games). Returns the source plus the
+/// first delivered frame's `D3D11_TEXTURE2D_DESC`, which sizes the staging pool +
+/// converter/encoder.
+///
+/// The WGC fallback delivers BGRA8 SDR, so besides covering un-hookable games it
+/// also sidesteps the `h264_nvenc`-won't-open-on-a-10-bit-HDR-backbuffer failure
+/// that leaves a game "detected" but never clipped.
+fn start_frame_source(
+    hwnd: HWND,
+    target_fps: u32,
+    d3d_device: &ID3D11Device,
+    stop: &Arc<AtomicBool>,
+    force_wgc: bool,
+) -> std::result::Result<(FrameSource, D3D11_TEXTURE2D_DESC), String> {
+    // 1) Primary: the injected OBS graphics hook — unless this window was already
+    //    found hook-hostile (froze without recovering), in which case skip
+    //    straight to WGC so we don't re-hook → freeze → escalate on every rebuild.
+    if force_wgc {
+        tracing::info!(
+            "capture: hook previously could not sustain this window; using WGC directly"
+        );
+    } else {
+        match HookCapture::start(hwnd, target_fps) {
+            Ok(hook) => {
+                let mut source = FrameSource::Hook(hook);
+                match wait_first_frame(&mut source, d3d_device, stop) {
+                    Ok(desc) => return Ok((source, desc)),
+                    Err(e) => {
+                        // Injected but no frame in time (minimized, or anti-cheat
+                        // block). Drop the hook and try WGC, which needs no injection.
+                        tracing::warn!(
+                            "capture: graphics hook delivered no frame ({e}); trying WGC fallback"
+                        );
+                        drop(source);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "capture: graphics hook injection failed ({e}); trying WGC fallback"
+                );
+            }
+        }
+    }
+
+    // 2) Fallback: Windows.Graphics.Capture (no injection, HDR-tolerant).
+    if !wgc::is_supported() {
+        return Err(
+            "graphics hook unavailable and WGC is not supported on this OS \
+             (needs Windows 10 1903+/build 18362)"
+                .into(),
+        );
+    }
+    let wgc = WgcCapture::start(hwnd, d3d_device).map_err(|e| format!("wgc start: {e}"))?;
+    let mut source = FrameSource::Wgc(wgc);
+    let desc = wait_first_frame(&mut source, d3d_device, stop)
+        .map_err(|e| format!("wgc produced no first frame: {e}"))?;
+    tracing::info!("capture: using WGC fallback frame source (graphics hook unavailable)");
+    Ok((source, desc))
+}
+
+/// Poll a freshly-started [`FrameSource`] until it delivers its first frame,
+/// returning that frame's texture desc. Times out per [`HOOK_FIRST_FRAME_TIMEOUT`]
+/// and bails early if `stop` is set.
+fn wait_first_frame(
+    source: &mut FrameSource,
+    d3d_device: &ID3D11Device,
+    stop: &Arc<AtomicBool>,
+) -> std::result::Result<D3D11_TEXTURE2D_DESC, String> {
+    let deadline = Instant::now() + HOOK_FIRST_FRAME_TIMEOUT;
+    loop {
+        if stop.load(Ordering::Acquire) {
+            return Err("capture stopped before the source produced a frame".into());
+        }
+        if let Some((tex, _ts)) = source.acquire(d3d_device)? {
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            // SAFETY: `tex` is a live texture the source just handed us.
+            unsafe { tex.GetDesc(&mut desc) };
+            return Ok(desc);
+        }
+        if Instant::now() >= deadline {
+            return Err("no frame delivered within the timeout".into());
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
 fn run_hook_pipeline(
     hwnd_raw: i64,
     target_fps: u32,
@@ -1065,31 +1231,14 @@ fn run_hook_pipeline(
         "hook capture: resolved adapters (single-device fast path)"
     );
 
-    // Inject + bring the hook up (steps 1–9). Frames flow after this.
+    // Bring up a frame source (steps 1–9): the injected graphics hook first,
+    // falling back to Windows.Graphics.Capture if the hook can't inject or never
+    // presents a frame (anti-cheat-blocked / hook-incompatible games). The first
+    // delivered frame's desc sizes the staging pool + converter/encoder.
     let hwnd = HWND(hwnd_raw as *mut c_void);
-    let mut hook = HookCapture::start(hwnd, target_fps)?;
-
-    // Discover the real backbuffer texture (and its format/size) from the first
-    // delivered frame. We size the staging pool + converter/encoder to match.
-    let deadline = Instant::now() + HOOK_FIRST_FRAME_TIMEOUT;
-    let first_desc = loop {
-        if stop.load(Ordering::Acquire) {
-            return Err("capture stopped before the hook produced a frame".into());
-        }
-        if let Some((tex, _ts)) = hook.acquire(&d3d_device)? {
-            let mut desc = D3D11_TEXTURE2D_DESC::default();
-            unsafe { tex.GetDesc(&mut desc) };
-            break desc;
-        }
-        if Instant::now() >= deadline {
-            return Err(
-                "hook injected but delivered no frame in time — the game may be \
-                 minimized, or the hook was blocked by anti-cheat (Vanguard)"
-                    .into(),
-            );
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    };
+    let (source, first_desc) =
+        start_frame_source(hwnd, target_fps, &d3d_device, stop, wgc_forced_for(hwnd_raw))?;
+    tracing::info!(source = source.kind(), "capture: frame source up");
 
     let width = first_desc.Width & !1;
     let height = first_desc.Height & !1;
@@ -1208,7 +1357,7 @@ fn run_hook_pipeline(
             .name("hako-hook-source".into())
             .spawn(move || {
                 hook_source_loop(
-                    hook,
+                    source,
                     hwnd_raw,
                     device,
                     context,
@@ -1247,12 +1396,12 @@ fn run_hook_pipeline(
     })
 }
 
-/// The hook frame-source loop: pull a shared backbuffer, copy its even sub-rect
-/// into a free staging texture, and send it on. Owns the `RunningHook` so
-/// dropping at loop-end tears the hook down.
+/// The frame-source loop: pull a backbuffer from the [`FrameSource`] (hook or
+/// WGC), copy its even sub-rect into a free staging texture, and send it on.
+/// Owns the source so dropping at loop-end tears it down.
 #[allow(clippy::too_many_arguments)]
 fn hook_source_loop(
-    mut hook: RunningHook,
+    mut source: FrameSource,
     hwnd_raw: i64,
     device: ID3D11Device,
     context: ID3D11DeviceContext,
@@ -1311,6 +1460,12 @@ fn hook_source_loop(
     const STATIC_FLAG_AFTER: Duration = Duration::from_secs(3);
     const STATIC_RESTART_AFTER: Duration = Duration::from_secs(5);
     const RESTART_DEBOUNCE: Duration = Duration::from_secs(10);
+    // After this many debounced re-hooks fail to un-freeze the swapchain (~this
+    // many × RESTART_DEBOUNCE seconds of an unrecoverable freeze), give up on the
+    // hook for this window and switch to WGC. Conservative: healthy capture never
+    // re-hooks repeatedly without content moving again, so this can't trip on a
+    // transient stale-swapchain blip (which recovers on the first re-hook).
+    const FREEZE_WGC_ESCALATION: u32 = 2;
     let watchdog_ok = width >= DirtyProbe::PROBE && height >= DirtyProbe::PROBE;
     // Run the per-tick dirty probe whenever the window is big enough to hash; the
     // skip *action* is additionally gated on the `dirty_frame_skip` setting.
@@ -1335,6 +1490,10 @@ fn hook_source_loop(
     let mut last_change = Instant::now();
     let mut last_static_sample = Instant::now();
     let mut last_restart: Option<Instant> = None;
+    // Consecutive hook re-hook attempts since content last moved. If re-hooking
+    // repeatedly fails to un-freeze the swapchain, the hook can't capture this
+    // game's presentation → escalate to WGC. Reset whenever content moves again.
+    let mut hook_restarts_since_progress: u32 = 0;
     let mut same_frames: u64 = 0;
     let mut warned_static = false;
 
@@ -1455,19 +1614,19 @@ fn hook_source_loop(
             // GameExclusiveModeChangedEvent with ForceCaptureChangeRehook. Debounced
             // via `last_restart` so a restore + an immediate static sample can't
             // fire two restarts back to back.
-            hook.request_restart();
+            source.request_restart();
             last_restart = Some(Instant::now());
             tracing::info!("capture: game restored — re-hooking swapchain, resuming live capture");
         }
 
-        let frame = match hook.acquire(&device) {
+        let frame = match source.acquire(&device) {
             Ok(Some(f)) => f,
             Ok(None) => {
-                // Capture not initialized yet — wait for the hook's first present.
+                // Capture not initialized yet — wait for the source's first frame.
                 continue;
             }
             Err(e) => {
-                tracing::warn!("hook acquire failed, stopping source: {e}");
+                tracing::warn!("frame source acquire failed, stopping source: {e}");
                 break;
             }
         };
@@ -1548,6 +1707,9 @@ fn hook_source_loop(
                     last_hash = Some(hash);
                     last_change = Instant::now();
                     same_frames = 0;
+                    // The current source is delivering fresh frames — reset the
+                    // re-hook counter so a later, unrelated freeze starts fresh.
+                    hook_restarts_since_progress = 0;
                     shared.last_fresh_time.store(ts, Ordering::Relaxed);
                     // Clear a watchdog-set freeze. Don't override the minimize gate,
                     // which owns `frozen` while the window is iconic.
@@ -1581,14 +1743,37 @@ fn hook_source_loop(
                         }
                         // Escalate to a hook re-hook after a longer window, debounced
                         // so we don't spam restarts. The hook re-runs capture_init →
-                        // re-signals HookReady → acquire() reopens the texture.
-                        if stuck >= STATIC_RESTART_AFTER
+                        // re-signals HookReady → acquire() reopens the texture. Only
+                        // the hook has a stale-swapchain to re-hook; WGC keeps
+                        // delivering across the transitions that freeze the hook, so a
+                        // static WGC frame means the *game* is idle, not a capture bug.
+                        if source.is_hook()
+                            && stuck >= STATIC_RESTART_AFTER
                             && last_restart.map_or(true, |t| t.elapsed() >= RESTART_DEBOUNCE)
                         {
+                            // If re-hooking has already failed to recover the swapchain
+                            // a couple of times, the hook simply can't capture this
+                            // game's presentation (e.g. League's churny swapchain that
+                            // wedges NVENC and leaves clips empty). Switch to WGC: mark
+                            // the window hook-hostile and rebuild via the existing
+                            // resize/restart path, which comes back up on WGC.
+                            if hook_restarts_since_progress >= FREEZE_WGC_ESCALATION
+                                && wgc::is_supported()
+                            {
+                                tracing::warn!(
+                                    attempts = hook_restarts_since_progress,
+                                    "capture: hook could not recover a frozen swapchain after \
+                                     repeated re-hooks — switching to WGC fallback"
+                                );
+                                force_wgc_for(hwnd_raw);
+                                shared.resize_restart.store(true, Ordering::Release);
+                                break;
+                            }
                             tracing::warn!(
                                 "capture: requesting hook restart to recover frozen swapchain"
                             );
-                            hook.request_restart();
+                            source.request_restart();
+                            hook_restarts_since_progress += 1;
                             last_restart = Some(Instant::now());
                             // Re-arm the change clock so we give the re-init a beat
                             // before re-evaluating (avoids back-to-back restarts).
@@ -1734,9 +1919,10 @@ fn hook_source_loop(
         }
     }
 
-    // Dropping `hook` here signals Stop + releases the keepalive mutex, so the
-    // injected DLL self-terminates. Dropping `filled_tx` ends the encode thread.
-    drop(hook);
+    // Dropping the source here signals Stop + releases the keepalive mutex (hook)
+    // or stops the WGC session, so the injected DLL self-terminates / the pool is
+    // released. Dropping `filled_tx` ends the encode thread.
+    drop(source);
 }
 
 /// Map a TYPELESS (or sRGB) backbuffer format to the fully-typed UNORM format the
