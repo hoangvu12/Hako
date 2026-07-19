@@ -1707,15 +1707,23 @@ fn hook_source_loop(
                     last_hash = Some(hash);
                     last_change = Instant::now();
                     same_frames = 0;
-                    // The current source is delivering fresh frames — reset the
-                    // re-hook counter so a later, unrelated freeze starts fresh.
-                    hook_restarts_since_progress = 0;
                     shared.last_fresh_time.store(ts, Ordering::Relaxed);
                     // Clear a watchdog-set freeze. Don't override the minimize gate,
                     // which owns `frozen` while the window is iconic.
                     if !shared.minimized.load(Ordering::Relaxed) {
                         if warned_static {
                             tracing::info!("capture: content moving again — freeze cleared");
+                            // Forgive one prior re-hook per *recovered freeze*, rather
+                            // than clearing the counter outright. The old hard reset
+                            // made the WGC escalation unreachable for the failure it
+                            // exists for: League's hook doesn't freeze permanently, it
+                            // freezes, recovers for a few seconds on the re-hook, then
+                            // refreezes — so every cycle zeroed the counter. Decaying
+                            // per episode (not per healthy sample, which would zero it
+                            // just as fast) still forgives an isolated blip, while a
+                            // hook that refreezes faster than it recovers escalates.
+                            hook_restarts_since_progress =
+                                hook_restarts_since_progress.saturating_sub(1);
                         }
                         shared.frozen.store(false, Ordering::Relaxed);
                         warned_static = false;
@@ -2366,10 +2374,26 @@ fn encode_thread(
     let mut consecutive_enc_err: u64 = 0;
     let mut warned_encode = false;
     let mut declared_dead = false;
-    // Ask for exactly one pipeline rebuild per encode-thread instance (each rebuild
-    // spins up a fresh instance with this reset), so a persistent failure can't spin
-    // a tight restart loop.
-    let mut self_healed = false;
+    // Wedge recovery is tiered. Tier 1 reopens *just* the encoder in place, which
+    // keeps the frame source, the clip buffer and — critically — the session
+    // writer's timeline alive; a full pipeline rebuild discards the accumulated
+    // `(wallclock, pts)` samples, and an event that lands on a timeline that was
+    // torn down mid-match can't be placed at all (`TimelineIndex::pts_at_within`
+    // returns None), so the match is silently cut to zero clips. Tier 2 fires only
+    // when in-place reopens stop holding, which means the *input* is the problem
+    // (the hook handing over a churny/stale swapchain) rather than the encoder
+    // session: mark the window hook-hostile and rebuild on WGC.
+    //
+    // Reopens since the encoder last sustained a healthy run. Reset when a reopen
+    // demonstrably held, so unrelated wedges hours apart don't accumulate.
+    let mut encoder_reopens: u32 = 0;
+    // `enc_ok` as of the last in-place reopen — the baseline for "did it hold?".
+    let mut enc_ok_at_reopen: u64 = 0;
+    // A reopen held if the encoder produced ~5s of good frames before wedging again.
+    let healthy_run = (fps as u64).max(30) * 5;
+    // Set when `note_encode_error` decides the encoder is wedged; acted on at the
+    // end of the iteration so we never swap the encoder out mid gap-fill burst.
+    let mut wedged = false;
 
     while let Ok((staging, ts)) = filled_rx.recv() {
         let nv12 = nv12_ring[idx % nv12_ring.len()].clone();
@@ -2448,18 +2472,19 @@ fn encode_thread(
                             consecutive_enc_err = 0;
                             record(pkts);
                         }
-                        Err(e) => note_encode_error(
-                            &e,
-                            "gap-fill encode",
-                            &shared,
-                            enc_ok,
-                            fps,
-                            &mut enc_err,
-                            &mut consecutive_enc_err,
-                            &mut warned_encode,
-                            &mut declared_dead,
-                            &mut self_healed,
-                        ),
+                        Err(e) => {
+                            wedged |= note_encode_error(
+                                &e,
+                                "gap-fill encode",
+                                &shared,
+                                enc_ok,
+                                fps,
+                                &mut enc_err,
+                                &mut consecutive_enc_err,
+                                &mut warned_encode,
+                                &mut declared_dead,
+                            );
+                        }
                     }
                     fill += 1;
                 }
@@ -2472,21 +2497,87 @@ fn encode_thread(
                 consecutive_enc_err = 0;
                 record(pkts);
             }
-            Err(e) => note_encode_error(
-                &e,
-                "encode",
-                &shared,
-                enc_ok,
-                fps,
-                &mut enc_err,
-                &mut consecutive_enc_err,
-                &mut warned_encode,
-                &mut declared_dead,
-                &mut self_healed,
-            ),
+            Err(e) => {
+                wedged |= note_encode_error(
+                    &e,
+                    "encode",
+                    &shared,
+                    enc_ok,
+                    fps,
+                    &mut enc_err,
+                    &mut consecutive_enc_err,
+                    &mut warned_encode,
+                    &mut declared_dead,
+                );
+            }
         }
         last_pts = Some(pts);
         prev_nv12 = Some(nv12);
+
+        // Wedged encoder → recover. Tier 1 (reopen in place) preserves the session
+        // timeline; tier 2 (rebuild on WGC) is the escalation when reopening stops
+        // working. See the `encoder_reopens` declaration above.
+        if wedged {
+            wedged = false;
+            // A reopen that produced a sustained healthy run before wedging again
+            // did its job — this is a fresh, unrelated wedge, so don't let it count
+            // toward escalating away from the hook.
+            if enc_ok.saturating_sub(enc_ok_at_reopen) >= healthy_run {
+                encoder_reopens = 0;
+            }
+            if encoder_reopens >= ENCODER_REOPEN_ESCALATION {
+                tracing::error!(
+                    reopens = encoder_reopens,
+                    "capture: the encoder wedged again right after {encoder_reopens} in-place \
+                     reopens — the frames themselves are the problem (the graphics hook is \
+                     handing over a swapchain the encoder won't accept), not the encoder \
+                     session. Marking this window hook-hostile and rebuilding on WGC."
+                );
+                if wgc::is_supported() {
+                    force_wgc_for(hwnd_raw);
+                }
+                shared.resize_restart.store(true, Ordering::Release);
+                break;
+            }
+            match reopen_encoder(
+                &encode_device,
+                &encode_context,
+                encode_vendor,
+                &enc_cfg,
+                out_w,
+                out_h,
+                fps,
+                &clip,
+            ) {
+                Ok(fresh) => {
+                    encoder = fresh;
+                    encoder_reopens += 1;
+                    enc_ok_at_reopen = enc_ok;
+                    consecutive_enc_err = 0;
+                    // The fresh encoder opens a new bitstream; its first frame is an
+                    // IDR, so packets already in the ring splice cleanly onto it.
+                    // Drop the duplicate-source surface so gap-fill doesn't re-encode
+                    // a pre-reopen frame across the discontinuity.
+                    prev_nv12 = None;
+                    tracing::info!(
+                        reopens = encoder_reopens,
+                        "capture: reopened the hardware encoder in place — capture, clip buffer \
+                         and the session timeline are untouched, so the match keeps recording"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "capture: could not reopen the encoder in place ({e}) — falling back to a \
+                         full pipeline rebuild on WGC"
+                    );
+                    if wgc::is_supported() {
+                        force_wgc_for(hwnd_raw);
+                    }
+                    shared.resize_restart.store(true, Ordering::Release);
+                    break;
+                }
+            }
+        }
     }
 
     // Channel closed (capture stopped): flush the encoder and exit.
@@ -2515,11 +2606,15 @@ fn encode_thread(
 /// Beyond logging, a sustained run of `consecutive` failures (no encoded frame
 /// between them) means the encoder is genuinely wedged — commonly a mid-match
 /// swapchain recreation (a game entering a match / toggling HDR or fullscreen)
-/// that left NVENC returning EINVAL-then-EAGAIN with no way to drain. We then set
-/// `resize_restart` once to rebuild the whole pipeline with a fresh encoder
-/// session, which clears the wedge. This fires even after a long healthy stretch
-/// (it counts a *run*, not lifetime successes), unlike the zero-successes check.
+/// that left NVENC returning EINVAL-then-EAGAIN with no way to drain. Returns
+/// `true` exactly once per wedge episode so the caller can recover; the caller
+/// owns the recovery *policy* (reopen in place vs. rebuild on WGC). Firing on the
+/// exact threshold rather than latching means a wedge that recurs after a
+/// successful recovery (which resets `consecutive`) is reported again. This fires
+/// even after a long healthy stretch (it counts a *run*, not lifetime successes),
+/// unlike the zero-successes check.
 #[allow(clippy::too_many_arguments)]
+#[must_use]
 fn note_encode_error(
     err: &str,
     context: &str,
@@ -2530,8 +2625,7 @@ fn note_encode_error(
     consecutive: &mut u64,
     warned: &mut bool,
     declared_dead: &mut bool,
-    self_healed: &mut bool,
-) {
+) -> bool {
     *enc_err += 1;
     *consecutive += 1;
     shared.enc_errors.fetch_add(1, Ordering::Relaxed);
@@ -2558,19 +2652,87 @@ fn note_encode_error(
     }
     // Self-heal a wedged encoder: ~1s of unbroken failures (≥30 even at low fps) is
     // never normal steady state — `encode()` drains after every successful send, so
-    // a healthy pipeline won't accumulate consecutive send failures. Rebuild once.
+    // a healthy pipeline won't accumulate consecutive send failures. `==` (not `>=`)
+    // reports each episode exactly once: `consecutive` only ever increments by one
+    // per call and is reset to 0 by any encoded frame.
     let heal_threshold = (fps as u64).max(30);
-    if !*self_healed && *consecutive >= heal_threshold {
+    if *consecutive == heal_threshold {
         tracing::error!(
             consecutive_errors = *consecutive,
-            "capture: hardware encoder wedged (every frame rejected for ~1s straight) — rebuilding \
-             the capture pipeline with a fresh encoder to recover. Usually follows a mid-match \
-             swapchain recreation (entering a match / HDR or fullscreen toggle) that put NVENC in a \
-             bad state; without this, clips stay empty for the rest of the session."
+            "capture: hardware encoder wedged (every frame rejected for ~1s straight) — recovering \
+             with a fresh encoder session. Usually follows a mid-match swapchain recreation \
+             (entering a match / HDR or fullscreen toggle) that put NVENC in a bad state; without \
+             this, clips stay empty for the rest of the session."
         );
-        shared.resize_restart.store(true, Ordering::Release);
-        *self_healed = true;
+        return true;
     }
+    false
+}
+
+/// How many in-place encoder reopens may fail to hold before we stop blaming the
+/// encoder session and blame the frames being fed to it. Past this, the graphics
+/// hook is handing over a swapchain the encoder won't accept (League of Legends
+/// recreates its swapchain constantly, and each recreation wedged NVENC within
+/// seconds), so the window is marked hook-hostile and the pipeline rebuilds on WGC
+/// — which delivers BGRA8 SDR through the compositor and sidesteps the failure.
+const ENCODER_REOPEN_ESCALATION: u32 = 2;
+
+/// Build a replacement [`Encoder`] with the *same* parameters as the wedged one,
+/// for in-place recovery that leaves capture and the session timeline running.
+///
+/// The clip buffer's [`ClipMeta`] is a `OnceLock` published when the first encoder
+/// opened, and every packet already in the ring was produced against it — so a
+/// replacement is only safe if it agrees on codec, dimensions and codec-config
+/// record. `Encoder::new` can fall back across codecs when one won't open, so this
+/// is a real possibility, not a formality: if the fresh encoder disagrees, splicing
+/// its packets onto the ring would produce a corrupt clip. Reject it and let the
+/// caller do a full rebuild, which allocates a fresh buffer and meta.
+#[allow(clippy::too_many_arguments)]
+fn reopen_encoder(
+    encode_device: &ID3D11Device,
+    encode_context: &ID3D11DeviceContext,
+    encode_vendor: device::Vendor,
+    enc_cfg: &EncodeSettings,
+    out_w: u32,
+    out_h: u32,
+    fps: u32,
+    clip: &ClipBuffer,
+) -> std::result::Result<Encoder, String> {
+    let fresh = Encoder::new(
+        encode_device,
+        encode_context,
+        encode_vendor,
+        enc_cfg.codec,
+        enc_cfg.bitrate_mbps,
+        out_w,
+        out_h,
+        fps,
+    )?;
+    // No meta published yet ⇒ nothing in the ring was encoded against it, so any
+    // encoder is acceptable (this can't normally happen: meta is set right after
+    // the first encoder opens, before a frame is ever submitted).
+    let Some(meta) = clip.clip_meta() else {
+        return Ok(fresh);
+    };
+    let codec_id = fresh.codec().av_codec_id();
+    if codec_id != meta.codec_id
+        || fresh.width() != meta.width
+        || fresh.height() != meta.height
+        || fresh.extradata() != meta.extradata
+    {
+        return Err(format!(
+            "replacement encoder doesn't match the stream already in the clip buffer \
+             (codec {codec_id} vs {}, {}x{} vs {}x{}, extradata {} vs {} bytes)",
+            meta.codec_id,
+            fresh.width(),
+            fresh.height(),
+            meta.width,
+            meta.height,
+            fresh.extradata().len(),
+            meta.extradata.len()
+        ));
+    }
+    Ok(fresh)
 }
 
 fn log_capture_health(app: &AppHandle, target_fps: u32, shared: &Shared, elapsed: Duration) {
@@ -2714,58 +2876,60 @@ mod tests {
     use super::*;
 
     /// A sustained run of encode failures after a healthy stretch (the real
-    /// 7-min-then-wedge case: `enc_ok` large, not zero) must request exactly one
-    /// pipeline rebuild once ~1s of unbroken failures accumulates — and a single
-    /// success in between must reset the run so a transient blip never restarts.
+    /// 7-min-then-wedge case: `enc_ok` large, not zero) must report the wedge once
+    /// ~1s of unbroken failures accumulates — and a single success in between must
+    /// reset the run so a transient blip never triggers recovery.
     #[test]
-    fn wedged_encoder_self_heals_after_a_healthy_stretch() {
+    fn wedged_encoder_reports_once_after_a_healthy_stretch() {
         let shared = Shared::default();
         let fps = 60u32;
         let heal_at = (fps as u64).max(30);
         let enc_ok = 20_000u64; // long healthy stretch already encoded
         let (mut enc_err, mut consec) = (0u64, 0u64);
-        let (mut warned, mut dead, mut healed) = (false, false, false);
+        let (mut warned, mut dead) = (false, false);
+        let mut note = |consec: &mut u64, enc_err: &mut u64| {
+            note_encode_error(
+                "avcodec_send_frame(nvenc): Resource temporarily unavailable",
+                "encode",
+                &shared,
+                enc_ok,
+                fps,
+                enc_err,
+                consec,
+                &mut warned,
+                &mut dead,
+            )
+        };
 
         // A transient burst that stops short of the threshold, then a success,
-        // must NOT restart (consecutive resets on the encoded frame).
+        // must NOT report a wedge (consecutive resets on the encoded frame).
         for _ in 0..(heal_at - 1) {
-            note_encode_error(
-                "avcodec_send_frame(nvenc): Resource temporarily unavailable",
-                "encode",
-                &shared,
-                enc_ok,
-                fps,
-                &mut enc_err,
-                &mut consec,
-                &mut warned,
-                &mut dead,
-                &mut healed,
-            );
+            assert!(!note(&mut consec, &mut enc_err), "no wedge before threshold");
         }
-        assert!(!healed, "must not heal before the threshold");
-        assert!(!shared.resize_restart.load(Ordering::Acquire));
         consec = 0; // an encoded frame landed → run resets
 
-        // Now a solid wedge: threshold consecutive failures with no success.
-        for _ in 0..heal_at {
-            note_encode_error(
-                "avcodec_send_frame(nvenc): Resource temporarily unavailable",
-                "encode",
-                &shared,
-                enc_ok,
-                fps,
-                &mut enc_err,
-                &mut consec,
-                &mut warned,
-                &mut dead,
-                &mut healed,
-            );
+        // Now a solid wedge: threshold consecutive failures with no success. It
+        // must report exactly once, on the threshold hit.
+        let mut reports = 0;
+        for _ in 0..(heal_at * 3) {
+            if note(&mut consec, &mut enc_err) {
+                reports += 1;
+            }
         }
-        assert!(healed, "a sustained failure run must trigger the self-heal");
-        assert!(
-            shared.resize_restart.load(Ordering::Acquire),
-            "self-heal must request a pipeline rebuild"
-        );
+        assert_eq!(reports, 1, "a wedge episode must be reported exactly once");
+
+        // Recovery landed a frame (consecutive resets); a *later* wedge is a fresh
+        // episode and must be reported again — the old latch suppressed this, so a
+        // second wedge in one session went unrecovered.
+        consec = 0;
+        let mut reports = 0;
+        for _ in 0..(heal_at * 3) {
+            if note(&mut consec, &mut enc_err) {
+                reports += 1;
+            }
+        }
+        assert_eq!(reports, 1, "a wedge recurring after recovery must report again");
+
         // `enc_ok` never hit zero, so the empty-clip cold-start path stays quiet.
         assert!(!dead, "declared_dead is for zero-success sessions, not this one");
     }
