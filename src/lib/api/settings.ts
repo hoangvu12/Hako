@@ -127,11 +127,15 @@ export interface LolGameSettings {
 /** Per-event auto-clip toggles for Rematch (mirrors Rust `RematchEventToggles`). */
 export interface RematchEventToggles {
   goal: boolean;
+  my_goal: boolean;
+  my_assist: boolean;
 }
 
 /** Per-event clip windows for Rematch (mirrors Rust `RematchEventTimings`). */
 export interface RematchEventTimings {
   goal: EventTiming;
+  my_goal: EventTiming;
+  my_assist: EventTiming;
 }
 
 /** Rematch auto-capture config (mirrors Rust `RematchGameSettings`). */

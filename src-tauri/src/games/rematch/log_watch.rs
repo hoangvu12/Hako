@@ -7,12 +7,21 @@
 //! `ShooterGame.log` tail — we follow it:
 //!
 //! - **Goal scored** → `… GameFlow.States.Celebration.FreeRun PostGoal …` (the
-//!   post-goal celebration transition; fires exactly once per goal). This is our
-//!   lone highlight event, matching Medal's "Goal Scored". Note: the game *also*
-//!   logs a `RuntimeMatchSound: GoalScored` audio cue, but it is unreliable — it
+//!   post-goal celebration transition; fires exactly once per goal), matching
+//!   Medal's "Goal Scored". Note: the game *also* logs a
+//!   `RuntimeMatchSound: GoalScored` audio cue, but it is unreliable — it
 //!   fires for only a small fraction of goals (~1 in 15 observed), so we key on
 //!   the celebration state instead, which is 1:1 with goals (as is the paired
 //!   `RuntimeGoalReplay` demo playback).
+//! - **Goal/assist by the local player** → the game's achievement layer pushes
+//!   the local player's lifetime Steam stats and logs each increment:
+//!   `LogSCAchievement: New value for Stat Goals is <n> for User <name>` (same
+//!   for `Stat Assists`), observed ~1 s after the goal's `PostGoal` cue — for
+//!   the local player's own goals/assists *only*. So a stat increment shortly
+//!   after a goal cue attributes that goal ("scored by me" / "assisted by me");
+//!   no increment means a teammate's or the enemy team's goal. This is
+//!   attribution Overwolf's public Rematch GEP doesn't even expose (it only has
+//!   team-level `team_goal`/`opponent_goal`).
 //! - **Match start** → `GameFlow.States.Match CountdownOver` (kickoff).
 //! - **Match end** → `GameFlow.States.EndMatchWhistle` / `…MatchEnd…`.
 //! - **Context** → `localPlayerNickname:`, the menu mode lines, and the loaded
@@ -51,6 +60,20 @@ const GOAL_MARKER: &str = "GameFlow.States.Celebration.FreeRun PostGoal";
 /// Whether `line` is a goal-scored cue (the post-goal celebration transition).
 pub fn is_goal_scored(line: &str) -> bool {
     line.contains(GOAL_MARKER)
+}
+
+/// Whether `line` is the local player's goal-count stat increment — logged by
+/// the achievement layer ~1 s after the goal cue when *we* scored. Matching
+/// only the `New value` line (each increment logs an `Old value`/`New value`
+/// pair) keeps this 1:1 with our goals.
+pub fn is_my_goal_stat(line: &str) -> bool {
+    line.contains("LogSCAchievement") && line.contains("New value for Stat Goals is")
+}
+
+/// Whether `line` is the local player's assist-count stat increment — logged
+/// ~1 s after a teammate's goal that we assisted (see [`is_my_goal_stat`]).
+pub fn is_my_assist_stat(line: &str) -> bool {
+    line.contains("LogSCAchievement") && line.contains("New value for Stat Assists is")
 }
 
 /// Whether `line` is the kickoff (match went live). The countdown finished and
@@ -186,6 +209,30 @@ mod tests {
         // A pre-goal / other celebration state must not match.
         assert!(!is_goal_scored(
             "GameFlow.States.Celebration.FreeRun PreKickoff"
+        ));
+    }
+
+    #[test]
+    fn detects_my_goal_and_assist_stats() {
+        let goal = "[2026.07.19-12.01.56:347][934]LogSCAchievement: New value for Stat Goals \
+                    is 497 for User katou [0x11000013E33CD65]";
+        assert!(is_my_goal_stat(goal));
+        assert!(!is_my_assist_stat(goal));
+        let assist = "[2026.07.19-12.03.48:280][611]LogSCAchievement: New value for Stat Assists \
+                      is 322 for User katou [0x11000013E33CD65]";
+        assert!(is_my_assist_stat(assist));
+        assert!(!is_my_goal_stat(assist));
+        // The paired `Old value` line must NOT count — only the increment.
+        assert!(!is_my_goal_stat(
+            "[2026.07.19-12.01.56:347][934]LogSCAchievement: Old value for Stat Goals \
+             is 496 for User katou [0x11000013E33CD65]"
+        ));
+        // Other stats (Saves, MatchesWon, …) are not goal/assist cues.
+        assert!(!is_my_goal_stat(
+            "LogSCAchievement: New value for Stat Saves is 443 for User katou"
+        ));
+        assert!(!is_my_assist_stat(
+            "LogSCAchievement: New value for Stat MatchesWon is 405 for User katou"
         ));
     }
 

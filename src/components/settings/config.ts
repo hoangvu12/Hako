@@ -135,14 +135,20 @@ export const LOL_EVENT_LABELS: {
   { key: "inhibitor", label: "Inhibitor", hint: "You destroyed an inhibitor", icon: Cube },
 ];
 
-// Rematch auto-clip events (mirrors Rust `RematchEventToggles`) — its lone
-// highlight, matching Medal's "Goal Scored".
+// Rematch auto-clip events (mirrors Rust `RematchEventToggles`). "My Goal" /
+// "My Assist" (default on) are attributed to the local player via the game's
+// achievement-stat log lines; "All Goals" (default off) is every goal by either
+// team (Medal's "Goal Scored").
 export const REMATCH_EVENT_LABELS: {
   key: keyof RematchEventToggles;
   label: string;
   hint: string;
   icon: Icon;
-}[] = [{ key: "goal", label: "Goal", hint: "A goal was scored in the match", icon: SoccerBall }];
+}[] = [
+  { key: "goal", label: "All Goals", hint: "Every goal by either team", icon: SoccerBall },
+  { key: "my_goal", label: "My Goal", hint: "You scored", icon: Star },
+  { key: "my_assist", label: "My Assist", hint: "You assisted a goal", icon: Handshake },
+];
 
 // Counter-Strike 2 auto-clip events (mirrors Rust `Cs2EventToggles`). Derived by
 // diffing the game's GSI state — multi-kills + headshots default on.

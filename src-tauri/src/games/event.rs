@@ -60,9 +60,14 @@ pub enum EventKind {
     InhibKilled,
 
     // ── Rematch ─────────────────────────────────────────────────────────────
-    /// A goal was scored in the match (Rematch's lone highlight event, matching
-    /// Medal's "Goal Scored").
+    /// A goal was scored in the match by either team (matching Medal's "Goal
+    /// Scored").
     Goal,
+    /// A goal scored by the local player (the `Stat Goals` achievement increment
+    /// follows the goal cue in `Runtime.log`).
+    MyGoal,
+    /// The local player assisted a teammate's goal (`Stat Assists` increment).
+    MyAssist,
 
     // ── Dota 2 ──────────────────────────────────────────────────────────────
     /// Four kills inside the multi-kill window (Dota's "Ultra Kill").
@@ -106,6 +111,8 @@ impl EventKind {
             EventKind::TurretKilled => "Turret",
             EventKind::InhibKilled => "Inhibitor",
             EventKind::Goal => "Goal",
+            EventKind::MyGoal => "My Goal",
+            EventKind::MyAssist => "My Assist",
             EventKind::UltraKill => "Ultra Kill",
             EventKind::Rampage => "Rampage",
             EventKind::Crash => "Crash",
@@ -154,7 +161,10 @@ impl EventKind {
     pub fn priority(self) -> u8 {
         match self {
             EventKind::Victory => 30,
-            // Rematch's lone event — the headline of any Rematch clip it lands in.
+            // Rematch: the player's own goal/assist headline over a generic goal
+            // (a merged clip spanning both is about *their* moment).
+            EventKind::MyGoal => 27,
+            EventKind::MyAssist => 26,
             EventKind::Goal => 25,
             // Dota's headline multi-kills (Rampage = 5, Ultra = 4).
             EventKind::Rampage => 24,

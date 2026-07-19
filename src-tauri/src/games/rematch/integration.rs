@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use tauri::{AppHandle, Manager};
 
 use crate::commands::SettingsState;
+use crate::core::clock::{now_ticks, TICKS_PER_SECOND};
 use crate::games::engine::{run_live_feed, LiveDriver, Wanting};
 use crate::games::event::EventKind;
 use crate::games::recording::{finish_and_cut, GameCtx, MatchCut, RecordingSession};
@@ -31,6 +32,11 @@ use crate::valorant::log_watch::{line_event_ticks, LogTail};
 const MAX_AUTOCLIP_SECS: i64 = 120;
 /// Slack for landing an event on the recorded timeline.
 const PLACEMENT_TOL_SECS: i64 = 2;
+/// How long after a goal cue we wait for the local player's `Stat Goals` /
+/// `Stat Assists` increment before settling the goal as not-ours. The observed
+/// lag is ~1 s and the log is polled about once a second, so 5 s is comfortably
+/// past both.
+const GOAL_ATTRIBUTION_WINDOW_SECS: i64 = 5;
 
 /// The Rematch [`GameIntegration`] (zero-sized; state lives in [`RematchDriver`]).
 pub struct Integration;
@@ -60,6 +66,10 @@ struct RematchActive {
     rec: RecordingSession,
     /// `(kind, wall_clock_ticks)` for each clippable goal seen this match.
     events: Vec<(EventKind, i64)>,
+    /// A goal cue awaiting attribution: the goal's wall-clock ticks, held until
+    /// the local player's stat increment upgrades it to `MyGoal`/`MyAssist` or
+    /// the attribution window lapses and it settles as a generic `Goal`.
+    pending_goal: Option<i64>,
     /// Goals seen this match (ours or not) — diagnostics for "no clippable goals".
     goals_seen: u32,
     /// Latest match context (player / mode / stadium).
@@ -104,6 +114,7 @@ impl LiveDriver for RematchDriver {
         RematchActive {
             rec,
             events: Vec::new(),
+            pending_goal: None,
             goals_seen: 0,
             ctx: self.ctx_acc.clone(),
         }
@@ -114,9 +125,13 @@ impl LiveDriver for RematchDriver {
     }
 
     fn finish(&mut self, app: &AppHandle, active: RematchActive, mode: AutoCaptureMode) {
+        let mut active = active;
+        // A goal still awaiting attribution at the whistle settles as generic.
+        settle_pending_goal(&mut active, &self.toggles);
         let RematchActive {
             rec,
             events,
+            pending_goal: _,
             goals_seen,
             ctx,
         } = active;
@@ -209,15 +224,66 @@ impl LiveDriver for RematchDriver {
                 if log_watch::is_goal_scored(&line) {
                     if let Some(am) = active.as_mut() {
                         am.goals_seen += 1;
-                        if self.toggles.enabled(EventKind::Goal) {
-                            am.events.push((EventKind::Goal, line_event_ticks(&line)));
-                            tracing::debug!("rematch: goal scored");
+                        // A new goal cue means any earlier pending goal got no
+                        // stat increment — settle it as generic first.
+                        settle_pending_goal(am, &self.toggles);
+                        am.pending_goal = Some(line_event_ticks(&line));
+                    }
+                    continue;
+                }
+
+                // The local player's goal/assist stat increments fire ~1 s
+                // after the goal cue and only for *their* goals — they upgrade
+                // the pending goal to an attributed event.
+                let my_goal = log_watch::is_my_goal_stat(&line);
+                if my_goal || log_watch::is_my_assist_stat(&line) {
+                    if let Some(am) = active.as_mut() {
+                        if let Some(ticks) = am.pending_goal.take() {
+                            let kind = if my_goal {
+                                EventKind::MyGoal
+                            } else {
+                                EventKind::MyAssist
+                            };
+                            push_goal_event(am, &self.toggles, kind, ticks);
                         }
                     }
                 }
             }
             self.tail = Some(t);
         }
+
+        // A pending goal past the attribution window got no stat line — not ours.
+        if let Some(am) = active.as_mut() {
+            let lapsed = am
+                .pending_goal
+                .is_some_and(|t| now_ticks() - t > GOAL_ATTRIBUTION_WINDOW_SECS * TICKS_PER_SECOND);
+            if lapsed {
+                settle_pending_goal(am, &self.toggles);
+            }
+        }
+    }
+}
+
+/// Push the goal at `ticks` as the most specific *enabled* kind: the attributed
+/// `kind` itself, falling back to a generic `Goal` when that toggle is off but
+/// plain goals are on (an attributed goal is still a goal), else nothing.
+fn push_goal_event(am: &mut RematchActive, toggles: &RematchEventToggles, kind: EventKind, ticks: i64) {
+    let kind = if toggles.enabled(kind) {
+        kind
+    } else if toggles.enabled(EventKind::Goal) {
+        EventKind::Goal
+    } else {
+        return;
+    };
+    am.events.push((kind, ticks));
+    tracing::debug!("rematch: {} at goal cue", kind.label());
+}
+
+/// Settle a pending goal that received no local-player stat increment (a
+/// teammate's or the enemy team's goal) as a generic `Goal`.
+fn settle_pending_goal(am: &mut RematchActive, toggles: &RematchEventToggles) {
+    if let Some(ticks) = am.pending_goal.take() {
+        push_goal_event(am, toggles, EventKind::Goal, ticks);
     }
 }
 
