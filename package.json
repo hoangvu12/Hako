@@ -1,7 +1,7 @@
 {
   "name": "hako",
   "private": true,
-  "version": "1.9.5",
+  "version": "1.9.6",
   "type": "module",
   "description": "Performance-first game clip recorder",
   "scripts": {
